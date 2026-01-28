@@ -1,0 +1,71 @@
+# Enhanced Security and Resource Control Configuration
+
+spring:
+  application:
+    name: mcp-groovy-filesystem-server
+  main:
+    web-application-type: ${MCP_WEB_TYPE:servlet}
+  jackson:
+    default-property-inclusion: non_null
+
+mcp:
+  mode: ${MCP_MODE:http}
+  
+  filesystem:
+    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude,C:/Users/willw
+    max-file-size-mb: 10
+    enable-write: true
+  
+  # Script execution security settings
+  script:
+    # Resource limits
+    max-memory-mb: 256
+    max-threads: 10
+    max-execution-time-seconds: 60
+    max-script-length: 100000  # 100KB
+    
+    # Security validation
+    enable-dangerous-pattern-check: true
+    enable-file-path-validation: true
+    
+    # Audit logging
+    enable-audit-logging: true
+    audit-log-sensitive-data: false
+    
+  # Command execution settings
+  command:
+    powershell-timeout-seconds: 60
+    bash-timeout-seconds: 60
+    git-timeout-seconds: 120
+    gradle-timeout-seconds: 300
+
+logging:
+  level:
+    root: INFO
+    com.softwood.mcp: DEBUG
+    # Audit logs at INFO level
+    com.softwood.mcp.service.AuditService: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+---
+# STDIO Mode Profile
+spring:
+  config:
+    activate:
+      on-profile: stdio
+  main:
+    banner-mode: off
+server:
+  port: 0
+
+mcp:
+  mode: stdio
+
+logging:
+  level:
+    root: OFF
+    com.softwood.mcp: OFF
+    org.springframework: OFF
+    # Keep audit logging even in stdio mode
+    com.softwood.mcp.service.AuditService: WARN

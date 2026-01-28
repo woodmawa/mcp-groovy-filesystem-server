@@ -1,0 +1,65 @@
+plugins {
+    id 'groovy'
+    id 'org.springframework.boot' version '4.0.2'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.softwood'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url 'https://repo.spring.io/milestone' }
+    maven { url 'https://repo.spring.io/snapshot' }
+}
+
+ext {
+    springAiVersion = '1.1.2'
+    groovyVersion = '5.0.4'
+}
+
+dependencies {
+    // Spring Boot
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    
+    // Jackson (for JSON serialization)
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    
+    // Spring AI MCP
+    implementation "org.springframework.ai:spring-ai-mcp:${springAiVersion}"
+    
+    // Jakarta Annotations
+    implementation 'jakarta.annotation:jakarta.annotation-api:3.0.0'
+    
+    // Groovy
+    implementation "org.apache.groovy:groovy:${groovyVersion}"
+    implementation "org.apache.groovy:groovy-json:${groovyVersion}"
+    implementation "org.apache.groovy:groovy-nio:${groovyVersion}"
+    implementation "org.apache.groovy:groovy-templates:${groovyVersion}"
+    
+    // Logging
+    implementation 'ch.qos.logback:logback-classic'
+    
+    // Testing
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation "org.apache.groovy:groovy-test:${groovyVersion}"
+    testImplementation 'org.spockframework:spock-core:2.4-groovy-5.0'
+    testImplementation 'org.spockframework:spock-spring:2.4-groovy-5.0'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.named('bootRun') {
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}

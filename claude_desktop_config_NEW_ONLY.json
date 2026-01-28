@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "groovy-filesystem": {
+      "command": "C:\\Program Files\\Java\\jdk-25\\bin\\java.exe",
+      "args": [
+        "--enable-native-access=ALL-UNNAMED",
+        "-Dspring.profiles.active=stdio",
+        "-Dmcp.mode=stdio",
+        "-jar",
+        "C:\\Users\\willw\\IdeaProjects\\McpGroovyFileSystemServer\\build\\libs\\mcp-groovy-filesystem-server-0.0.1-SNAPSHOT.jar"
+      ]
+    }
+  }
+}
