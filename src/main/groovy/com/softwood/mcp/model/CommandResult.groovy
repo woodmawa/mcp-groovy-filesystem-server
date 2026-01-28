@@ -4,7 +4,7 @@ import groovy.transform.CompileStatic
 import groovy.transform.Immutable
 
 /**
- * Immutable result of command execution
+ * Immutable result of command execution with sanitized output
  * Provides type-safe access to process execution results
  */
 @Immutable
@@ -14,10 +14,10 @@ class CommandResult {
     /** Exit code from the process (0 = success) */
     int exitCode
     
-    /** Standard output from the process */
+    /** Standard output from the process (sanitized) */
     String stdout
     
-    /** Standard error from the process */
+    /** Standard error from the process (sanitized) */
     String stderr
     
     /** Whether the command succeeded (exitCode == 0) */
@@ -27,12 +27,21 @@ class CommandResult {
     long durationMs
     
     /**
+     * Sanitize string by removing control characters except newlines and tabs
+     */
+    private static String sanitize(String text) {
+        if (!text) return text
+        // Remove control characters except \n (10) and \t (9)
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    }
+    
+    /**
      * Create a successful result
      */
     static CommandResult success(String stdout, long durationMs = 0) {
         new CommandResult(
             exitCode: 0,
-            stdout: stdout,
+            stdout: sanitize(stdout),
             stderr: '',
             success: true,
             durationMs: durationMs
@@ -45,8 +54,8 @@ class CommandResult {
     static CommandResult failure(int exitCode, String stdout, String stderr, long durationMs = 0) {
         new CommandResult(
             exitCode: exitCode,
-            stdout: stdout,
-            stderr: stderr,
+            stdout: sanitize(stdout),
+            stderr: sanitize(stderr),
             success: false,
             durationMs: durationMs
         )
@@ -58,8 +67,8 @@ class CommandResult {
     static CommandResult of(int exitCode, String stdout, String stderr, long durationMs = 0) {
         new CommandResult(
             exitCode: exitCode,
-            stdout: stdout,
-            stderr: stderr,
+            stdout: sanitize(stdout),
+            stderr: sanitize(stderr),
             success: exitCode == 0,
             durationMs: durationMs
         )
@@ -71,8 +80,8 @@ class CommandResult {
     Map<String, Object> toMap() {
         [
             exitCode: exitCode,
-            stdout: stdout,
-            stderr: stderr,
+            stdout: stdout,  // Already sanitized
+            stderr: stderr,  // Already sanitized
             success: success,
             durationMs: durationMs
         ]

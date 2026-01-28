@@ -2,7 +2,7 @@ package com.softwood.mcp.model
 
 /**
  * Result of Groovy script execution
- * Type-safe wrapper for script execution results
+ * Type-safe wrapper for script execution results with sanitized output
  */
 class ScriptExecutionResult {
     
@@ -28,13 +28,26 @@ class ScriptExecutionResult {
     long durationMs
     
     /**
-     * Create a successful result
+     * Sanitize string by removing control characters except newlines and tabs
+     */
+    private static String sanitize(String text) {
+        if (!text) return text
+        // Remove control characters except \n (10) and \t (9)
+        // Keep printable ASCII (32-126) and basic whitespace
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    }
+    
+    /**
+     * Create a successful result with sanitized output
      */
     static ScriptExecutionResult success(Object result, List<String> output, String workingDir, long durationMs = 0) {
+        // Sanitize all output strings
+        def sanitizedOutput = output?.collect { sanitize(it as String) } ?: []
+        
         new ScriptExecutionResult(
             success: true,
             result: result,
-            output: output ?: [],
+            output: sanitizedOutput,
             workingDir: workingDir,
             error: null,
             stackTrace: null,
@@ -43,7 +56,7 @@ class ScriptExecutionResult {
     }
     
     /**
-     * Create a failed result
+     * Create a failed result with sanitized error messages
      */
     static ScriptExecutionResult failure(String error, List<String> stackTrace, String workingDir, long durationMs = 0) {
         new ScriptExecutionResult(
@@ -51,28 +64,28 @@ class ScriptExecutionResult {
             result: null,
             output: [],
             workingDir: workingDir,
-            error: error,
-            stackTrace: stackTrace ?: [],
+            error: sanitize(error),
+            stackTrace: stackTrace?.collect { sanitize(it as String) } ?: [],
             durationMs: durationMs
         )
     }
     
     /**
-     * Convert to map for backward compatibility
+     * Convert to map for backward compatibility with sanitized strings
      */
     Map<String, Object> toMap() {
         Map<String, Object> map = [
             success: success,
-            workingDir: workingDir,
+            workingDir: sanitize(workingDir),
             durationMs: durationMs
         ]
         
         if (success) {
             map.result = result
-            map.output = output
+            map.output = output  // Already sanitized in success()
         } else {
-            map.error = error
-            map.stackTrace = stackTrace
+            map.error = error  // Already sanitized in failure()
+            map.stackTrace = stackTrace  // Already sanitized in failure()
         }
         
         return map
@@ -86,9 +99,9 @@ class ScriptExecutionResult {
     }
     
     /**
-     * Get all output as single string
+     * Get all output as single string (sanitized)
      */
     String getOutputText() {
-        output?.join('\n') ?: ''
+        sanitize(output?.join('\n') ?: '')
     }
 }
