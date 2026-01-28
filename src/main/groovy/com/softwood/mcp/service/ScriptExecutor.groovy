@@ -122,7 +122,7 @@ class ScriptExecutor {
     }
     
     /**
-     * Capture output from a process with timing
+     * Capture output from a process with timing and sanitization
      */
     private CommandResult captureOutput(Process process, int timeoutSeconds, long startTime) {
         StringBuilder stdout = new StringBuilder()
@@ -131,13 +131,13 @@ class ScriptExecutor {
         // Capture output streams
         Thread outThread = Thread.start {
             process.inputStream.eachLine { String line -> 
-                stdout.append(line).append('\n') 
+                stdout.append(sanitizeOutput(line)).append('\n') 
             }
         }
         
         Thread errThread = Thread.start {
             process.errorStream.eachLine { String line -> 
-                stderr.append(line).append('\n') 
+                stderr.append(sanitizeOutput(line)).append('\n') 
             }
         }
         
@@ -163,6 +163,18 @@ class ScriptExecutor {
             stderr.toString(),
             duration
         )
+    }
+    
+    /**
+     * Sanitize output by removing control characters (except newlines and tabs)
+     * Keeps printable ASCII and basic whitespace
+     */
+    private String sanitizeOutput(String text) {
+        if (!text) return text
+        
+        // Remove control characters except \n (10) and \t (9)
+        // Keep printable ASCII (32-126) and common whitespace
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
     }
     
     /**
