@@ -84,7 +84,7 @@ class CommandResult {
             stderr: stderr,  // Already sanitized
             success: success,
             durationMs: durationMs
-        ]
+        ] as Map<String, Object>
     }
     
     /**

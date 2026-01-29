@@ -177,6 +177,6 @@ class AuditService {
             message: "Audit stats available in application logs",
             logLevel: "INFO",
             auditTag: "[AUDIT]"
-        ]
+        ] as Map<String, Object>
     }
 }
