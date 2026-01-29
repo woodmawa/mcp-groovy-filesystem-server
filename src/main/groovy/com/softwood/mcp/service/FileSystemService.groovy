@@ -1,6 +1,5 @@
 package com.softwood.mcp.service
 
-import groovy.io.FileType
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Value
@@ -8,52 +7,90 @@ import org.springframework.stereotype.Service
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.*
+import java.nio.file.attribute.BasicFileAttributes
+import java.util.regex.Pattern
+import java.util.stream.Stream
 
 /**
- * Groovy-powered filesystem operations
- * Provides cross-platform file operations with powerful Groovy APIs
+ * Groovy-powered filesystem operations using Java NIO
+ * Avoids Groovy GDK File methods that can trigger Windows phantom 'nul' file creation
  */
 @Service
 @Slf4j
 @CompileStatic
 class FileSystemService {
-    
+
     private final PathService pathService
-    
+
     @Value('${mcp.filesystem.allowed-directories}')
     String allowedDirectoriesString
-    
+
     List<String> allowedDirectories
-    
+
     @jakarta.annotation.PostConstruct
     void init() {
-        allowedDirectories = allowedDirectoriesString.split(',').collect { it.trim() }
+        allowedDirectories = allowedDirectoriesString.split(',').collect {String s -> s.trim() }
     }
-    
+
     @Value('${mcp.filesystem.max-file-size-mb:10}')
     int maxFileSizeMb
-    
+
     @Value('${mcp.filesystem.enable-write:false}')
     boolean enableWrite
-    
+
+    // Windows reserved device names that should be filtered
+    private static final Set<String> WINDOWS_RESERVED_NAMES = [
+            'CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5',
+            'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4',
+            'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+    ] as Set<String>
+
     FileSystemService(PathService pathService) {
         this.pathService = pathService
     }
-    
+
+    /**
+     * Helper to create properly typed Map for CompileStatic
+     */
+    private static Map<String, Object> createMap(Map raw) {
+        return new HashMap<String, Object>(raw)
+    }
+
+    /**
+     * Sanitize string by removing control characters (except newlines and tabs)
+     * Ensures clean JSON serialization
+     */
+    private static String sanitize(String text) {
+        if (!text) return text
+        // Remove control characters except \n (10) and \t (9)
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    }
+
     /**
      * Check if a path is within allowed directories
      */
     boolean isPathAllowed(String path) {
         String normalized = pathService.normalizePath(path)
         Path resolvedPath = Paths.get(normalized).toAbsolutePath().normalize()
-        
+
         return allowedDirectories.any { allowedDir ->
             String normalizedAllowed = pathService.normalizePath(allowedDir)
             Path allowedPath = Paths.get(normalizedAllowed).toAbsolutePath().normalize()
             resolvedPath.startsWith(allowedPath)
         }
     }
-    
+
+    /**
+     * Check if filename is a Windows reserved device name
+     */
+    private static boolean isReservedName(String filename) {
+        if (!filename) return false
+        String upper = filename.toUpperCase()
+        // Check exact match or with extension (e.g., "nul.txt")
+        return WINDOWS_RESERVED_NAMES.contains(upper) ||
+                WINDOWS_RESERVED_NAMES.any { upper.startsWith("${it}.") }
+    }
+
     /**
      * Validate write operations are enabled
      */
@@ -62,295 +99,344 @@ class FileSystemService {
             throw new SecurityException("Write operations are disabled. Set mcp.filesystem.enable-write=true")
         }
     }
-    
+
     /**
      * Read file contents with encoding detection
      */
     String readFile(String path, String encoding = 'UTF-8') {
         String normalized = pathService.normalizePath(path)
-        
+
         if (!isPathAllowed(normalized)) {
             throw new SecurityException("Path not allowed: ${normalized}")
         }
-        
-        File file = new File(normalized)
-        if (!file.exists()) {
+
+        Path filePath = Paths.get(normalized)
+        if (!Files.exists(filePath)) {
             throw new FileNotFoundException("File not found: ${normalized}")
         }
-        
-        if (!file.isFile()) {
+
+        if (!Files.isRegularFile(filePath)) {
             throw new IllegalArgumentException("Path is not a file: ${normalized}")
         }
-        
-        long sizeInMb = (long)(file.length() / (1024 * 1024))
+
+        long sizeInMb = (long)(Files.size(filePath) / (1024 * 1024))
         if (sizeInMb > maxFileSizeMb) {
             throw new IllegalArgumentException("File too large: ${sizeInMb}MB (max: ${maxFileSizeMb}MB)")
         }
-        
-        return file.getText(encoding)
+
+        return sanitize(new String(Files.readAllBytes(filePath), encoding))
     }
-    
+
     /**
-     * Read file lines
+     * Read file lines using Java NIO
      */
     List<String> readLines(String path, String encoding = 'UTF-8') {
         String normalized = pathService.normalizePath(path)
-        
+
         if (!isPathAllowed(normalized)) {
             throw new SecurityException("Path not allowed: ${normalized}")
         }
-        
-        File file = new File(normalized)
-        if (!file.exists()) {
+
+        Path filePath = Paths.get(normalized)
+        if (!Files.exists(filePath)) {
             throw new FileNotFoundException("File not found: ${normalized}")
         }
-        
-        return file.readLines(encoding)
+
+        return Files.readAllLines(filePath, java.nio.charset.Charset.forName(encoding))
+                .collect { sanitize(it as String) }
     }
-    
+
     /**
-     * Write file contents
+     * Write file contents using Java NIO
      */
     Map<String, Object> writeFile(String path, String content, String encoding = 'UTF-8', boolean createBackup = false) {
         validateWriteEnabled()
-        
+
         String normalized = pathService.normalizePath(path)
-        
+
         if (!isPathAllowed(normalized)) {
             throw new SecurityException("Path not allowed: ${normalized}")
         }
-        
-        File file = new File(normalized)
+
+        Path filePath = Paths.get(normalized)
         String backupPath = null
-        
+
         // Create backup if requested and file exists
-        if (createBackup && file.exists()) {
+        if (createBackup && Files.exists(filePath)) {
             backupPath = "${normalized}.backup"
-            Files.copy(file.toPath(), Paths.get(backupPath), StandardCopyOption.REPLACE_EXISTING)
+            Files.copy(filePath, Paths.get(backupPath), StandardCopyOption.REPLACE_EXISTING)
         }
-        
-        file.setText(content, encoding)
-        
-        return [
-            path: normalized,
-            size: file.length(),
-            backup: backupPath
-        ]
+
+        Files.write(filePath, content.getBytes(encoding))
+
+        return createMap([
+                path: sanitize(normalized),
+                size: Files.size(filePath),
+                backup: backupPath ? sanitize(backupPath) : null
+        ])
     }
-    
+
     /**
-     * List directory contents
+     * List directory contents using Java NIO (avoids Groovy GDK eachFile)
      */
     List<Map<String, Object>> listDirectory(String path, String pattern = null, boolean recursive = false) {
         String normalized = pathService.normalizePath(path)
-        
+
         if (!isPathAllowed(normalized)) {
             throw new SecurityException("Path not allowed: ${normalized}")
         }
-        
-        File dir = new File(normalized)
-        if (!dir.exists()) {
+
+        Path dirPath = Paths.get(normalized)
+        if (!Files.exists(dirPath)) {
             throw new FileNotFoundException("Directory not found: ${normalized}")
         }
-        
-        if (!dir.isDirectory()) {
+
+        if (!Files.isDirectory(dirPath)) {
             throw new IllegalArgumentException("Path is not a directory: ${normalized}")
         }
-        
+
         List<Map<String, Object>> results = []
-        
+        Pattern regexPattern = pattern ? Pattern.compile(pattern) : null
+
         if (recursive) {
-            dir.eachFileRecurse(FileType.FILES) { File file ->
-                if (!pattern || file.name.matches(pattern)) {
-                    results << fileToMap(file)
-                }
+            // Use Files.walk for recursive listing
+            Stream<Path> stream = Files.walk(dirPath)
+            try {
+                stream.filter { p -> Files.isRegularFile(p) }
+                        .filter { p -> !isReservedName(p.fileName.toString()) }
+                        .filter { p -> !regexPattern || regexPattern.matcher(p.fileName.toString()).matches() }
+                        .forEach { p -> results.add(pathToMap(p)) }
+            } finally {
+                stream.close()
             }
         } else {
-            dir.eachFile { File file ->
-                if (!pattern || file.name.matches(pattern)) {
-                    results << fileToMap(file)
-                }
+            // Use Files.list for non-recursive listing
+            Stream<Path> stream = Files.list(dirPath)
+            try {
+                stream.filter { p -> !isReservedName(p.fileName.toString()) }
+                        .filter { p -> !regexPattern || regexPattern.matcher(p.fileName.toString()).matches() }
+                        .forEach { p -> results.add(pathToMap(p)) }
+            } finally {
+                stream.close()
             }
         }
-        
+
         return results
     }
-    
+
     /**
-     * Search files by content using regex
+     * Search files by content using Java NIO and regex
      */
     List<Map<String, Object>> searchFiles(String directory, String contentPattern, String filePattern = '.*\\.groovy$') {
         String normalized = pathService.normalizePath(directory)
-        
+
         if (!isPathAllowed(normalized)) {
             throw new SecurityException("Path not allowed: ${normalized}")
         }
-        
-        File dir = new File(normalized)
-        if (!dir.exists() || !dir.isDirectory()) {
+
+        Path dirPath = Paths.get(normalized)
+        if (!Files.exists(dirPath) || !Files.isDirectory(dirPath)) {
             throw new IllegalArgumentException("Invalid directory: ${normalized}")
         }
-        
+
         List<Map<String, Object>> results = []
-        
-        dir.eachFileRecurse(FileType.FILES) { File file ->
-            if (file.name.matches(filePattern)) {
-                try {
-                    def lines = file.readLines()
-                    def matches = []
-                    
-                    lines.eachWithIndex { String line, int index ->
-                        if (line =~ contentPattern) {
-                            matches << [lineNumber: index + 1, line: line]
+        Pattern fileRegex = Pattern.compile(filePattern)
+        Pattern contentRegex = Pattern.compile(contentPattern)
+
+        Stream<Path> stream = Files.walk(dirPath)
+        try {
+            stream.filter { p -> Files.isRegularFile(p) }
+                    .filter { p -> !isReservedName(p.fileName.toString()) }
+                    .filter { p -> fileRegex.matcher(p.fileName.toString()).matches() }
+                    .forEach { p ->
+                        try {
+                            List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8)
+                            List<Map<String, Object>> matches = []
+
+                            lines.eachWithIndex { String line, int index ->
+                                if (contentRegex.matcher(line).find()) {
+                                    matches.add(createMap([lineNumber: index + 1, line: sanitize(line)]))
+                                }
+                            }
+
+                            if (matches) {
+                                results.add(createMap([
+                                        path: sanitize(p.toAbsolutePath().toString().replace('\\', '/')),
+                                        name: sanitize(p.fileName.toString()),
+                                        matches: matches
+                                ]))
+                            }
+                        } catch (Exception e) {
+                            log.warn("Error reading file ${p.fileName}: ${e.message}")
                         }
                     }
-                    
-                    if (matches) {
-                        results.add([
-                            path: file.absolutePath.replace('\\', '/'),
-                            name: file.name,
-                            matches: matches
-                        ] as Map<String, Object>)
-                    }
-                } catch (Exception e) {
-                    log.warn("Error reading file ${file.name}: ${e.message}")
-                }
-            }
+        } finally {
+            stream.close()
         }
-        
+
         return results
     }
-    
+
     /**
-     * Convert File to Map
+     * Convert Path to Map using Java NIO attributes with sanitized strings
      */
-    private Map<String, Object> fileToMap(File file) {
-        return [
-            path: file.absolutePath.replace('\\', '/'),
-            name: file.name,
-            type: file.isDirectory() ? 'directory' : 'file',
-            size: file.length(),
-            lastModified: file.lastModified(),
-            readable: file.canRead(),
-            writable: file.canWrite(),
-            executable: file.canExecute()
-        ]
+    private Map<String, Object> pathToMap(Path path) {
+        try {
+            BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class)
+            return createMap([
+                    path: sanitize(path.toAbsolutePath().toString().replace('\\', '/')),
+                    name: sanitize(path.fileName.toString()),
+                    type: attrs.isDirectory() ? 'directory' : 'file',
+                    size: attrs.size(),
+                    lastModified: attrs.lastModifiedTime().toMillis(),
+                    readable: Files.isReadable(path),
+                    writable: Files.isWritable(path),
+                    executable: Files.isExecutable(path)
+            ])
+        } catch (Exception e) {
+            log.warn("Error reading attributes for ${path}: ${e.message}")
+            return createMap([
+                    path: sanitize(path.toAbsolutePath().toString().replace('\\', '/')),
+                    name: sanitize(path.fileName.toString()),
+                    type: 'unknown',
+                    size: 0L,
+                    lastModified: 0L,
+                    readable: false,
+                    writable: false,
+                    executable: false
+            ])
+        }
     }
-    
+
     /**
-     * Delete file or directory
+     * Delete file or directory using Java NIO
      */
     Map<String, Object> deleteFile(String path, boolean recursive = false) {
         validateWriteEnabled()
-        
+
         String normalized = pathService.normalizePath(path)
-        
+
         if (!isPathAllowed(normalized)) {
             throw new SecurityException("Path not allowed: ${normalized}")
         }
-        
-        File file = new File(normalized)
-        if (!file.exists()) {
+
+        Path filePath = Paths.get(normalized)
+        if (!Files.exists(filePath)) {
             throw new FileNotFoundException("File not found: ${normalized}")
         }
-        
-        boolean success
-        if (file.isDirectory() && recursive) {
-            success = file.deleteDir()
+
+        boolean success = false
+        if (Files.isDirectory(filePath) && recursive) {
+            // Delete directory recursively using Files.walk
+            Stream<Path> stream = Files.walk(filePath)
+            try {
+                stream.sorted(Comparator.reverseOrder())
+                        .forEach { p ->
+                            try {
+                                Files.delete(p)
+                            } catch (IOException e) {
+                                log.warn("Failed to delete ${p}: ${e.message}")
+                            }
+                        }
+                success = !Files.exists(filePath)
+            } finally {
+                stream.close()
+            }
         } else {
-            success = file.delete()
+            Files.delete(filePath)
+            success = true
         }
-        
-        return [
-            path: normalized,
-            deleted: success
-        ]
+
+        return createMap([
+                path: sanitize(normalized),
+                deleted: success
+        ])
     }
-    
+
     /**
      * Copy file
      */
     Map<String, Object> copyFile(String sourcePath, String destPath, boolean overwrite = false) {
         validateWriteEnabled()
-        
+
         String normalizedSource = pathService.normalizePath(sourcePath)
         String normalizedDest = pathService.normalizePath(destPath)
-        
+
         if (!isPathAllowed(normalizedSource) || !isPathAllowed(normalizedDest)) {
             throw new SecurityException("Path not allowed")
         }
-        
+
         Path source = Paths.get(normalizedSource)
         Path dest = Paths.get(normalizedDest)
-        
+
         if (!Files.exists(source)) {
             throw new FileNotFoundException("Source not found: ${normalizedSource}")
         }
-        
-        CopyOption[] options = overwrite ? 
-            [StandardCopyOption.REPLACE_EXISTING] as CopyOption[] : 
-            [] as CopyOption[]
-        
+
+        CopyOption[] options = overwrite ?
+                [StandardCopyOption.REPLACE_EXISTING] as CopyOption[] :
+                [] as CopyOption[]
+
         Files.copy(source, dest, options)
-        
-        return [
-            source: normalizedSource,
-            destination: normalizedDest,
-            size: Files.size(dest)
-        ]
+
+        return createMap([
+                source: sanitize(normalizedSource),
+                destination: sanitize(normalizedDest),
+                size: Files.size(dest)
+        ])
     }
-    
+
     /**
      * Move/rename file
      */
     Map<String, Object> moveFile(String sourcePath, String destPath, boolean overwrite = false) {
         validateWriteEnabled()
-        
+
         String normalizedSource = pathService.normalizePath(sourcePath)
         String normalizedDest = pathService.normalizePath(destPath)
-        
+
         if (!isPathAllowed(normalizedSource) || !isPathAllowed(normalizedDest)) {
             throw new SecurityException("Path not allowed")
         }
-        
+
         Path source = Paths.get(normalizedSource)
         Path dest = Paths.get(normalizedDest)
-        
+
         if (!Files.exists(source)) {
             throw new FileNotFoundException("Source not found: ${normalizedSource}")
         }
-        
-        CopyOption[] options = overwrite ? 
-            [StandardCopyOption.REPLACE_EXISTING] as CopyOption[] : 
-            [] as CopyOption[]
-        
+
+        CopyOption[] options = overwrite ?
+                [StandardCopyOption.REPLACE_EXISTING] as CopyOption[] :
+                [] as CopyOption[]
+
         Files.move(source, dest, options)
-        
-        return [
-            source: normalizedSource,
-            destination: normalizedDest
-        ]
+
+        return createMap([
+                source: sanitize(normalizedSource),
+                destination: sanitize(normalizedDest)
+        ])
     }
-    
+
     /**
      * Create directory
      */
     Map<String, Object> createDirectory(String path) {
         validateWriteEnabled()
-        
+
         String normalized = pathService.normalizePath(path)
-        
+
         if (!isPathAllowed(normalized)) {
             throw new SecurityException("Path not allowed: ${normalized}")
         }
-        
-        File dir = new File(normalized)
-        boolean created = dir.mkdirs()
-        
-        return [
-            path: normalized,
-            created: created,
-            exists: dir.exists()
-        ]
+
+        Path dirPath = Paths.get(normalized)
+        Files.createDirectories(dirPath)
+
+        return createMap([
+                path: sanitize(normalized),
+                created: true,
+                exists: Files.exists(dirPath)
+        ])
     }
 }
