@@ -111,12 +111,15 @@ abstract class SecureMcpScript extends Script {
     // ========================================================================
 
     CommandResult gradle(String... args) {
-        // Use gradlew.bat on Windows
-        executeCommand('.\\gradlew.bat', args.toList())
+        // Use gradlew.bat through cmd.exe on Windows
+        List<String> cmdArgs = ['cmd', '/c', 'gradlew.bat'] + args.toList()
+        executeCommand(cmdArgs[0], cmdArgs.drop(1))
     }
 
     CommandResult gradlew(String... args) {
-        executeCommand('.\\gradlew.bat', args.toList())
+        // Use gradlew.bat through cmd.exe on Windows
+        List<String> cmdArgs = ['cmd', '/c', 'gradlew.bat'] + args.toList()
+        executeCommand(cmdArgs[0], cmdArgs.drop(1))
     }
 
     // ========================================================================

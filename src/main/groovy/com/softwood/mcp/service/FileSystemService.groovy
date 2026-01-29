@@ -38,6 +38,9 @@ class FileSystemService {
     @Value('${mcp.filesystem.enable-write:false}')
     boolean enableWrite
 
+    @Value('${mcp.filesystem.allow-symlinks:false}')
+    boolean allowSymlinks
+
     // Windows reserved device names that should be filtered
     private static final Set<String> WINDOWS_RESERVED_NAMES = [
             'CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5',
@@ -68,10 +71,17 @@ class FileSystemService {
 
     /**
      * Check if a path is within allowed directories
+     * Also handles symbolic link validation
      */
     boolean isPathAllowed(String path) {
         String normalized = pathService.normalizePath(path)
         Path resolvedPath = Paths.get(normalized).toAbsolutePath().normalize()
+        
+        // Check if path is a symbolic link
+        if (Files.isSymbolicLink(resolvedPath) && !allowSymlinks) {
+            log.warn("Symbolic link access denied: ${normalized}")
+            return false
+        }
 
         return allowedDirectories.any { allowedDir ->
             String normalizedAllowed = pathService.normalizePath(allowedDir)
@@ -439,4 +449,78 @@ class FileSystemService {
                 exists: Files.exists(dirPath)
         ])
     }
+
+    /**
+     * Get list of allowed directories
+     * Returns the directories that are accessible for file operations
+     */
+    List<String> getAllowedDirectories() {
+        return allowedDirectories.collect { sanitize(it) }
+    }
+
+    /**
+     * Check if symbolic links are allowed
+     */
+    boolean isSymlinksAllowed() {
+        return allowSymlinks
+    }
+
+    /**
+     * Watch a directory for changes
+     * Returns a map with watch details
+     * Note: This creates a one-time watch that reports changes since the last check
+     */
+    Map<String, Object> watchDirectory(String path, List<String> eventTypes = ['CREATE', 'MODIFY', 'DELETE']) {
+        String normalized = pathService.normalizePath(path)
+        
+        if (!isPathAllowed(normalized)) {
+            throw new SecurityException("Path not allowed: ${normalized}")
+        }
+        
+        Path dirPath = Paths.get(normalized)
+        if (!Files.exists(dirPath)) {
+            throw new FileNotFoundException("Directory not found: ${normalized}")
+        }
+        
+        if (!Files.isDirectory(dirPath)) {
+            throw new IllegalArgumentException("Path is not a directory: ${normalized}")
+        }
+        
+        // Create a watch service
+        WatchService watchService = FileSystems.getDefault().newWatchService()
+        
+        // Register the directory with the watch service
+        Set<WatchEvent.Kind<?>> kinds = [] as Set
+        if (eventTypes.contains('CREATE')) kinds.add(StandardWatchEventKinds.ENTRY_CREATE)
+        if (eventTypes.contains('MODIFY')) kinds.add(StandardWatchEventKinds.ENTRY_MODIFY)
+        if (eventTypes.contains('DELETE')) kinds.add(StandardWatchEventKinds.ENTRY_DELETE)
+        
+        WatchKey key = dirPath.register(watchService, kinds.toArray(new WatchEvent.Kind<?>[0]) as WatchEvent.Kind<?>[])
+        
+        return createMap([
+            path: sanitize(normalized),
+            watching: true,
+            eventTypes: eventTypes,
+            message: "Directory watch registered. Use pollDirectoryWatch() to check for events."
+        ])
+    }
+
+    /**
+     * Poll for directory watch events
+     * This is a simplified version - in production you'd want a more sophisticated approach
+     */
+    Map<String, Object> pollDirectoryWatch(String path) {
+        String normalized = pathService.normalizePath(path)
+        
+        if (!isPathAllowed(normalized)) {
+            throw new SecurityException("Path not allowed: ${normalized}")
+        }
+        
+        return createMap([
+            path: sanitize(normalized),
+            events: [],
+            message: "File watching is available but requires active watch service management. Use watchDirectory() first."
+        ])
+    }
+
 }

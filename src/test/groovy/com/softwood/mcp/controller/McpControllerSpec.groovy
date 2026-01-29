@@ -80,10 +80,14 @@ class McpControllerSpec extends Specification {
         def response = controller.handleRequest(request)
         
         then: "all tools are listed"
-        response.result.tools.size() == 10
+        response.result.tools.size() == 14
         response.result.tools*.name.contains("readFile")
         response.result.tools*.name.contains("writeFile")
         response.result.tools*.name.contains("executeGroovyScript")
+        response.result.tools*.name.contains("getAllowedDirectories")
+        response.result.tools*.name.contains("isSymlinksAllowed")
+        response.result.tools*.name.contains("watchDirectory")
+        response.result.tools*.name.contains("pollDirectoryWatch")
     }
     
     def "should handle readFile tool call"() {

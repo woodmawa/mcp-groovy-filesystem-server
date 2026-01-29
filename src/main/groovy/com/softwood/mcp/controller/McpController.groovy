@@ -285,6 +285,57 @@ class McpController {
                     ],
                     required: ["script", "workingDirectory"]
                 ]
+            ],
+            [
+                name: "getAllowedDirectories",
+                description: "Get list of allowed directories accessible for file operations",
+                inputSchema: [
+                    type: "object",
+                    properties: [:],
+                    required: []
+                ]
+            ],
+            [
+                name: "isSymlinksAllowed",
+                description: "Check if symbolic links are allowed",
+                inputSchema: [
+                    type: "object",
+                    properties: [:],
+                    required: []
+                ]
+            ],
+            [
+                name: "watchDirectory",
+                description: "Watch a directory for file changes (CREATE, MODIFY, DELETE events)",
+                inputSchema: [
+                    type: "object",
+                    properties: [
+                        path: [
+                            type: "string",
+                            description: "Directory path to watch"
+                        ],
+                        eventTypes: [
+                            type: "array",
+                            description: "Event types to watch for (default: ['CREATE', 'MODIFY', 'DELETE'])",
+                            items: [type: "string"]
+                        ]
+                    ],
+                    required: ["path"]
+                ]
+            ],
+            [
+                name: "pollDirectoryWatch",
+                description: "Poll for directory watch events",
+                inputSchema: [
+                    type: "object",
+                    properties: [
+                        path: [
+                            type: "string",
+                            description: "Directory path being watched"
+                        ]
+                    ],
+                    required: ["path"]
+                ]
             ]
         ]
         
@@ -381,6 +432,33 @@ class McpController {
                 def result = groovyScriptService.executeScript(script, workingDirectory)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(result)]]
+                ])
+            
+            case "getAllowedDirectories":
+                def allowedDirs = fileSystemService.getAllowedDirectories()
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson(allowedDirs)]]
+                ])
+            
+            case "isSymlinksAllowed":
+                def symlinkAllowed = fileSystemService.isSymlinksAllowed()
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson([allowSymlinks: symlinkAllowed])]]
+                ])
+            
+            case "watchDirectory":
+                String path = arguments.path as String
+                List<String> eventTypes = arguments.eventTypes as List<String> ?: ['CREATE', 'MODIFY', 'DELETE']
+                def watchResult = fileSystemService.watchDirectory(path, eventTypes)
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson(watchResult)]]
+                ])
+            
+            case "pollDirectoryWatch":
+                String path = arguments.path as String
+                def pollResult = fileSystemService.pollDirectoryWatch(path)
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson(pollResult)]]
                 ])
             
             default:

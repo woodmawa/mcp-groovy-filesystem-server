@@ -21,6 +21,15 @@ class ScriptExecutor {
     }
     
     /**
+     * Sanitize string by removing control characters (except newlines and tabs)
+     * Ensures clean exception messages for JSON serialization
+     */
+    private static String sanitize(String text) {
+        if (!text) return text
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    }
+    
+    /**
      * Execute a PowerShell command
      */
     CommandResult executePowerShell(String command, String workingDir) {
@@ -47,7 +56,7 @@ class ScriptExecutor {
             long duration = System.currentTimeMillis() - startTime
             log.error("PowerShell execution failed", e)
             auditService.logCommandExecution("PowerShell", command, workingDir, false, -1, duration)
-            throw e
+            throw new RuntimeException(sanitize(e.message))
         }
     }
     
@@ -82,7 +91,7 @@ class ScriptExecutor {
             long duration = System.currentTimeMillis() - startTime
             log.error("Bash execution failed", e)
             auditService.logCommandExecution("Bash", command, workingDir, false, -1, duration)
-            throw e
+            throw new RuntimeException(sanitize(e.message))
         }
     }
     
@@ -117,7 +126,7 @@ class ScriptExecutor {
             long duration = System.currentTimeMillis() - startTime
             log.error("Command execution failed: {} {}", executable, args, e)
             auditService.logCommandExecution(executable, args.join(' '), workingDir, false, -1, duration)
-            throw e
+            throw new RuntimeException(sanitize(e.message))
         }
     }
     

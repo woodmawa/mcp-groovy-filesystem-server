@@ -20,6 +20,8 @@ mcp:
     allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude,C:/Users/willw
     max-file-size-mb: 10
     enable-write: true
+    # Allow following symbolic links (default: false for security)
+    allow-symlinks: false
   
   # Script execution security settings
   script:
