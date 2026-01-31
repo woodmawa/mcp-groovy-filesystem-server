@@ -27,13 +27,23 @@ class McpController {
         this.groovyScriptService = groovyScriptService
     }
     
+    /**
+     * Sanitize string by removing control characters (except newlines and tabs)
+     * CRITICAL: Prevents JSON serialization errors in exception messages
+     */
+    private static String sanitize(String text) {
+        if (!text) return text
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    }
+    
     @PostMapping("/")
     McpResponse handleRequest(@RequestBody McpRequest request) {
         try {
             return dispatch(request)
         } catch (Exception e) {
             log.error("Error handling request", e)
-            return McpResponse.error(request.id, -32603, "Internal error: ${e.message}" as String)
+            // CRITICAL: Sanitize exception message to prevent JSON serialization errors
+            return McpResponse.error(request.id, -32603, sanitize("Internal error: ${e.message}") as String)
         }
     }
     
