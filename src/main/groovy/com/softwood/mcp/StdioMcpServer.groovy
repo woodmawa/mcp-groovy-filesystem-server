@@ -28,6 +28,15 @@ class StdioMcpServer implements CommandLineRunner {
             .setSerializationInclusion(JsonInclude.Include.NON_NULL)
     }
     
+    /**
+     * Sanitize string by removing control characters (except newlines and tabs)
+     * CRITICAL: Prevents JSON serialization errors in exception messages
+     */
+    private static String sanitize(String text) {
+        if (!text) return text
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    }
+    
     @Override
     void run(String... args) {
         debugLog("Starting MCP stdio server...")
@@ -94,7 +103,8 @@ class StdioMcpServer implements CommandLineRunner {
                 id: "error-${requestCount}" as String,
                 error: [
                     code: -32603,
-                    message: "Internal error: ${e.message}" as String
+                    // CRITICAL: Sanitize exception message to prevent control characters
+                    message: sanitize("Internal error: ${e.message}") as String
                 ]
             ]
             String json = objectMapper.writeValueAsString(errorResponse)

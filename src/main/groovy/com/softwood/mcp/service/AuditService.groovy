@@ -174,9 +174,9 @@ class AuditService {
         // In a real implementation, this would query an audit database
         // For now, just return a placeholder
         return [
-            message: "Audit stats available in application logs" as Object,
-            logLevel: "INFO" as Object,
-            auditTag: "[AUDIT]" as Object
+            message: "Audit stats available in application logs",
+            logLevel: "INFO",
+            auditTag: "[AUDIT]"
         ]
     }
 }

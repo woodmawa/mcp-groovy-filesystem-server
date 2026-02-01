@@ -79,11 +79,11 @@ class CommandResult {
      */
     Map<String, Object> toMap() {
         [
-            exitCode: exitCode as Object,
-            stdout: stdout as Object,  // Already sanitized
-            stderr: stderr as Object,  // Already sanitized
-            success: success as Object,
-            durationMs: durationMs as Object
+            exitCode: exitCode,
+            stdout: stdout,  // Already sanitized
+            stderr: stderr,  // Already sanitized
+            success: success,
+            durationMs: durationMs
         ]
     }
     
