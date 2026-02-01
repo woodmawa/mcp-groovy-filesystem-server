@@ -127,10 +127,12 @@ abstract class SecureMcpScript extends Script {
     // ========================================================================
 
     CommandResult powershell(String command) {
-        if (!isAllowedPowerShell(command)) {
-            throw new SecurityException("PowerShell command not whitelisted: ${sanitize(command.take(50))}")
+        // Layer 0: Sanitize input immediately
+        String sanitizedCommand = sanitize(command)
+        if (!isAllowedPowerShell(sanitizedCommand)) {
+            throw new SecurityException("PowerShell command not whitelisted: ${sanitizedCommand.take(50)}")
         }
-        executePowerShell(command)
+        executePowerShell(sanitizedCommand)
     }
 
     CommandResult ps(String command) {
@@ -195,10 +197,12 @@ abstract class SecureMcpScript extends Script {
     // ========================================================================
 
     CommandResult bash(String command) {
-        if (!isAllowedBash(command)) {
-            throw new SecurityException("Bash command not whitelisted: ${sanitize(command.take(50))}")
+        // Layer 0: Sanitize input immediately
+        String sanitizedCommand = sanitize(command)
+        if (!isAllowedBash(sanitizedCommand)) {
+            throw new SecurityException("Bash command not whitelisted: ${sanitizedCommand.take(50)}")
         }
-        executeBash(command)
+        executeBash(sanitizedCommand)
     }
 
     // Whitelist of safe bash commands
