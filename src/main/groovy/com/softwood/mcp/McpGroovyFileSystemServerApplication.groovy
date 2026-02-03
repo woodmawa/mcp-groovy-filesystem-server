@@ -11,6 +11,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 class McpGroovyFileSystemServerApplication {
     
     static void main(String[] args) {
+
+        System.setProperty("spring.main.banner-mode", "off")
         SpringApplication.run(McpGroovyFileSystemServerApplication, args)
     }
 }

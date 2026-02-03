@@ -40,6 +40,7 @@ logging:
 
 ---
 # STDIO Mode Profile
+# Note: Logging still enabled but goes to STDERR and file only (STDOUT reserved for MCP JSON-RPC)
 spring:
   config:
     activate:
@@ -54,8 +55,8 @@ mcp:
 
 logging:
   level:
-    root: OFF
-    com.softwood.mcp: OFF
-    org.springframework: OFF
+    root: INFO
+    com.softwood.mcp: DEBUG
+    org.springframework: WARN
     # Keep audit logging in stdio mode
-    com.softwood.mcp.service.AuditService: WARN
+    com.softwood.mcp.service.AuditService: INFO
