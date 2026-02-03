@@ -27,13 +27,23 @@ class McpController {
         this.groovyScriptService = groovyScriptService
     }
     
+    /**
+     * Sanitize string by removing control characters (except newlines and tabs)
+     * CRITICAL: Prevents JSON serialization errors in exception messages
+     */
+    private static String sanitize(String text) {
+        if (!text) return text
+        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    }
+    
     @PostMapping("/")
     McpResponse handleRequest(@RequestBody McpRequest request) {
         try {
             return dispatch(request)
         } catch (Exception e) {
             log.error("Error handling request", e)
-            return McpResponse.error(request.id, -32603, "Internal error: ${e.message}" as String)
+            // CRITICAL: Sanitize exception message to prevent JSON serialization errors
+            return McpResponse.error(request.id, -32603, sanitize("Internal error: ${e.message}") as String)
         }
     }
     
@@ -339,7 +349,7 @@ class McpController {
             ]
         ]
         
-        return McpResponse.success(request.id, [tools: tools])
+        return McpResponse.success(request.id, [tools: tools] as Map<String, Object>)
     }
     
     /**
@@ -356,7 +366,7 @@ class McpController {
                 String content = fileSystemService.readFile(path, encoding)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: content]]
-                ])
+                ] as Map<String, Object>)
             
             case "writeFile":
                 String path = arguments.path as String
@@ -366,7 +376,7 @@ class McpController {
                 def result = fileSystemService.writeFile(path, content, encoding, createBackup)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(result)]]
-                ])
+                ] as Map<String, Object>)
             
             case "listDirectory":
                 String path = arguments.path as String
@@ -375,7 +385,7 @@ class McpController {
                 def files = fileSystemService.listDirectory(path, pattern, recursive)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(files)]]
-                ])
+                ] as Map<String, Object>)
             
             case "searchFiles":
                 String directory = arguments.directory as String
@@ -384,14 +394,14 @@ class McpController {
                 def results = fileSystemService.searchFiles(directory, contentPattern, filePattern)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(results)]]
-                ])
+                ] as Map<String, Object>)
             
             case "normalizePath":
                 String path = arguments.path as String
                 def pathInfo = pathService.getPathRepresentations(path)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(pathInfo)]]
-                ])
+                ] as Map<String, Object>)
             
             case "copyFile":
                 String source = arguments.source as String
@@ -400,7 +410,7 @@ class McpController {
                 def result = fileSystemService.copyFile(source, destination, overwrite)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(result)]]
-                ])
+                ] as Map<String, Object>)
             
             case "moveFile":
                 String source = arguments.source as String
@@ -409,7 +419,7 @@ class McpController {
                 def result = fileSystemService.moveFile(source, destination, overwrite)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(result)]]
-                ])
+                ] as Map<String, Object>)
             
             case "deleteFile":
                 String path = arguments.path as String
@@ -417,14 +427,14 @@ class McpController {
                 def result = fileSystemService.deleteFile(path, recursive)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(result)]]
-                ])
+                ] as Map<String, Object>)
             
             case "createDirectory":
                 String path = arguments.path as String
                 def result = fileSystemService.createDirectory(path)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(result)]]
-                ])
+                ] as Map<String, Object>)
             
             case "executeGroovyScript":
                 String script = arguments.script as String
@@ -432,19 +442,19 @@ class McpController {
                 def result = groovyScriptService.executeScript(script, workingDirectory)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(result)]]
-                ])
+                ] as Map<String, Object>)
             
             case "getAllowedDirectories":
                 def allowedDirs = fileSystemService.getAllowedDirectories()
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(allowedDirs)]]
-                ])
+                ] as Map<String, Object>)
             
             case "isSymlinksAllowed":
                 def symlinkAllowed = fileSystemService.isSymlinksAllowed()
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson([allowSymlinks: symlinkAllowed])]]
-                ])
+                ] as Map<String, Object>)
             
             case "watchDirectory":
                 String path = arguments.path as String
@@ -452,14 +462,14 @@ class McpController {
                 def watchResult = fileSystemService.watchDirectory(path, eventTypes)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(watchResult)]]
-                ])
+                ] as Map<String, Object>)
             
             case "pollDirectoryWatch":
                 String path = arguments.path as String
                 def pollResult = fileSystemService.pollDirectoryWatch(path)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(pollResult)]]
-                ])
+                ] as Map<String, Object>)
             
             default:
                 return McpResponse.error(
