@@ -96,6 +96,22 @@ abstract class SecureMcpScript extends Script {
         fileSystemService.createDirectory(resolvePath(path))
     }
 
+    def readMultipleFiles(List<String> paths) {
+        fileSystemService.readMultipleFiles(paths.collect { resolvePath(it) })
+    }
+
+    def getFileInfo(String path) {
+        fileSystemService.getFileInfo(resolvePath(path))
+    }
+
+    def listFilesWithSizes(String path, String sortBy = 'name') {
+        fileSystemService.listDirectoryWithSizes(resolvePath(path), sortBy)
+    }
+
+    def getDirectoryTree(String path, List<String> excludePatterns = []) {
+        fileSystemService.getDirectoryTree(resolvePath(path), excludePatterns)
+    }
+
     // ========================================================================
     // Path Operations
     // ========================================================================

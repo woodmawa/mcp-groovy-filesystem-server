@@ -745,4 +745,193 @@ class FileSystemService {
         }
     }
 
+    /**
+     * Read multiple files at once (more efficient than multiple readFile calls)
+     */
+    List<Map<String, Object>> readMultipleFiles(List<String> paths) {
+        return paths.collect { path ->
+            try {
+                String content = readFile(path)
+                createMap([
+                    path: path,
+                    content: content,
+                    success: true
+                ])
+            } catch (Exception e) {
+                log.warn("Failed to read ${sanitize(path)}: ${sanitize(e.message)}")
+                createMap([
+                    path: path,
+                    error: sanitize(e.message),
+                    success: false
+                ])
+            }
+        }
+    }
+
+    /**
+     * Get detailed file/directory metadata
+     */
+    Map<String, Object> getFileInfo(String path) {
+        try {
+            String normalized = pathService.normalizePath(path)
+            
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+            
+            Path filePath = Paths.get(normalized)
+            
+            if (!Files.exists(filePath)) {
+                throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
+            }
+            
+            BasicFileAttributes attrs = Files.readAttributes(filePath, BasicFileAttributes.class)
+            
+            return createMap([
+                path: sanitize(normalized),
+                name: filePath.fileName.toString(),
+                type: attrs.isDirectory() ? 'directory' : 'file',
+                size: attrs.size(),
+                creationTime: attrs.creationTime().toString(),
+                lastModified: attrs.lastModifiedTime().toString(),
+                lastAccess: attrs.lastAccessTime().toString(),
+                readable: Files.isReadable(filePath),
+                writable: Files.isWritable(filePath),
+                executable: Files.isExecutable(filePath),
+                hidden: Files.isHidden(filePath)
+            ])
+        } catch (Exception e) {
+            log.error("Error getting file info: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     * List directory with file sizes and optional sorting
+     */
+    List<Map<String, Object>> listDirectoryWithSizes(String path, String sortBy = 'name') {
+        try {
+            String normalized = pathService.normalizePath(path)
+            
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+            
+            Path dirPath = Paths.get(normalized)
+            
+            if (!Files.isDirectory(dirPath)) {
+                throw new IllegalArgumentException("Path is not a directory: ${sanitize(normalized)}")
+            }
+            
+            List<Map<String, Object>> entries = []
+            
+            Files.newDirectoryStream(dirPath).each { Path entry ->
+                String entryName = entry.fileName.toString()
+                
+                // Skip Windows reserved names
+                if (WINDOWS_RESERVED_NAMES.contains(entryName.toUpperCase())) {
+                    return
+                }
+                
+                try {
+                    BasicFileAttributes attrs = Files.readAttributes(entry, BasicFileAttributes.class)
+                    
+                    entries.add(createMap([
+                        name: entryName,
+                        path: sanitize(entry.toString()),
+                        type: attrs.isDirectory() ? 'directory' : 'file',
+                        size: attrs.size(),
+                        lastModified: attrs.lastModifiedTime().toMillis(),
+                        readable: Files.isReadable(entry),
+                        writable: Files.isWritable(entry),
+                        executable: Files.isExecutable(entry)
+                    ]))
+                } catch (Exception e) {
+                    log.warn("Error reading attributes for ${sanitize(entryName)}: ${sanitize(e.message)}")
+                }
+            }
+            
+            // Sort entries
+            if (sortBy == 'size') {
+                entries.sort { a, b -> (b.size as Long) <=> (a.size as Long) }
+            } else {
+                entries.sort { a, b -> (a.name as String) <=> (b.name as String) }
+            }
+            
+            return entries
+        } catch (Exception e) {
+            log.error("Error listing directory with sizes: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     * Get recursive directory tree structure
+     */
+    Map<String, Object> getDirectoryTree(String path, List<String> excludePatterns = []) {
+        try {
+            String normalized = pathService.normalizePath(path)
+            
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+            
+            Path dirPath = Paths.get(normalized)
+            
+            if (!Files.isDirectory(dirPath)) {
+                throw new IllegalArgumentException("Path is not a directory: ${sanitize(normalized)}")
+            }
+            
+            List<Pattern> excludeRegexes = excludePatterns.collect { Pattern.compile(it) }
+            
+            return buildTreeNode(dirPath, excludeRegexes)
+        } catch (Exception e) {
+            log.error("Error getting directory tree: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+    
+    private Map<String, Object> buildTreeNode(Path path, List<Pattern> excludePatterns) {
+        String name = path.fileName?.toString() ?: path.toString()
+        
+        // Check exclusions
+        for (Pattern pattern : excludePatterns) {
+            if (pattern.matcher(name).matches()) {
+                return null
+            }
+        }
+        
+        boolean isDir = Files.isDirectory(path)
+        
+        Map<String, Object> node = createMap([
+            name: name,
+            type: isDir ? 'directory' : 'file'
+        ])
+        
+        if (isDir) {
+            List<Map<String, Object>> children = []
+            try {
+                Files.newDirectoryStream(path).each { Path child ->
+                    String childName = child.fileName.toString()
+                    
+                    // Skip Windows reserved names
+                    if (WINDOWS_RESERVED_NAMES.contains(childName.toUpperCase())) {
+                        return
+                    }
+                    
+                    Map<String, Object> childNode = buildTreeNode(child, excludePatterns)
+                    if (childNode != null) {
+                        children.add(childNode)
+                    }
+                }
+                node.children = children
+            } catch (Exception e) {
+                log.warn("Error reading directory ${sanitize(name)}: ${sanitize(e.message)}")
+                node.children = []
+            }
+        }
+        
+        return node
+    }
+
 }

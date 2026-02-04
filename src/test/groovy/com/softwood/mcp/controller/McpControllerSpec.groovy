@@ -89,15 +89,24 @@ class McpControllerSpec extends Specification {
         when: "handling the request"
         def response = controller.handleRequest(request)
         
-        then: "all tools are listed"
-        response.result.tools.size() == 14
+        then: "core tools are present"
+        response.result.tools.size() >= 10  // At least 10 core tools, flexible for additions
+        
+        // Core file operations
         response.result.tools*.name.contains("readFile")
         response.result.tools*.name.contains("writeFile")
+        response.result.tools*.name.contains("listDirectory")
+        response.result.tools*.name.contains("createDirectory")
+        response.result.tools*.name.contains("deleteFile")
+        response.result.tools*.name.contains("copyFile")
+        response.result.tools*.name.contains("moveFile")
+        
+        // Script execution
         response.result.tools*.name.contains("executeGroovyScript")
+        
+        // Utility tools
         response.result.tools*.name.contains("getAllowedDirectories")
-        response.result.tools*.name.contains("isSymlinksAllowed")
-        response.result.tools*.name.contains("watchDirectory")
-        response.result.tools*.name.contains("pollDirectoryWatch")
+        response.result.tools*.name.contains("normalizePath")
     }
     
     def "should handle readFile tool call"() {

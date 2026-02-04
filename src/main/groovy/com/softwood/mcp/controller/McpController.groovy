@@ -346,6 +346,73 @@ class McpController {
                     ],
                     required: ["path"]
                 ]
+            ],
+            [
+                name: "readMultipleFiles",
+                description: "Read multiple files at once (more efficient than multiple readFile calls)",
+                inputSchema: [
+                    type: "object",
+                    properties: [
+                        paths: [
+                            type: "array",
+                            items: [type: "string"],
+                            description: "Array of file paths to read"
+                        ]
+                    ],
+                    required: ["paths"]
+                ]
+            ],
+            [
+                name: "getFileInfo",
+                description: "Get detailed file/directory metadata (size, dates, permissions)",
+                inputSchema: [
+                    type: "object",
+                    properties: [
+                        path: [
+                            type: "string",
+                            description: "File or directory path"
+                        ]
+                    ],
+                    required: ["path"]
+                ]
+            ],
+            [
+                name: "listDirectoryWithSizes",
+                description: "List directory with file sizes and optional sorting",
+                inputSchema: [
+                    type: "object",
+                    properties: [
+                        path: [
+                            type: "string",
+                            description: "Directory path"
+                        ],
+                        sortBy: [
+                            type: "string",
+                            enum: ["name", "size"],
+                            description: "Sort by name or size (default: name)"
+                        ]
+                    ],
+                    required: ["path"]
+                ]
+            ],
+            [
+                name: "getDirectoryTree",
+                description: "Get recursive directory tree structure as JSON",
+                inputSchema: [
+                    type: "object",
+                    properties: [
+                        path: [
+                            type: "string",
+                            description: "Directory path"
+                        ],
+                        excludePatterns: [
+                            type: "array",
+                            items: [type: "string"],
+                            description: "Regex patterns to exclude (e.g., ['node_modules', '\\.git'])"
+                        ]
+                    ],
+                    required: ["path"]
+                ]
             ]
         ]
         
@@ -469,6 +536,36 @@ class McpController {
                 def pollResult = fileSystemService.pollDirectoryWatch(path)
                 return McpResponse.success(request.id, [
                     content: [[type: "text", text: JsonOutput.toJson(pollResult)]]
+                ] as Map<String, Object>)
+            
+            case "readMultipleFiles":
+                List<String> paths = arguments.paths as List<String>
+                def results = fileSystemService.readMultipleFiles(paths)
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson(results)]]
+                ] as Map<String, Object>)
+            
+            case "getFileInfo":
+                String infoPath = arguments.path as String
+                def info = fileSystemService.getFileInfo(infoPath)
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson(info)]]
+                ] as Map<String, Object>)
+            
+            case "listDirectoryWithSizes":
+                String sizePath = arguments.path as String
+                String sortBy = (arguments.sortBy as String) ?: 'name'
+                def sizeList = fileSystemService.listDirectoryWithSizes(sizePath, sortBy)
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson(sizeList)]]
+                ] as Map<String, Object>)
+            
+            case "getDirectoryTree":
+                String treePath = arguments.path as String
+                List<String> excludes = (arguments.excludePatterns as List<String>) ?: []
+                def tree = fileSystemService.getDirectoryTree(treePath, excludes)
+                return McpResponse.success(request.id, [
+                    content: [[type: "text", text: JsonOutput.toJson(tree)]]
                 ] as Map<String, Object>)
             
             default:
