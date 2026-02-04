@@ -1,5 +1,6 @@
 package com.softwood.mcp.script
 
+import com.softwood.mcp.config.CommandWhitelistConfig
 import com.softwood.mcp.model.CommandResult
 import com.softwood.mcp.service.FileSystemService
 import com.softwood.mcp.service.PathService
@@ -14,7 +15,7 @@ import com.softwood.mcp.service.ScriptExecutor
  * - Git operations
  * - Gradle operations
  *
- * Enhanced with typed CommandResult return values
+ * Enhanced with typed CommandResult return values and configurable whitelists
  */
 abstract class SecureMcpScript extends Script {
 
@@ -22,6 +23,7 @@ abstract class SecureMcpScript extends Script {
     FileSystemService fileSystemService
     PathService pathService
     ScriptExecutor scriptExecutor
+    CommandWhitelistConfig whitelistConfig
 
     // Working directory for script execution
     String getWorkingDir() {
@@ -127,7 +129,7 @@ abstract class SecureMcpScript extends Script {
     // ========================================================================
 
     CommandResult powershell(String command) {
-        if (!isAllowedPowerShell(command)) {
+        if (!whitelistConfig.isPowershellAllowed(command)) {
             throw new SecurityException("PowerShell command not whitelisted: ${sanitize(command.take(50))}")
         }
         executePowerShell(command)
@@ -135,55 +137,6 @@ abstract class SecureMcpScript extends Script {
 
     CommandResult ps(String command) {
         powershell(command)
-    }
-
-    // Whitelist of safe PowerShell commands
-    private static final List ALLOWED_POWERSHELL_PATTERNS = [
-            ~/^Get-ChildItem.*/,
-            ~/^Get-Content.*/,
-            ~/^Get-Item.*/,
-            ~/^Test-Path.*/,
-            ~/^Get-Location.*/,
-            ~/^Get-Process.*/,
-            ~/^Select-Object.*/,
-            ~/^Where-Object.*/,
-            ~/^Measure-Object.*/,
-            ~/^Sort-Object.*/,
-            ~/^Group-Object.*/,
-            ~/^Format-.*/,
-            ~/^Out-.*/,
-            ~/^Write-Host.*/,
-            ~/^Write-Output.*/,
-            // Explicitly allow piping
-            ~/.*\|.*/
-    ]
-
-    // Blacklist of dangerous PowerShell commands
-    private static final List BLOCKED_POWERSHELL_PATTERNS = [
-            ~/.*Remove-Item.*/,
-            ~/.*Clear-.*Content.*/,
-            ~/.*Stop-Computer.*/,
-            ~/.*Restart-Computer.*/,
-            ~/.*Format-Volume.*/,
-            ~/.*Clear-Disk.*/,
-            ~/.*Remove-.*Disk.*/,
-            ~/.*Invoke-Expression.*/,
-            ~/.*Invoke-Command.*/,
-            ~/.*Start-Process.*/,
-            ~/.*New-Service.*/,
-            ~/.*Set-ExecutionPolicy.*/
-    ]
-
-    private boolean isAllowedPowerShell(String command) {
-        String normalized = command.trim()
-
-        // Check blacklist first
-        if (BLOCKED_POWERSHELL_PATTERNS.any { pattern -> normalized ==~ pattern }) {
-            return false
-        }
-
-        // Check whitelist
-        return ALLOWED_POWERSHELL_PATTERNS.any { pattern -> normalized ==~ pattern }
     }
 
     private CommandResult executePowerShell(String command) {
@@ -195,73 +148,10 @@ abstract class SecureMcpScript extends Script {
     // ========================================================================
 
     CommandResult bash(String command) {
-        if (!isAllowedBash(command)) {
+        if (!whitelistConfig.isBashAllowed(command)) {
             throw new SecurityException("Bash command not whitelisted: ${sanitize(command.take(50))}")
         }
         executeBash(command)
-    }
-
-    // Whitelist of safe bash commands
-    private static final List ALLOWED_BASH_PATTERNS = [
-            ~/^ls.*/,
-            ~/^cat.*/,
-            ~/^grep.*/,
-            ~/^find.*/,
-            ~/^wc.*/,
-            ~/^head.*/,
-            ~/^tail.*/,
-            ~/^echo.*/,
-            ~/^pwd.*/,
-            ~/^which.*/,
-            ~/^whoami.*/,
-            ~/^date.*/,
-            ~/^file.*/,
-            ~/^stat.*/,
-            ~/^du.*/,
-            ~/^df.*/,
-            ~/^ps.*/,
-            ~/^top.*/,
-            ~/^awk.*/,
-            ~/^sed.*/,
-            ~/^sort.*/,
-            ~/^uniq.*/,
-            ~/^tr.*/,
-            ~/^cut.*/,
-            // Allow piping
-            ~/.*\|.*/
-    ]
-
-    // Blacklist of dangerous bash commands
-    private static final List BLOCKED_BASH_PATTERNS = [
-            ~/.*rm .*/,
-            ~/.*rm-.*/,
-            ~/.*delete.*/,
-            ~/.*chmod.*/,
-            ~/.*chown.*/,
-            ~/.*mkfs.*/,
-            ~/.*dd.*/,
-            ~/.*sudo.*/,
-            ~/.*su .*/,
-            ~/.*shutdown.*/,
-            ~/.*reboot.*/,
-            ~/.*kill.*/,
-            ~/.*pkill.*/,
-            ~/.*eval.*/,
-            ~/.*exec.*/,
-            ~/.*source.*/,
-            ~/.*\\.\\/.*/  // No executing files
-    ]
-
-    private boolean isAllowedBash(String command) {
-        String normalized = command.trim()
-
-        // Check blacklist first
-        if (BLOCKED_BASH_PATTERNS.any { pattern -> normalized ==~ pattern }) {
-            return false
-        }
-
-        // Check whitelist
-        return ALLOWED_BASH_PATTERNS.any { pattern -> normalized ==~ pattern }
     }
 
     private CommandResult executeBash(String command) {
