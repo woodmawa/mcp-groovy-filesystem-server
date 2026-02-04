@@ -1,6 +1,6 @@
 # MCP Groovy Filesystem Server
 
-A powerful Model Context Protocol (MCP) server providing filesystem operations and Groovy script execution with comprehensive security features.
+A powerful Model Context Protocol (MCP) server providing filesystem operations and Groovy script execution with comprehensive security features and **configurable command whitelists**.
 
 ## Features
 
@@ -12,14 +12,14 @@ A powerful Model Context Protocol (MCP) server providing filesystem operations a
 
 ### 🔧 Groovy Script Execution
 - Execute Groovy scripts with full DSL support
-- Access to PowerShell (whitelisted commands)
-- Access to Bash/WSL (whitelisted commands)
+- Access to PowerShell (configurable whitelist)
+- Access to Bash/WSL (configurable whitelist)
 - Git operations integration
 - Gradle build automation
 
 ### 🔒 Security Features
 - Input validation (script length, dangerous patterns)
-- Command whitelisting (PowerShell, Bash)
+- **Configurable command whitelisting (PowerShell, Bash)** - no rebuild needed!
 - Path traversal prevention
 - Dangerous pattern detection (System.exit, Runtime.getRuntime, etc.)
 - System path protection (/etc, /bin, C:\Windows)
@@ -82,7 +82,7 @@ A powerful Model Context Protocol (MCP) server providing filesystem operations a
            "-Dspring.profiles.active=stdio",
            "-Dmcp.mode=stdio",
            "-jar",
-           "C:\\Users\\willw\\IdeaProjects\\McpGroovyFileSystemServer\\build\\libs\\mcp-groovy-filesystem-server-0.0.1-SNAPSHOT.jar"
+           "C:\\Users\\willw\\IdeaProjects\\mcp-groovy-filesystem-server\\build\\libs\\mcp-groovy-filesystem-server-0.0.2-SNAPSHOT.jar"
          ]
        }
      }
@@ -180,7 +180,7 @@ Execute a Groovy script with full DSL support.
 - PowerShell: `powershell('Get-ChildItem')`
 - Bash: `bash('ls -la')`
 - Git: `git('status')`
-- Gradle: `gradle('build')`
+- Gradle: `gradle('build')`, `gradlew('clean', 'test')`
 - Path operations: `toWslPath()`, `toWindowsPath()`
 
 **Example:**
@@ -219,29 +219,57 @@ Blocks access to:
 - `/bin/`, `/sbin/`, `/usr/bin/`
 - `C:\Windows\System32`, `C:\Windows\SysWOW64`
 
-### Command Whitelisting
+### 🆕 Configurable Command Whitelisting
 
-**PowerShell Whitelist:**
+**NEW:** Command whitelists are now configured in `application.yml` - modify patterns without rebuilding!
+
+**PowerShell Allowed (default patterns):**
 - `Get-*`, `Select-*`, `Where-*`, `Measure-*`
 - `Format-*`, `Out-*`, `Write-*`
+- `.\gradlew.bat` commands
+- `cd path; command` chaining
+- Piping with `|`
 
-**PowerShell Blacklist:**
+**PowerShell Blocked (always takes precedence):**
 - `Remove-*`, `Invoke-*`, `Set-ExecutionPolicy`
 - `Stop-Computer`, `Restart-Computer`
 
-**Bash Whitelist:**
+**Bash Allowed (default patterns):**
 - `ls`, `cat`, `grep`, `find`, `wc`, `head`, `tail`
 - `echo`, `pwd`, `ps`, `awk`, `sed`, `sort`
+- `./gradlew` commands
+- Piping with `|`
 
-**Bash Blacklist:**
+**Bash Blocked (always takes precedence):**
 - `rm`, `chmod`, `sudo`, `shutdown`, `kill`
 - `eval`, `exec`, `source`
+
+#### Adding New Commands
+
+Edit `src/main/resources/application.yml`:
+
+```yaml
+mcp:
+  script:
+    whitelist:
+      # Add new PowerShell patterns
+      powershell-allowed:
+        - '^npm .*'           # Allow npm commands
+        - '^mvn clean.*'      # Allow Maven clean
+        
+      # Add new Bash patterns
+      bash-allowed:
+        - '^npm .*'           # Allow npm commands
+        - '^docker ps.*'      # Allow docker ps
+```
+
+**Then just restart Claude Desktop** - no rebuild needed!
 
 ### Resource Limits
 - **Memory:** 256MB max (configurable)
 - **Threads:** 10 max (configurable)
 - **Execution Time:** 60s max (configurable)
-- **Virtual Threads:** Lightweight concurrency (Java 21+)
+- **Virtual Threads:** Lightweight concurrency (Java 25+)
 
 ---
 
@@ -264,6 +292,29 @@ mcp:
     enable-dangerous-pattern-check: true
     enable-file-path-validation: true
     enable-audit-logging: true
+    
+    # 🆕 Configurable command whitelists (no rebuild needed!)
+    whitelist:
+      powershell-allowed:
+        - '^Get-ChildItem.*'
+        - '^\\.\\\\gradlew\\.bat.*'
+        - '^cd .+;.*'
+        # Add your patterns here!
+        
+      powershell-blocked:
+        - '.*Remove-Item.*'
+        - '.*Invoke-Expression.*'
+        # Add blocked patterns here
+        
+      bash-allowed:
+        - '^ls.*'
+        - '^\\.\/gradlew.*'
+        # Add your patterns here!
+        
+      bash-blocked:
+        - '.*rm .*'
+        - '.*sudo.*'
+        # Add blocked patterns here
 ```
 
 ---
@@ -286,14 +337,14 @@ build/reports/tests/test/index.html
 ```
 
 **Test Coverage:**
-- 67 comprehensive tests
+- 71 comprehensive tests ✅
 - FileSystem operations (12 tests)
 - Script execution (10 tests)
 - Security validation (8 tests)
 - Audit logging (7 tests)
 - Path conversion (8 tests)
 - Command execution (10 tests)
-- Integration tests (12 tests)
+- Integration tests (16 tests)
 
 See `src/test/README.md` for detailed testing documentation.
 
@@ -304,7 +355,9 @@ See `src/test/README.md` for detailed testing documentation.
 ### Components
 
 ```
-McpGroovyFileSystemServer
+mcp-groovy-filesystem-server
+├── config/                    🆕
+│   └── CommandWhitelistConfig (Configurable whitelists)
 ├── model/
 │   ├── CommandResult          (Typed command results)
 │   └── ScriptExecutionResult  (Typed script results)
@@ -335,7 +388,7 @@ McpGroovyFileSystemServer
 
 ### Simple File Operations
 ```
-Read the README.md file from C:\Users\willw\IdeaProjects\McpGroovyFileSystemServer
+Read the README.md file from C:\Users\willw\IdeaProjects\mcp-groovy-filesystem-server
 ```
 
 ### Execute Groovy Script
@@ -345,21 +398,28 @@ Execute a Groovy script that:
 2. Counts how many service files there are
 3. Prints the result
 
-Working directory: C:\Users\willw\IdeaProjects\McpGroovyFileSystemServer
+Working directory: C:\Users\willw\IdeaProjects\mcp-groovy-filesystem-server
 ```
 
 ### Git Integration
 ```
 Execute a Groovy script that checks git status and tells me if there are uncommitted changes.
 
-Working directory: C:\Users\willw\IdeaProjects\McpGroovyFileSystemServer
+Working directory: C:\Users\willw\IdeaProjects\mcp-groovy-filesystem-server
+```
+
+### Gradle Build Integration 🆕
+```
+Execute a Groovy script that runs gradlew clean test and reports the results.
+
+Working directory: C:\Users\willw\IdeaProjects\mcp-groovy-filesystem-server
 ```
 
 ### PowerShell Integration
 ```
 Execute a Groovy script that uses PowerShell to list all running Java processes.
 
-Working directory: C:\Users\willw\IdeaProjects\McpGroovyFileSystemServer
+Working directory: C:\Users\willw\IdeaProjects\mcp-groovy-filesystem-server
 ```
 
 ---
@@ -371,6 +431,7 @@ Working directory: C:\Users\willw\IdeaProjects\McpGroovyFileSystemServer
 src/
 ├── main/
 │   ├── groovy/com/softwood/mcp/
+│   │   ├── config/          🆕 (Configuration classes)
 │   │   ├── controller/      (MCP handlers)
 │   │   ├── model/           (Data models)
 │   │   ├── script/          (Groovy DSL)
@@ -396,18 +457,8 @@ src/
    ```
 4. **Generate JAR:**
    ```
-   build/libs/mcp-groovy-filesystem-server-0.0.1-SNAPSHOT.jar
+   build/libs/mcp-groovy-filesystem-server-0.0.2-SNAPSHOT.jar
    ```
-
----
-
-## Deployment
-
-See `DEPLOYMENT_STRATEGY.md` for detailed deployment instructions including:
-- Parallel deployment (keep old filesystem server as fallback)
-- Test prompts for validation
-- Performance considerations
-- Rollback instructions
 
 ---
 
@@ -415,13 +466,19 @@ See `DEPLOYMENT_STRATEGY.md` for detailed deployment instructions including:
 
 ### Server Won't Start
 - Check Java version: `java -version` (must be 25+)
-- Check JAR exists: `build/libs/mcp-groovy-filesystem-server-0.0.1-SNAPSHOT.jar`
+- Check JAR exists: `build/libs/mcp-groovy-filesystem-server-0.0.2-SNAPSHOT.jar`
 - Check config path in `claude_desktop_config.json`
 
 ### Scripts Failing with Security Errors
 - Check audit logs for specific violation
 - Review dangerous patterns in `ScriptSecurityService`
 - Ensure working directory is in allowed list
+- **Check whitelist patterns in `application.yml`** 🆕
+
+### Commands Not Whitelisted 🆕
+1. Check the command against patterns in `application.yml`
+2. Add appropriate regex pattern to `powershell-allowed` or `bash-allowed`
+3. Restart Claude Desktop (no rebuild needed!)
 
 ### Commands Timing Out
 - Increase timeout in `application.yml`:
@@ -439,6 +496,8 @@ See `DEPLOYMENT_STRATEGY.md` for detailed deployment instructions including:
 
 ## Documentation
 
+- **WHITELIST_CONFIGURATION_UPDATE.md** 🆕 - Configurable whitelist feature
+- **SESSION_COMPLETION_SUMMARY.md** 🆕 - Latest changes summary
 - **ENHANCEMENTS_SUMMARY.md** - Security & enhancement details
 - **BUILD_WITH_ENHANCEMENTS.md** - Build guide
 - **DEPLOYMENT_STRATEGY.md** - Deployment guide
@@ -449,7 +508,15 @@ See `DEPLOYMENT_STRATEGY.md` for detailed deployment instructions including:
 
 ## Version History
 
-### v0.0.1-SNAPSHOT (Current)
+### v0.0.2-SNAPSHOT (Current) 🆕
+- ✅ **Configurable command whitelists** - edit YAML, no rebuild!
+- ✅ Gradle wrapper support (`.\gradlew.bat`, `./gradlew`)
+- ✅ Command chaining support (`cd path; command`)
+- ✅ 71 comprehensive tests passing
+- ✅ Spring Boot @ConfigurationProperties integration
+- ✅ Improved security with blacklist precedence
+
+### v0.0.1-SNAPSHOT
 - ✅ 10 MCP tools (9 filesystem + 1 script execution)
 - ✅ Groovy script execution with DSL
 - ✅ PowerShell/Bash/Git/Gradle integration
@@ -458,7 +525,6 @@ See `DEPLOYMENT_STRATEGY.md` for detailed deployment instructions including:
 - ✅ Resource control (Virtual Threads)
 - ✅ Type-safe result objects
 - ✅ 67 comprehensive tests
-- ✅ Production-ready
 
 ---
 
@@ -483,12 +549,13 @@ This project is part of the Anthropic MCP ecosystem.
 For issues or questions:
 1. Check test reports: `build/reports/tests/test/index.html`
 2. Review audit logs
-3. Consult documentation in project root
+3. Check whitelist configuration in `application.yml` 🆕
+4. Consult documentation in project root
 
 ---
 
 **Status:** ✅ Production Ready  
-**Version:** 0.0.1-SNAPSHOT  
-**Tests:** 67 passing  
-**Build:** Successful  
-**Last Updated:** January 28, 2026
+**Version:** 0.0.2-SNAPSHOT  
+**Tests:** 71 passing ✅  
+**Build:** Successful ✅  
+**Last Updated:** February 4, 2026
