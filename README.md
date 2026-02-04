@@ -12,6 +12,7 @@ A powerful Model Context Protocol (MCP) server providing filesystem operations a
 
 ### 🔧 Groovy Script Execution
 - Execute Groovy scripts with full DSL support
+- **Automatic relative path resolution** - use relative paths naturally! 🆕
 - Access to PowerShell (configurable whitelist)
 - Access to Bash/WSL (configurable whitelist)
 - Git operations integration
@@ -192,6 +193,41 @@ if (result.exitCode == 0) {
     println "Uncommitted changes:"
     println result.stdout
 }
+```
+
+### 🆕 Automatic Relative Path Resolution
+
+**NEW:** All file operations automatically resolve relative paths against the `workingDirectory`!
+
+**Before (absolute paths required):**
+```groovy
+def content = readFile("C:\\Users\\willw\\project\\src\\main\\groovy\\App.groovy")
+def files = searchFiles("C:\\Users\\willw\\project\\src", "class.*")
+```
+
+**After (relative paths work!):**
+```groovy
+def content = readFile("src/main/groovy/App.groovy")  // Much better!
+def files = searchFiles("src", "class.*")             // Cleaner!
+```
+
+**How it works:**
+- Relative paths (no drive letter, no leading `/`) are resolved against `workingDirectory`
+- Absolute paths continue to work unchanged
+- Security validation still applies after resolution
+- Works with all file operations: `readFile()`, `writeFile()`, `listFiles()`, `searchFiles()`, `copyFile()`, `moveFile()`, `deleteFile()`, `createDirectory()`
+
+**Example:**
+```groovy
+// Working directory: C:\Users\willw\IdeaProjects\MyProject
+
+// These are equivalent:
+readFile("src/main/groovy/App.groovy")
+readFile("C:\\Users\\willw\\IdeaProjects\\MyProject\\src\\main\\groovy\\App.groovy")
+
+// Relative paths make scripts portable:
+listFiles("build/libs")              // Works anywhere!
+copyFile("config.yml", "config.bak") // Clean and readable
 ```
 
 ---
@@ -509,6 +545,7 @@ src/
 ## Version History
 
 ### v0.0.2-SNAPSHOT (Current) 🆕
+- ✅ **Automatic relative path resolution** - use relative paths naturally!
 - ✅ **Configurable command whitelists** - edit YAML, no rebuild!
 - ✅ Gradle wrapper support (`.\gradlew.bat`, `./gradlew`)
 - ✅ Command chaining support (`cd path; command`)

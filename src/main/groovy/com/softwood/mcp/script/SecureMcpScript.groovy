@@ -40,44 +40,60 @@ abstract class SecureMcpScript extends Script {
         return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
     }
 
+    /**
+     * Resolve path against working directory if relative
+     * Absolute paths are returned unchanged
+     */
+    private String resolvePath(String path) {
+        if (!path) return path
+        
+        // Check if already absolute (Windows: C:/ or Linux: /)
+        if (path.matches('^[A-Za-z]:[\\\\/].*') || path.startsWith('/')) {
+            return path
+        }
+        
+        // Relative path - resolve against workingDir
+        return new File(workingDir, path).canonicalPath
+    }
+
     // ========================================================================
     // File Operations (delegated to FileSystemService)
     // ========================================================================
 
     def readFile(String path, String encoding = 'UTF-8') {
-        fileSystemService.readFile(path, encoding)
+        fileSystemService.readFile(resolvePath(path), encoding)
     }
 
     def writeFile(String path, String content, Map options = [:]) {
         String encoding = options.encoding ?: 'UTF-8'
         boolean backup = options.backup ?: false
-        fileSystemService.writeFile(path, content, encoding, backup)
+        fileSystemService.writeFile(resolvePath(path), content, encoding, backup)
     }
 
     def listFiles(String path, Map options = [:]) {
         String pattern = options.pattern
         boolean recursive = options.recursive ?: false
-        fileSystemService.listDirectory(path, pattern, recursive)
+        fileSystemService.listDirectory(resolvePath(path), pattern, recursive)
     }
 
     def searchFiles(String directory, String contentPattern, String filePattern = null) {
-        fileSystemService.searchFiles(directory, contentPattern, filePattern ?: '.*')
+        fileSystemService.searchFiles(resolvePath(directory), contentPattern, filePattern ?: '.*')
     }
 
     def copyFile(String source, String dest, boolean overwrite = false) {
-        fileSystemService.copyFile(source, dest, overwrite)
+        fileSystemService.copyFile(resolvePath(source), resolvePath(dest), overwrite)
     }
 
     def moveFile(String source, String dest, boolean overwrite = false) {
-        fileSystemService.moveFile(source, dest, overwrite)
+        fileSystemService.moveFile(resolvePath(source), resolvePath(dest), overwrite)
     }
 
     def deleteFile(String path, boolean recursive = false) {
-        fileSystemService.deleteFile(path, recursive)
+        fileSystemService.deleteFile(resolvePath(path), recursive)
     }
 
     def createDirectory(String path) {
-        fileSystemService.createDirectory(path)
+        fileSystemService.createDirectory(resolvePath(path))
     }
 
     // ========================================================================
