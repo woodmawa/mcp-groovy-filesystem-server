@@ -32,6 +32,94 @@ mcp:
     enable-dangerous-pattern-check: true
     enable-file-path-validation: true
     enable-audit-logging: true
+    
+    # Command whitelists (regex patterns) - can be customized without rebuild!
+    whitelist:
+      # Allowed PowerShell commands (regex patterns)
+      powershell-allowed:
+        - '^Get-ChildItem.*'
+        - '^Get-Content.*'
+        - '^Get-Item.*'
+        - '^Test-Path.*'
+        - '^Get-Location.*'
+        - '^Get-Process.*'
+        - '^Select-Object.*'
+        - '^Where-Object.*'
+        - '^Measure-Object.*'
+        - '^Sort-Object.*'
+        - '^Group-Object.*'
+        - '^Format-.*'
+        - '^Out-.*'
+        - '^Write-Host.*'
+        - '^Write-Output.*'
+        - '.*\|.*'  # Allow piping
+        - '^\\.\\\\gradlew\\.bat.*'  # Gradle wrapper (standalone)
+        - '^cd .+; \\.\\\\gradlew\\.bat.*'  # cd then gradlew
+        - '^cd .+;.*'  # Allow cd with any command after
+        
+      # Blocked PowerShell commands (takes precedence)
+      powershell-blocked:
+        - '.*Remove-Item.*'
+        - '.*Clear-.*Content.*'
+        - '.*Stop-Computer.*'
+        - '.*Restart-Computer.*'
+        - '.*Format-Volume.*'
+        - '.*Clear-Disk.*'
+        - '.*Remove-.*Disk.*'
+        - '.*Invoke-Expression.*'
+        - '.*Invoke-Command.*'
+        - '.*Start-Process.*'
+        - '.*New-Service.*'
+        - '.*Set-ExecutionPolicy.*'
+        
+      # Allowed Bash commands (regex patterns)
+      bash-allowed:
+        - '^ls.*'
+        - '^cat.*'
+        - '^grep.*'
+        - '^find.*'
+        - '^wc.*'
+        - '^head.*'
+        - '^tail.*'
+        - '^echo.*'
+        - '^pwd.*'
+        - '^which.*'
+        - '^whoami.*'
+        - '^date.*'
+        - '^file.*'
+        - '^stat.*'
+        - '^du.*'
+        - '^df.*'
+        - '^ps.*'
+        - '^top.*'
+        - '^awk.*'
+        - '^sed.*'
+        - '^sort.*'
+        - '^uniq.*'
+        - '^tr.*'
+        - '^cut.*'
+        - '.*\|.*'  # Allow piping
+        - '^\\./ gradlew.*'  # Gradle wrapper
+        
+      # Blocked Bash commands (takes precedence)
+      bash-blocked:
+        - '.*rm .*'
+        - '.*rm-.*'
+        - '.*delete.*'
+        - '.*chmod.*'
+        - '.*chown.*'
+        - '.*mkfs.*'
+        - '.*dd.*'
+        - '.*sudo.*'
+        - '.*su .*'
+        - '.*shutdown.*'
+        - '.*reboot.*'
+        - '.*kill.*'
+        - '.*pkill.*'
+        - '.*eval.*'
+        - '.*exec.*'
+        - '.*source.*'
+        - '.*\\.\\./.*'  # No executing files
 
 logging:
   level:

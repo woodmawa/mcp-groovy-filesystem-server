@@ -1,10 +1,12 @@
 package com.softwood.mcp.service
 
+import com.softwood.mcp.config.CommandWhitelistConfig
 import com.softwood.mcp.model.ScriptExecutionResult
 import spock.lang.Specification
 import spock.lang.TempDir
 
 import java.nio.file.Path
+import java.util.regex.Pattern
 
 /**
  * Tests for GroovyScriptService - script execution
@@ -20,12 +22,20 @@ class GroovyScriptServiceSpec extends Specification {
     ScriptExecutor scriptExecutor
     ScriptSecurityService securityService
     AuditService auditService
+    CommandWhitelistConfig whitelistConfig
     
     def setup() {
         pathService = new PathService()
         auditService = new AuditService()
         scriptExecutor = new ScriptExecutor(auditService)
         securityService = new ScriptSecurityService()
+        
+        // Create mock whitelist config with permissive patterns for testing
+        whitelistConfig = new CommandWhitelistConfig()
+        whitelistConfig.powershellAllowed = ['.*']  // Allow all in tests
+        whitelistConfig.powershellBlocked = []
+        whitelistConfig.bashAllowed = ['.*']  // Allow all in tests
+        whitelistConfig.bashBlocked = []
         
         fileSystemService = new FileSystemService(pathService)
         fileSystemService.allowedDirectoriesString = tempDir.toString()
@@ -37,7 +47,8 @@ class GroovyScriptServiceSpec extends Specification {
             pathService,
             scriptExecutor,
             securityService,
-            auditService
+            auditService,
+            whitelistConfig
         )
     }
     

@@ -1,5 +1,6 @@
 package com.softwood.mcp.service
 
+import com.softwood.mcp.config.CommandWhitelistConfig
 import com.softwood.mcp.model.ScriptExecutionResult
 import com.softwood.mcp.script.SecureMcpScript
 import groovy.util.logging.Slf4j
@@ -19,19 +20,22 @@ class GroovyScriptService {
     private final ScriptExecutor scriptExecutor
     private final ScriptSecurityService securityService
     private final AuditService auditService
+    private final CommandWhitelistConfig whitelistConfig
     
     GroovyScriptService(
         FileSystemService fileSystemService,
         PathService pathService,
         ScriptExecutor scriptExecutor,
         ScriptSecurityService securityService,
-        AuditService auditService
+        AuditService auditService,
+        CommandWhitelistConfig whitelistConfig
     ) {
         this.fileSystemService = fileSystemService
         this.pathService = pathService
         this.scriptExecutor = scriptExecutor
         this.securityService = securityService
         this.auditService = auditService
+        this.whitelistConfig = whitelistConfig
     }
     
     /**
@@ -110,6 +114,7 @@ class GroovyScriptService {
             script.fileSystemService = fileSystemService
             script.pathService = pathService
             script.scriptExecutor = scriptExecutor
+            script.whitelistConfig = whitelistConfig
         }
         
         // Now run the script
