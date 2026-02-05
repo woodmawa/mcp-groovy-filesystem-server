@@ -10,6 +10,9 @@ import groovy.util.logging.Slf4j
 import org.springframework.boot.CommandLineRunner
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
 
 @Component
 @ConditionalOnProperty(name = "mcp.mode", havingValue = "stdio")
@@ -26,6 +29,68 @@ class StdioMcpServer implements CommandLineRunner {
         this.mcpController = mcpController
         this.objectMapper = new ObjectMapper()
             .setSerializationInclusion(JsonInclude.Include.NON_NULL)
+    }
+    
+    /**
+     * Clear the log files on startup to avoid accumulation across Claude sessions
+     * This makes it easier to spot issues and keeps logs relevant to current session only
+     * Clears both ~/.mcp-logs and Claude's AppData logs
+     */
+    private static void clearLogFileOnStartup() {
+        String sessionHeader = "=== Log cleared on startup - New Claude session ===\n" +
+                               "Timestamp: ${new Date()}\n" +
+                               "=" * 60 + "\n\n"
+        
+        int clearedCount = 0
+        
+        // 1. Clear ~/.mcp-logs/filesystem-server.log
+        try {
+            String userHome = System.getProperty("user.home")
+            Path logDir = Paths.get(userHome, ".mcp-logs")
+            Path logFile = logDir.resolve("filesystem-server.log")
+            
+            if (Files.exists(logFile)) {
+                Files.newBufferedWriter(logFile).withCloseable { writer ->
+                    writer.write(sessionHeader)
+                }
+                clearedCount++
+                debugLog("Cleared: ${logFile}")
+            }
+        } catch (Exception e) {
+            debugLog("Warning: Could not clear ~/.mcp-logs file: ${e.message}")
+        }
+        
+        // 2. Clear Claude's AppData MCP server logs
+        try {
+            String userHome = System.getProperty("user.home")
+            Path claudeLogsDir = Paths.get(userHome, "AppData", "Roaming", "Claude", "logs")
+            
+            if (Files.exists(claudeLogsDir)) {
+                // Clear the groovy-filesystem MCP server log
+                Path mcpServerLog = claudeLogsDir.resolve("mcp-server-groovy-filesystem.log")
+                if (Files.exists(mcpServerLog)) {
+                    Files.newBufferedWriter(mcpServerLog).withCloseable { writer ->
+                        writer.write(sessionHeader)
+                    }
+                    clearedCount++
+                    debugLog("Cleared: ${mcpServerLog}")
+                }
+                
+                // Also clear the general mcp.log if it's large (> 1MB)
+                Path mcpLog = claudeLogsDir.resolve("mcp.log")
+                if (Files.exists(mcpLog) && Files.size(mcpLog) > 1_000_000) {
+                    Files.newBufferedWriter(mcpLog).withCloseable { writer ->
+                        writer.write(sessionHeader)
+                    }
+                    clearedCount++
+                    debugLog("Cleared: ${mcpLog} (was > 1MB)")
+                }
+            }
+        } catch (Exception e) {
+            debugLog("Warning: Could not clear Claude AppData logs: ${e.message}")
+        }
+        
+        debugLog("Log cleanup complete: ${clearedCount} file(s) cleared")
     }
     
     /**
@@ -74,6 +139,9 @@ class StdioMcpServer implements CommandLineRunner {
     
     @Override
     void run(String... args) {
+        // Clear log file at startup for fresh Claude sessions
+        clearLogFileOnStartup()
+        
         debugLog("Starting MCP stdio server...")
         debugLog("Debug mode: ${DEBUG}")
         

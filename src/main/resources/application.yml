@@ -11,7 +11,7 @@ mcp:
 
   filesystem:
     # Allowed directories for file operations
-    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude,C:/Users/willw
+    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude
     max-file-size-mb: 10
     enable-write: true
     allow-symlinks: false
