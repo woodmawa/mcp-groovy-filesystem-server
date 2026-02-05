@@ -14,6 +14,7 @@ import java.util.stream.Stream
 /**
  * Groovy-powered filesystem operations using Java NIO
  * Avoids Groovy GDK File methods that can trigger Windows phantom 'nul' file creation
+ *  TOKEN OPTIMIZED: Bounded results to reduce Claude Pro token burn
  */
 @Service
 @Slf4j
@@ -41,6 +42,34 @@ class FileSystemService {
     @Value('${mcp.filesystem.allow-symlinks:false}')
     boolean allowSymlinks
 
+    //  TOKEN OPTIMIZATION: Bounded result limits
+    @Value('${mcp.filesystem.active-project-root:}')
+    String activeProjectRoot
+
+    @Value('${mcp.filesystem.max-list-results:100}')
+    int maxListResults
+
+    @Value('${mcp.filesystem.max-search-results:50}')
+    int maxSearchResults
+
+    @Value('${mcp.filesystem.max-search-matches-per-file:10}')
+    int maxSearchMatchesPerFile
+
+    @Value('${mcp.filesystem.max-tree-depth:5}')
+    int maxTreeDepth
+
+    @Value('${mcp.filesystem.max-tree-files:200}')
+    int maxTreeFiles
+
+    @Value('${mcp.filesystem.max-read-multiple:10}')
+    int maxReadMultiple
+
+    @Value('${mcp.filesystem.max-line-length:1000}')
+    int maxLineLength
+
+    @Value('${mcp.filesystem.max-response-size-kb:100}')
+    int maxResponseSizeKb
+
     // Windows reserved device names that should be filtered
     private static final Set<String> WINDOWS_RESERVED_NAMES = [
             'CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5',
@@ -67,17 +96,11 @@ class FileSystemService {
     private static String sanitize(String text) {
         if (!text) return text
         try {
-            // Remove control characters except \n (10) and \t (9)
-            // Also remove any UTF-8 invalid sequences and other problematic characters
             String cleaned = text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]/, '')
-            
-            // Additional safety: replace any remaining non-printable characters
             cleaned = cleaned.replaceAll(/[^\p{Print}\p{Space}]/, '')
-            
             return cleaned
         } catch (Exception e) {
             log.warn("Error sanitizing text: ${e.message}")
-            // Return empty string if sanitization fails to prevent errors
             return ""
         }
     }
@@ -112,7 +135,7 @@ class FileSystemService {
         try {
             String normalized = pathService.normalizePath(path)
             Path resolvedPath = Paths.get(normalized).toAbsolutePath().normalize()
-            
+
             // Check if path is a symbolic link
             if (Files.isSymbolicLink(resolvedPath) && !allowSymlinks) {
                 log.warn("Symbolic link access denied: ${sanitize(normalized)}")
@@ -137,11 +160,9 @@ class FileSystemService {
         if (!filename) return false
         try {
             String upper = filename.toUpperCase()
-            // Check exact match or with extension (e.g., "nul.txt")
             return WINDOWS_RESERVED_NAMES.contains(upper) ||
                     WINDOWS_RESERVED_NAMES.any { upper.startsWith("${it}.") }
         } catch (Exception e) {
-            // If we can't check, assume it's reserved to be safe
             return true
         }
     }
@@ -152,6 +173,34 @@ class FileSystemService {
     private void validateWriteEnabled() {
         if (!enableWrite) {
             throw new SecurityException("Write operations are disabled. Set mcp.filesystem.enable-write=true")
+        }
+    }
+
+    /**
+     *  Get active project root (preferred scope for operations)
+     */
+    String getProjectRoot() {
+        if (activeProjectRoot) {
+            return pathService.normalizePath(activeProjectRoot)
+        }
+        // FIX: Use get(0) instead of [0] for @CompileStatic
+        return allowedDirectories.get(0)
+    }
+
+
+    /**
+     *  Validate and warn about large responses
+     */
+    private void validateResponseSize(Object response, String operation) {
+        try {
+            String json = groovy.json.JsonOutput.toJson(response)
+            BigDecimal sizeKb = json.length() / 1024
+
+            if (sizeKb > maxResponseSizeKb) {
+                log.warn(" Large response for ${operation}: ${sizeKb}KB (limit: ${maxResponseSizeKb}KB) - consider using bounded tools")
+            }
+        } catch (Exception e) {
+            log.debug("Could not validate response size: ${e.message}")
         }
     }
 
@@ -186,6 +235,398 @@ class FileSystemService {
             throw e
         }
     }
+
+    /**
+     *  Read file with line range - prevents reading giant files
+     * More specific than readFile - encourages bounded usage
+     */
+    Map<String, Object> readFileRange(String path, int startLine = 1, int maxLines = 100, String encoding = 'UTF-8') {
+        try {
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+            if (!Files.exists(filePath)) {
+                throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
+            }
+
+            if (!Files.isRegularFile(filePath)) {
+                throw new IllegalArgumentException("Path is not a file: ${sanitize(normalized)}")
+            }
+
+            List<String> allLines = Files.readAllLines(filePath, java.nio.charset.Charset.forName(encoding))
+            int totalLines = allLines.size()
+
+            // Validate range
+            int actualStart = Math.max(1, startLine)
+            int actualEnd = Math.min(totalLines, startLine + maxLines - 1)
+
+            if (actualStart > totalLines) {
+                return createMap([
+                        path: sanitize(normalized),
+                        totalLines: totalLines,
+                        error: "Start line ${startLine} exceeds file length ${totalLines}",
+                        lines: []
+                ])
+            }
+
+            List<String> selectedLines = allLines.subList(actualStart - 1, actualEnd)
+                    .collect { String line ->
+                        line.length() > maxLineLength ? sanitize(line.take(maxLineLength)) + "... (truncated)" : sanitize(line)
+                    }
+
+            return createMap([
+                    path: sanitize(normalized),
+                    startLine: actualStart,
+                    endLine: actualEnd,
+                    totalLines: totalLines,
+                    requestedMaxLines: maxLines,
+                    actualLines: selectedLines.size(),
+                    lines: selectedLines,
+                    truncated: actualEnd < totalLines
+            ])
+        } catch (Exception e) {
+            log.error("Error reading file range: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+
+    // ========================================================================
+    //  TOKEN-OPTIMIZED FILE OPERATIONS - High-impact token savers
+    // ========================================================================
+
+    /**
+     *  Grep file - read only matching lines (like Unix grep)
+     * MASSIVE token savings vs reading entire file
+     */
+    Map<String, Object> grepFile(String path, String pattern, int maxMatches = 100, String encoding = 'UTF-8') {
+        try {
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+            if (!Files.exists(filePath)) {
+                throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
+            }
+
+            Pattern regex = Pattern.compile(pattern)
+            List<Map<String, Object>> matches = []
+            int lineNumber = 0
+
+            Files.lines(filePath, java.nio.charset.Charset.forName(encoding)).each { String line ->
+                lineNumber++
+                if (matches.size() >= maxMatches) {
+                    return // Stop reading once we hit max
+                }
+
+                if (regex.matcher(line).find()) {
+                    String displayLine = line.length() > maxLineLength ? 
+                        sanitize(line.take(maxLineLength)) + "... (truncated)" : 
+                        sanitize(line)
+                    matches.add(createMap([
+                        lineNumber: lineNumber,
+                        line: displayLine
+                    ]))
+                }
+            }
+
+            return createMap([
+                path: sanitize(normalized),
+                pattern: sanitize(pattern),
+                matchCount: matches.size(),
+                truncated: matches.size() >= maxMatches,
+                matches: matches
+            ])
+        } catch (Exception e) {
+            log.error("Error grepping file: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  Tail file - read last N lines (perfect for logs)
+     * 95%+ token savings vs reading entire file
+     */
+    Map<String, Object> tailFile(String path, int lines = 50, String encoding = 'UTF-8') {
+        try {
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+            if (!Files.exists(filePath)) {
+                throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
+            }
+
+            List<String> allLines = Files.readAllLines(filePath, java.nio.charset.Charset.forName(encoding))
+            int totalLines = allLines.size()
+            int startIndex = Math.max(0, totalLines - lines)
+
+            List<String> lastLines = allLines.subList(startIndex, totalLines)
+                    .collect { String line ->
+                        line.length() > maxLineLength ? 
+                            sanitize(line.take(maxLineLength)) + "... (truncated)" : 
+                            sanitize(line)
+                    }
+
+            return createMap([
+                path: sanitize(normalized),
+                totalLines: totalLines,
+                requestedLines: lines,
+                actualLines: lastLines.size(),
+                lines: lastLines
+            ])
+        } catch (Exception e) {
+            log.error("Error tailing file: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  Head file - read first N lines (perfect for previews, CSV headers)
+     * 95%+ token savings vs reading entire file
+     */
+    Map<String, Object> headFile(String path, int lines = 50, String encoding = 'UTF-8') {
+        try {
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+            if (!Files.exists(filePath)) {
+                throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
+            }
+
+            List<String> allLines = Files.readAllLines(filePath, java.nio.charset.Charset.forName(encoding))
+            int totalLines = allLines.size()
+            int endIndex = Math.min(lines, totalLines)
+
+            List<String> firstLines = allLines.subList(0, endIndex)
+                    .collect { String line ->
+                        line.length() > maxLineLength ? 
+                            sanitize(line.take(maxLineLength)) + "... (truncated)" : 
+                            sanitize(line)
+                    }
+
+            return createMap([
+                path: sanitize(normalized),
+                totalLines: totalLines,
+                requestedLines: lines,
+                actualLines: firstLines.size(),
+                lines: firstLines
+            ])
+        } catch (Exception e) {
+            log.error("Error reading file head: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  File exists - check without reading content
+     * 100% token savings - returns boolean vs entire file
+     */
+    Map<String, Object> fileExists(String path) {
+        try {
+            String normalized = pathService.normalizePath(path)
+            boolean allowed = isPathAllowed(normalized)
+            Path filePath = Paths.get(normalized)
+            boolean exists = Files.exists(filePath)
+
+            return createMap([
+                path: sanitize(normalized),
+                exists: exists,
+                allowed: allowed,
+                isFile: exists ? Files.isRegularFile(filePath) : false,
+                isDirectory: exists ? Files.isDirectory(filePath) : false
+            ])
+        } catch (Exception e) {
+            log.error("Error checking file exists: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  Count lines - get line count without reading content
+     * 99%+ token savings - returns number vs entire file
+     */
+    Map<String, Object> countLines(String path, String encoding = 'UTF-8') {
+        try {
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+            if (!Files.exists(filePath)) {
+                throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
+            }
+
+            if (!Files.isRegularFile(filePath)) {
+                throw new IllegalArgumentException("Path is not a file: ${sanitize(normalized)}")
+            }
+
+            // Efficient line counting without loading entire file into memory
+            long lineCount = 0
+            try (Stream<String> lines = Files.lines(filePath, java.nio.charset.Charset.forName(encoding))) {
+                lineCount = lines.count()
+            }
+
+            return createMap([
+                path: sanitize(normalized),
+                lineCount: lineCount,
+                size: Files.size(filePath),
+                sizeKB: Files.size(filePath) / 1024
+            ])
+        } catch (Exception e) {
+            log.error("Error counting lines: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  Find files by name - filename pattern search (faster than content search)
+     * 80%+ token savings - no content scanning
+     */
+    List<Map<String, Object>> findFilesByName(String pattern, String directory = null, int maxDepth = 10, int maxResults = 100) {
+        try {
+            String searchDir = directory ? pathService.normalizePath(directory) : getProjectRoot()
+
+            if (!isPathAllowed(searchDir)) {
+                throw new SecurityException("Path not allowed: ${sanitize(searchDir)}")
+            }
+
+            Path dirPath = Paths.get(searchDir)
+            if (!Files.exists(dirPath) || !Files.isDirectory(dirPath)) {
+                throw new IllegalArgumentException("Invalid directory: ${sanitize(searchDir)}")
+            }
+
+            Pattern namePattern = Pattern.compile(pattern)
+            List<Map<String, Object>> results = []
+
+            Stream<Path> stream = null
+            try {
+                stream = Files.walk(dirPath, maxDepth)
+                stream.filter { p ->
+                    try {
+                        return Files.isRegularFile(p) && !isReservedName(p.fileName.toString())
+                    } catch (Exception e) {
+                        return false
+                    }
+                }
+                .filter { p ->
+                    try {
+                        return namePattern.matcher(p.fileName.toString()).find()
+                    } catch (Exception e) {
+                        return false
+                    }
+                }
+                .forEach { p ->
+                    if (results.size() >= maxResults) {
+                        return
+                    }
+                    try {
+                        results.add(pathToMap(p))
+                    } catch (Exception e) {
+                        log.warn("Error adding file to results: ${sanitize(e.message)}")
+                    }
+                }
+            } finally {
+                if (stream != null) {
+                    try {
+                        stream.close()
+                    } catch (Exception e) {
+                        log.warn("Error closing stream: ${sanitize(e.message)}")
+                    }
+                }
+            }
+
+            if (results.size() >= maxResults) {
+                log.warn(" findFilesByName hit max results (${maxResults})")
+            }
+
+            return results.collect { result ->
+                sanitizeObject(result) as Map<String, Object>
+            }
+        } catch (Exception e) {
+            log.error("Error finding files by name: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  Get file summary - metadata without content
+     * 99%+ token savings - metadata only
+     */
+    Map<String, Object> getFileSummary(String path) {
+        try {
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+            if (!Files.exists(filePath)) {
+                throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
+            }
+
+            BasicFileAttributes attrs = Files.readAttributes(filePath, BasicFileAttributes.class)
+            
+            Map<String, Object> summary = createMap([
+                path: sanitize(normalized),
+                name: filePath.fileName.toString(),
+                type: attrs.isDirectory() ? 'directory' : 'file',
+                size: attrs.size(),
+                sizeKB: attrs.size() / 1024,
+                sizeMB: attrs.size() / (1024 * 1024),
+                created: attrs.creationTime().toString(),
+                modified: attrs.lastModifiedTime().toString(),
+                accessed: attrs.lastAccessTime().toString(),
+                readable: Files.isReadable(filePath),
+                writable: Files.isWritable(filePath),
+                executable: Files.isExecutable(filePath),
+                hidden: Files.isHidden(filePath)
+            ])
+
+            // Add line count for text files (if reasonable size)
+            if (attrs.isRegularFile() && attrs.size() < (maxFileSizeMb * 1024 * 1024)) {
+                try {
+                    long lineCount = 0
+                    try (Stream<String> lines = Files.lines(filePath, StandardCharsets.UTF_8)) {
+                        lineCount = lines.count()
+                    }
+                    summary.lineCount = lineCount
+                    
+                    // Detect file type by extension
+                    String name = filePath.fileName.toString()
+                    String extension = name.contains('.') ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : ''
+                    summary.extension = extension
+                } catch (Exception e) {
+                    // Binary file or encoding issue - that's fine
+                    summary.lineCount = null
+                    summary.extension = 'binary'
+                }
+            }
+
+            return summary
+        } catch (Exception e) {
+            log.error("Error getting file summary: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
 
     /**
      * Read file lines using Java NIO
@@ -227,7 +668,6 @@ class FileSystemService {
             Path filePath = Paths.get(normalized)
             String backupPath = null
 
-            // Create backup if requested and file exists
             if (createBackup && Files.exists(filePath)) {
                 backupPath = "${normalized}.backup"
                 Files.copy(filePath, Paths.get(backupPath), StandardCopyOption.REPLACE_EXISTING)
@@ -247,8 +687,89 @@ class FileSystemService {
     }
 
     /**
+     *  List only immediate children - no recursion
+     * Forces Claude to explore incrementally, not dump entire trees
+     */
+    List<Map<String, Object>> listChildrenOnly(String path, String pattern = null, int maxResults = -1) {
+        try {
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path dirPath = Paths.get(normalized)
+            if (!Files.exists(dirPath)) {
+                throw new FileNotFoundException("Directory not found: ${sanitize(normalized)}")
+            }
+
+            if (!Files.isDirectory(dirPath)) {
+                throw new IllegalArgumentException("Path is not a directory: ${sanitize(normalized)}")
+            }
+
+            int effectiveMaxResults = maxResults > 0 ? Math.min(maxResults, maxListResults) : maxListResults
+
+            List<Map<String, Object>> results = []
+            Pattern regexPattern = pattern ? Pattern.compile(pattern) : null
+
+            Stream<Path> stream = null
+            try {
+                stream = Files.list(dirPath)
+                stream.filter { p ->
+                    try {
+                        return !isReservedName(p.fileName.toString())
+                    } catch (Exception e) {
+                        return false
+                    }
+                }
+                        .filter { p ->
+                            try {
+                                return !regexPattern || regexPattern.matcher(p.fileName.toString()).matches()
+                            } catch (Exception e) {
+                                return false
+                            }
+                        }
+                        .forEach { p ->
+                            if (results.size() >= effectiveMaxResults) {
+                                return
+                            }
+
+                            try {
+                                Map<String, Object> entry = pathToMap(p)
+                                if (entry != null) {
+                                    results.add(entry)
+                                }
+                            } catch (Exception e) {
+                                log.warn("Error adding path to results: ${sanitize(p.toString())}: ${sanitize(e.message)}")
+                            }
+                        }
+            } finally {
+                if (stream != null) {
+                    try {
+                        stream.close()
+                    } catch (Exception e) {
+                        log.warn("Error closing stream: ${sanitize(e.message)}")
+                    }
+                }
+            }
+
+            if (results.size() >= effectiveMaxResults) {
+                log.warn(" listChildrenOnly hit max results (${effectiveMaxResults}). Results may be incomplete.")
+            }
+
+            return results.collect { result ->
+                sanitizeObject(result) as Map<String, Object>
+            }
+        } catch (Exception e) {
+            log.error("Error listing children: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
      * List directory contents using Java NIO (avoids Groovy GDK eachFile)
      * CRITICAL: Enhanced error handling and sanitization to prevent client errors
+     *  NOW ENFORCES maxListResults LIMIT
      */
     List<Map<String, Object>> listDirectory(String path, String pattern = null, boolean recursive = false) {
         try {
@@ -271,7 +792,6 @@ class FileSystemService {
             Pattern regexPattern = pattern ? Pattern.compile(pattern) : null
 
             if (recursive) {
-                // Use Files.walk for recursive listing with enhanced error handling
                 Stream<Path> stream = null
                 try {
                     stream = Files.walk(dirPath)
@@ -283,32 +803,34 @@ class FileSystemService {
                             return false
                         }
                     }
-                    .filter { p ->
-                        try {
-                            return !isReservedName(p.fileName.toString())
-                        } catch (Exception e) {
-                            log.warn("Error checking reserved name: ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                            return false
-                        }
-                    }
-                    .filter { p ->
-                        try {
-                            return !regexPattern || regexPattern.matcher(p.fileName.toString()).matches()
-                        } catch (Exception e) {
-                            log.warn("Error matching pattern: ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                            return false
-                        }
-                    }
-                    .forEach { p ->
-                        try {
-                            Map<String, Object> entry = pathToMap(p)
-                            if (entry != null) {
-                                results.add(entry)
+                            .filter { p ->
+                                try {
+                                    return !isReservedName(p.fileName.toString())
+                                } catch (Exception e) {
+                                    return false
+                                }
                             }
-                        } catch (Exception e) {
-                            log.warn("Error adding path to results: ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                        }
-                    }
+                            .filter { p ->
+                                try {
+                                    return !regexPattern || regexPattern.matcher(p.fileName.toString()).matches()
+                                } catch (Exception e) {
+                                    return false
+                                }
+                            }
+                            .forEach { p ->
+                                if (results.size() >= maxListResults) {
+                                    return
+                                }
+
+                                try {
+                                    Map<String, Object> entry = pathToMap(p)
+                                    if (entry != null) {
+                                        results.add(entry)
+                                    }
+                                } catch (Exception e) {
+                                    log.warn("Error adding path to results: ${sanitize(p.toString())}: ${sanitize(e.message)}")
+                                }
+                            }
                 } finally {
                     if (stream != null) {
                         try {
@@ -319,7 +841,6 @@ class FileSystemService {
                     }
                 }
             } else {
-                // Use Files.list for non-recursive listing with enhanced error handling
                 Stream<Path> stream = null
                 try {
                     stream = Files.list(dirPath)
@@ -327,28 +848,30 @@ class FileSystemService {
                         try {
                             return !isReservedName(p.fileName.toString())
                         } catch (Exception e) {
-                            log.warn("Error checking reserved name: ${sanitize(p.toString())}: ${sanitize(e.message)}")
                             return false
                         }
                     }
-                    .filter { p ->
-                        try {
-                            return !regexPattern || regexPattern.matcher(p.fileName.toString()).matches()
-                        } catch (Exception e) {
-                            log.warn("Error matching pattern: ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                            return false
-                        }
-                    }
-                    .forEach { p ->
-                        try {
-                            Map<String, Object> entry = pathToMap(p)
-                            if (entry != null) {
-                                results.add(entry)
+                            .filter { p ->
+                                try {
+                                    return !regexPattern || regexPattern.matcher(p.fileName.toString()).matches()
+                                } catch (Exception e) {
+                                    return false
+                                }
                             }
-                        } catch (Exception e) {
-                            log.warn("Error adding path to results: ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                        }
-                    }
+                            .forEach { p ->
+                                if (results.size() >= maxListResults) {
+                                    return
+                                }
+
+                                try {
+                                    Map<String, Object> entry = pathToMap(p)
+                                    if (entry != null) {
+                                        results.add(entry)
+                                    }
+                                } catch (Exception e) {
+                                    log.warn("Error adding path to results: ${sanitize(p.toString())}: ${sanitize(e.message)}")
+                                }
+                            }
                 } finally {
                     if (stream != null) {
                         try {
@@ -360,10 +883,16 @@ class FileSystemService {
                 }
             }
 
-            // Sanitize entire result set before returning
-            return results.collect { result ->
+            if (results.size() >= maxListResults) {
+                log.warn(" listDirectory hit max results (${maxListResults}). Use listChildrenOnly() for bounded listing.")
+            }
+
+            List<Map<String, Object>> sanitizedResults = results.collect { result ->
                 sanitizeObject(result) as Map<String, Object>
             }
+
+            validateResponseSize(sanitizedResults, "listDirectory")
+            return sanitizedResults
         } catch (Exception e) {
             log.error("Error listing directory: ${sanitize(e.message)}")
             throw e
@@ -371,10 +900,28 @@ class FileSystemService {
     }
 
     /**
-     * Search files by content using Java NIO and regex
-     * CRITICAL: Enhanced error handling and sanitization
+     *  Search in project root only - prevents wandering
+     * Hardcoded to search from activeProjectRoot, not arbitrary paths
      */
-    List<Map<String, Object>> searchFiles(String directory, String contentPattern, String filePattern = '.*\\.groovy$') {
+    List<Map<String, Object>> searchInProject(String contentPattern, String filePattern = '.*\\.(groovy|java|gradle)$', int maxResults = -1) {
+        try {
+            String projectRoot = getProjectRoot()
+
+            int effectiveMaxResults = maxResults > 0 ? Math.min(maxResults, maxSearchResults) : maxSearchResults
+
+            List<Map<String, Object>> results = searchFilesWithLimit(projectRoot, contentPattern, filePattern, effectiveMaxResults)
+
+            return results
+        } catch (Exception e) {
+            log.error("Error searching in project: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  Search files with hard result limit - internal method
+     */
+    private List<Map<String, Object>> searchFilesWithLimit(String directory, String contentPattern, String filePattern, int maxResults) {
         try {
             String normalized = pathService.normalizePath(directory)
 
@@ -390,6 +937,7 @@ class FileSystemService {
             List<Map<String, Object>> results = []
             Pattern fileRegex = Pattern.compile(filePattern)
             Pattern contentRegex = Pattern.compile(contentPattern)
+            int totalFilesScanned = 0
 
             Stream<Path> stream = null
             try {
@@ -398,52 +946,64 @@ class FileSystemService {
                     try {
                         return Files.isRegularFile(p)
                     } catch (Exception e) {
-                        log.warn("Error checking if regular file: ${sanitize(p.toString())}: ${sanitize(e.message)}")
                         return false
                     }
                 }
-                .filter { p ->
-                    try {
-                        return !isReservedName(p.fileName.toString())
-                    } catch (Exception e) {
-                        log.warn("Error checking reserved name: ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                        return false
-                    }
-                }
-                .filter { p ->
-                    try {
-                        return fileRegex.matcher(p.fileName.toString()).matches()
-                    } catch (Exception e) {
-                        log.warn("Error matching file pattern: ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                        return false
-                    }
-                }
-                .forEach { p ->
-                    try {
-                        List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8)
-                        List<Map<String, Object>> matches = []
-
-                        lines.eachWithIndex { String line, int index ->
+                        .filter { p ->
                             try {
-                                if (contentRegex.matcher(line).find()) {
-                                    matches.add(createMap([lineNumber: index + 1, line: sanitize(line)]))
-                                }
+                                return !isReservedName(p.fileName.toString())
                             } catch (Exception e) {
-                                log.warn("Error matching content pattern in line: ${sanitize(e.message)}")
+                                return false
                             }
                         }
-
-                        if (matches) {
-                            results.add(createMap([
-                                    path: sanitize(p.toAbsolutePath().toString().replace('\\', '/')),
-                                    name: sanitize(p.fileName.toString()),
-                                    matches: matches
-                            ]))
+                        .filter { p ->
+                            try {
+                                return fileRegex.matcher(p.fileName.toString()).matches()
+                            } catch (Exception e) {
+                                return false
+                            }
                         }
-                    } catch (Exception e) {
-                        log.warn("Error reading file ${sanitize(p.toString())}: ${sanitize(e.message)}")
-                    }
-                }
+                        .forEach { p ->
+                            if (results.size() >= maxResults) {
+                                return
+                            }
+
+                            totalFilesScanned++
+
+                            try {
+                                List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8)
+                                List<Map<String, Object>> matches = []
+
+                                lines.eachWithIndex { String line, int index ->
+                                    if (matches.size() >= maxSearchMatchesPerFile) {
+                                        return
+                                    }
+
+                                    try {
+                                        if (contentRegex.matcher(line).find()) {
+                                            String truncatedLine = line.length() > maxLineLength ?
+                                                    sanitize(line.take(maxLineLength)) + "... (truncated)" :
+                                                    sanitize(line)
+                                            matches.add(createMap([lineNumber: index + 1, line: truncatedLine]))
+                                        }
+                                    } catch (Exception e) {
+                                        log.warn("Error matching content pattern in line: ${sanitize(e.message)}")
+                                    }
+                                }
+
+                                if (matches) {
+                                    results.add(createMap([
+                                            path: sanitize(p.toAbsolutePath().toString().replace('\\', '/')),
+                                            name: sanitize(p.fileName.toString()),
+                                            matchCount: matches.size(),
+                                            truncatedMatches: matches.size() >= maxSearchMatchesPerFile,
+                                            matches: matches
+                                    ]))
+                                }
+                            } catch (Exception e) {
+                                log.warn("Error reading file ${sanitize(p.toString())}: ${sanitize(e.message)}")
+                            }
+                        }
             } finally {
                 if (stream != null) {
                     try {
@@ -454,7 +1014,10 @@ class FileSystemService {
                 }
             }
 
-            // Sanitize entire result set before returning
+            if (results.size() >= maxResults) {
+                log.warn(" Search hit max results limit (${maxResults}), results may be incomplete")
+            }
+
             return results.collect { result ->
                 sanitizeObject(result) as Map<String, Object>
             }
@@ -462,6 +1025,15 @@ class FileSystemService {
             log.error("Error searching files: ${sanitize(e.message)}")
             throw e
         }
+    }
+
+    /**
+     * Search files by content using Java NIO and regex
+     * CRITICAL: Enhanced error handling and sanitization
+     *  NOW ENFORCES maxSearchResults LIMIT
+     */
+    List<Map<String, Object>> searchFiles(String directory, String contentPattern, String filePattern = '.*\\.groovy$') {
+        return searchFilesWithLimit(directory, contentPattern, filePattern, maxSearchResults)
     }
 
     /**
@@ -483,7 +1055,6 @@ class FileSystemService {
             ])
         } catch (Exception e) {
             log.warn("Error reading attributes for ${sanitize(path.toString())}: ${sanitize(e.message)}")
-            // Return a minimal safe entry instead of null
             try {
                 return createMap([
                         path: sanitize(path.toAbsolutePath().toString().replace('\\', '/')),
@@ -523,7 +1094,6 @@ class FileSystemService {
 
             boolean success = false
             if (Files.isDirectory(filePath) && recursive) {
-                // Delete directory recursively using Files.walk
                 Stream<Path> stream = null
                 try {
                     stream = Files.walk(filePath)
@@ -685,36 +1255,34 @@ class FileSystemService {
     Map<String, Object> watchDirectory(String path, List<String> eventTypes = ['CREATE', 'MODIFY', 'DELETE']) {
         try {
             String normalized = pathService.normalizePath(path)
-            
+
             if (!isPathAllowed(normalized)) {
                 throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
             }
-            
+
             Path dirPath = Paths.get(normalized)
             if (!Files.exists(dirPath)) {
                 throw new FileNotFoundException("Directory not found: ${sanitize(normalized)}")
             }
-            
+
             if (!Files.isDirectory(dirPath)) {
                 throw new IllegalArgumentException("Path is not a directory: ${sanitize(normalized)}")
             }
-            
-            // Create a watch service
+
             WatchService watchService = FileSystems.getDefault().newWatchService()
-            
-            // Register the directory with the watch service
+
             Set<WatchEvent.Kind<?>> kinds = [] as Set
             if (eventTypes.contains('CREATE')) kinds.add(StandardWatchEventKinds.ENTRY_CREATE)
             if (eventTypes.contains('MODIFY')) kinds.add(StandardWatchEventKinds.ENTRY_MODIFY)
             if (eventTypes.contains('DELETE')) kinds.add(StandardWatchEventKinds.ENTRY_DELETE)
-            
+
             WatchKey key = dirPath.register(watchService, kinds.toArray(new WatchEvent.Kind<?>[0]) as WatchEvent.Kind<?>[])
-            
+
             return createMap([
-                path: sanitize(normalized),
-                watching: true,
-                eventTypes: eventTypes,
-                message: "Directory watch registered. Use pollDirectoryWatch() to check for events."
+                    path: sanitize(normalized),
+                    watching: true,
+                    eventTypes: eventTypes,
+                    message: "Directory watch registered. Use pollDirectoryWatch() to check for events."
             ])
         } catch (Exception e) {
             log.error("Error watching directory: ${sanitize(e.message)}")
@@ -729,15 +1297,15 @@ class FileSystemService {
     Map<String, Object> pollDirectoryWatch(String path) {
         try {
             String normalized = pathService.normalizePath(path)
-            
+
             if (!isPathAllowed(normalized)) {
                 throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
             }
-            
+
             return createMap([
-                path: sanitize(normalized),
-                events: [],
-                message: "File watching is available but requires active watch service management. Use watchDirectory() first."
+                    path: sanitize(normalized),
+                    events: [],
+                    message: "File watching is available but requires active watch service management. Use watchDirectory() first."
             ])
         } catch (Exception e) {
             log.error("Error polling directory watch: ${sanitize(e.message)}")
@@ -747,22 +1315,28 @@ class FileSystemService {
 
     /**
      * Read multiple files at once (more efficient than multiple readFile calls)
+     *  NOW ENFORCES maxReadMultiple LIMIT
      */
     List<Map<String, Object>> readMultipleFiles(List<String> paths) {
+        if (paths.size() > maxReadMultiple) {
+            log.warn(" readMultipleFiles limited to ${maxReadMultiple} files (requested: ${paths.size()})")
+            paths = paths.take(maxReadMultiple)
+        }
+
         return paths.collect { path ->
             try {
                 String content = readFile(path)
                 createMap([
-                    path: path,
-                    content: content,
-                    success: true
+                        path: path,
+                        content: content,
+                        success: true
                 ])
             } catch (Exception e) {
                 log.warn("Failed to read ${sanitize(path)}: ${sanitize(e.message)}")
                 createMap([
-                    path: path,
-                    error: sanitize(e.message),
-                    success: false
+                        path: path,
+                        error: sanitize(e.message),
+                        success: false
                 ])
             }
         }
@@ -774,31 +1348,31 @@ class FileSystemService {
     Map<String, Object> getFileInfo(String path) {
         try {
             String normalized = pathService.normalizePath(path)
-            
+
             if (!isPathAllowed(normalized)) {
                 throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
             }
-            
+
             Path filePath = Paths.get(normalized)
-            
+
             if (!Files.exists(filePath)) {
                 throw new FileNotFoundException("File not found: ${sanitize(normalized)}")
             }
-            
+
             BasicFileAttributes attrs = Files.readAttributes(filePath, BasicFileAttributes.class)
-            
+
             return createMap([
-                path: sanitize(normalized),
-                name: filePath.fileName.toString(),
-                type: attrs.isDirectory() ? 'directory' : 'file',
-                size: attrs.size(),
-                creationTime: attrs.creationTime().toString(),
-                lastModified: attrs.lastModifiedTime().toString(),
-                lastAccess: attrs.lastAccessTime().toString(),
-                readable: Files.isReadable(filePath),
-                writable: Files.isWritable(filePath),
-                executable: Files.isExecutable(filePath),
-                hidden: Files.isHidden(filePath)
+                    path: sanitize(normalized),
+                    name: filePath.fileName.toString(),
+                    type: attrs.isDirectory() ? 'directory' : 'file',
+                    size: attrs.size(),
+                    creationTime: attrs.creationTime().toString(),
+                    lastModified: attrs.lastModifiedTime().toString(),
+                    lastAccess: attrs.lastAccessTime().toString(),
+                    readable: Files.isReadable(filePath),
+                    writable: Files.isWritable(filePath),
+                    executable: Files.isExecutable(filePath),
+                    hidden: Files.isHidden(filePath)
             ])
         } catch (Exception e) {
             log.error("Error getting file info: ${sanitize(e.message)}")
@@ -812,52 +1386,50 @@ class FileSystemService {
     List<Map<String, Object>> listDirectoryWithSizes(String path, String sortBy = 'name') {
         try {
             String normalized = pathService.normalizePath(path)
-            
+
             if (!isPathAllowed(normalized)) {
                 throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
             }
-            
+
             Path dirPath = Paths.get(normalized)
-            
+
             if (!Files.isDirectory(dirPath)) {
                 throw new IllegalArgumentException("Path is not a directory: ${sanitize(normalized)}")
             }
-            
+
             List<Map<String, Object>> entries = []
-            
+
             Files.newDirectoryStream(dirPath).each { Path entry ->
                 String entryName = entry.fileName.toString()
-                
-                // Skip Windows reserved names
+
                 if (WINDOWS_RESERVED_NAMES.contains(entryName.toUpperCase())) {
                     return
                 }
-                
+
                 try {
                     BasicFileAttributes attrs = Files.readAttributes(entry, BasicFileAttributes.class)
-                    
+
                     entries.add(createMap([
-                        name: entryName,
-                        path: sanitize(entry.toString()),
-                        type: attrs.isDirectory() ? 'directory' : 'file',
-                        size: attrs.size(),
-                        lastModified: attrs.lastModifiedTime().toMillis(),
-                        readable: Files.isReadable(entry),
-                        writable: Files.isWritable(entry),
-                        executable: Files.isExecutable(entry)
+                            name: entryName,
+                            path: sanitize(entry.toString()),
+                            type: attrs.isDirectory() ? 'directory' : 'file',
+                            size: attrs.size(),
+                            lastModified: attrs.lastModifiedTime().toMillis(),
+                            readable: Files.isReadable(entry),
+                            writable: Files.isWritable(entry),
+                            executable: Files.isExecutable(entry)
                     ]))
                 } catch (Exception e) {
                     log.warn("Error reading attributes for ${sanitize(entryName)}: ${sanitize(e.message)}")
                 }
             }
-            
-            // Sort entries
+
             if (sortBy == 'size') {
                 entries.sort { a, b -> (b.size as Long) <=> (a.size as Long) }
             } else {
                 entries.sort { a, b -> (a.name as String) <=> (b.name as String) }
             }
-            
+
             return entries
         } catch (Exception e) {
             log.error("Error listing directory with sizes: ${sanitize(e.message)}")
@@ -867,59 +1439,90 @@ class FileSystemService {
 
     /**
      * Get recursive directory tree structure
+     *  NOW ENFORCES maxTreeDepth and maxTreeFiles LIMITS
      */
     Map<String, Object> getDirectoryTree(String path, List<String> excludePatterns = []) {
         try {
             String normalized = pathService.normalizePath(path)
-            
+
             if (!isPathAllowed(normalized)) {
                 throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
             }
-            
+
             Path dirPath = Paths.get(normalized)
-            
+
             if (!Files.isDirectory(dirPath)) {
                 throw new IllegalArgumentException("Path is not a directory: ${sanitize(normalized)}")
             }
-            
+
             List<Pattern> excludeRegexes = excludePatterns.collect { Pattern.compile(it) }
-            
-            return buildTreeNode(dirPath, excludeRegexes)
+
+            Map<String, Integer> limits = [currentDepth: 0, fileCount: 0]
+
+            Map<String, Object> tree = buildTreeNode(dirPath, excludeRegexes, 0, limits)
+
+            if (limits.fileCount >= maxTreeFiles) {
+                log.warn(" Directory tree hit max files limit (${maxTreeFiles}), tree truncated")
+            }
+
+            validateResponseSize(tree, "getDirectoryTree")
+            return tree
         } catch (Exception e) {
             log.error("Error getting directory tree: ${sanitize(e.message)}")
             throw e
         }
     }
-    
-    private Map<String, Object> buildTreeNode(Path path, List<Pattern> excludePatterns) {
+
+    private Map<String, Object> buildTreeNode(Path path, List<Pattern> excludePatterns, int depth, Map<String, Integer> limits) {
+        if (depth >= maxTreeDepth) {
+            return createMap([
+                    name: path.fileName?.toString() ?: path.toString(),
+                    type: 'truncated',
+                    message: "Max depth (${maxTreeDepth}) reached"
+            ])
+        }
+
+        if (limits.fileCount >= maxTreeFiles) {
+            return null
+        }
+
         String name = path.fileName?.toString() ?: path.toString()
-        
-        // Check exclusions
+
         for (Pattern pattern : excludePatterns) {
             if (pattern.matcher(name).matches()) {
                 return null
             }
         }
-        
+
         boolean isDir = Files.isDirectory(path)
-        
+
         Map<String, Object> node = createMap([
-            name: name,
-            type: isDir ? 'directory' : 'file'
+                name: name,
+                type: isDir ? 'directory' : 'file'
         ])
-        
+
+        limits.fileCount++
+
         if (isDir) {
             List<Map<String, Object>> children = []
             try {
                 Files.newDirectoryStream(path).each { Path child ->
+                    if (limits.fileCount >= maxTreeFiles) {
+                        children.add(createMap([
+                                name: "... (truncated)",
+                                type: "truncated",
+                                message: "Max files (${maxTreeFiles}) reached"
+                        ]))
+                        return
+                    }
+
                     String childName = child.fileName.toString()
-                    
-                    // Skip Windows reserved names
+
                     if (WINDOWS_RESERVED_NAMES.contains(childName.toUpperCase())) {
                         return
                     }
-                    
-                    Map<String, Object> childNode = buildTreeNode(child, excludePatterns)
+
+                    Map<String, Object> childNode = buildTreeNode(child, excludePatterns, depth + 1, limits)
                     if (childNode != null) {
                         children.add(childNode)
                     }
@@ -930,8 +1533,7 @@ class FileSystemService {
                 node.children = []
             }
         }
-        
+
         return node
     }
-
 }

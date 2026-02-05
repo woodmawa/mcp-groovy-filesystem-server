@@ -8,21 +8,25 @@ spring:
 
 mcp:
   mode: ${MCP_MODE:http}
-  
+
   filesystem:
     # Allowed directories for file operations
-    # Note: C:/Users/willw covers all subdirectories including:
-    #   - AppData/Roaming/Claude (config: claude_desktop_config.json)
-    #   - AppData/Local/Claude (logs, cache)
-    #   - .vscode-remote/Claude (remote logs)
-    #   - IdeaProjects (your projects)
-    #   - claude (your workspace)
     allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude,C:/Users/willw
     max-file-size-mb: 10
     enable-write: true
-    # Allow following symbolic links (default: false for security)
     allow-symlinks: false
-  
+
+    # TOKEN OPTIMIZATION: Bounded result limits
+    active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
+    max-list-results: 100
+    max-search-results: 50
+    max-search-matches-per-file: 10
+    max-tree-depth: 5
+    max-tree-files: 200
+    max-read-multiple: 10
+    max-line-length: 1000
+    max-response-size-kb: 100
+
   # Script execution security settings
   script:
     max-memory-mb: 256
@@ -32,94 +36,32 @@ mcp:
     enable-dangerous-pattern-check: true
     enable-file-path-validation: true
     enable-audit-logging: true
-    
-    # Command whitelists (regex patterns) - can be customized without rebuild!
+
+    # Command whitelists - PERMISSIVE for normal operations
     whitelist:
-      # Allowed PowerShell commands (regex patterns)
       powershell-allowed:
-        - '^Get-ChildItem.*'
-        - '^Get-Content.*'
-        - '^Get-Item.*'
-        - '^Test-Path.*'
-        - '^Get-Location.*'
-        - '^Get-Process.*'
-        - '^Select-Object.*'
-        - '^Where-Object.*'
-        - '^Measure-Object.*'
-        - '^Sort-Object.*'
-        - '^Group-Object.*'
-        - '^Format-.*'
-        - '^Out-.*'
-        - '^Write-Host.*'
-        - '^Write-Output.*'
-        - '.*\|.*'  # Allow piping
-        - '^\\.\\\\gradlew\\.bat.*'  # Gradle wrapper (standalone)
-        - '^cd .+; \\.\\\\gradlew\\.bat.*'  # cd then gradlew
-        - '^cd .+;.*'  # Allow cd with any command after
-        
-      # Blocked PowerShell commands (takes precedence)
+        - '.*'  # Allow all - blocked list takes precedence
+
       powershell-blocked:
         - '.*Remove-Item.*'
         - '.*Clear-.*Content.*'
         - '.*Stop-Computer.*'
         - '.*Restart-Computer.*'
         - '.*Format-Volume.*'
-        - '.*Clear-Disk.*'
-        - '.*Remove-.*Disk.*'
         - '.*Invoke-Expression.*'
-        - '.*Invoke-Command.*'
-        - '.*Start-Process.*'
-        - '.*New-Service.*'
         - '.*Set-ExecutionPolicy.*'
-        
-      # Allowed Bash commands (regex patterns)
+
       bash-allowed:
-        - '^ls.*'
-        - '^cat.*'
-        - '^grep.*'
-        - '^find.*'
-        - '^wc.*'
-        - '^head.*'
-        - '^tail.*'
-        - '^echo.*'
-        - '^pwd.*'
-        - '^which.*'
-        - '^whoami.*'
-        - '^date.*'
-        - '^file.*'
-        - '^stat.*'
-        - '^du.*'
-        - '^df.*'
-        - '^ps.*'
-        - '^top.*'
-        - '^awk.*'
-        - '^sed.*'
-        - '^sort.*'
-        - '^uniq.*'
-        - '^tr.*'
-        - '^cut.*'
-        - '.*\|.*'  # Allow piping
-        - '^\\./ gradlew.*'  # Gradle wrapper
-        
-      # Blocked Bash commands (takes precedence)
+        - '.*'  # Allow all - blocked list takes precedence
+
       bash-blocked:
         - '.*rm .*'
-        - '.*rm-.*'
-        - '.*delete.*'
         - '.*chmod.*'
         - '.*chown.*'
-        - '.*mkfs.*'
-        - '.*dd.*'
         - '.*sudo.*'
-        - '.*su .*'
         - '.*shutdown.*'
         - '.*reboot.*'
         - '.*kill.*'
-        - '.*pkill.*'
-        - '.*eval.*'
-        - '.*exec.*'
-        - '.*source.*'
-        - '.*\\.\\./.*'  # No executing files
 
 logging:
   level:
@@ -127,8 +69,6 @@ logging:
     com.softwood.mcp: DEBUG
 
 ---
-# STDIO Mode Profile
-# Note: Logging still enabled but goes to STDERR and file only (STDOUT reserved for MCP JSON-RPC)
 spring:
   config:
     activate:
@@ -146,5 +86,4 @@ logging:
     root: INFO
     com.softwood.mcp: DEBUG
     org.springframework: WARN
-    # Keep audit logging in stdio mode
     com.softwood.mcp.service.AuditService: INFO

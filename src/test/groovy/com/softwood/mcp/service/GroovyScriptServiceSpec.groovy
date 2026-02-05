@@ -23,6 +23,7 @@ class GroovyScriptServiceSpec extends Specification {
     ScriptSecurityService securityService
     AuditService auditService
     CommandWhitelistConfig whitelistConfig
+    GitHubService githubService
     
     def setup() {
         pathService = new PathService()
@@ -37,10 +38,25 @@ class GroovyScriptServiceSpec extends Specification {
         whitelistConfig.bashAllowed = ['.*']  // Allow all in tests
         whitelistConfig.bashBlocked = []
         
+        // Mock GitHubService
+        githubService = Mock(GitHubService)
+        
         fileSystemService = new FileSystemService(pathService)
         fileSystemService.allowedDirectoriesString = tempDir.toString()
         fileSystemService.init()
         fileSystemService.enableWrite = true
+
+        //  FIX: SET BOUNDED LIMITS FOR TESTS (prevents 0-limit failures)
+        fileSystemService.maxListResults = 100
+        fileSystemService.maxSearchResults = 50
+        fileSystemService.maxSearchMatchesPerFile = 10
+        fileSystemService.maxTreeDepth = 5
+        fileSystemService.maxTreeFiles = 200
+        fileSystemService.maxReadMultiple = 10
+        fileSystemService.maxLineLength = 1000
+        fileSystemService.maxResponseSizeKb = 100
+        fileSystemService.maxFileSizeMb = 10
+        fileSystemService.activeProjectRoot = tempDir.toString()
         
         groovyScriptService = new GroovyScriptService(
             fileSystemService,
@@ -48,7 +64,8 @@ class GroovyScriptServiceSpec extends Specification {
             scriptExecutor,
             securityService,
             auditService,
-            whitelistConfig
+            whitelistConfig,
+            githubService
         )
     }
     
@@ -208,4 +225,43 @@ class GroovyScriptServiceSpec extends Specification {
         result.success == true
         result.output.any { it.contains("Doubled: [2, 4, 6, 8, 10]") }
     }
+
+    
+    def "should execute script with withOverride for temporary limit changes"() {
+        given: "a directory with many files"
+        (1..150).each { i ->
+            tempDir.resolve("file${i}.txt").toFile().text = "content $i"
+        }
+        
+        def tempDirStr = tempDir.toString().replace('\\', '/')
+        def script = """
+            // Test default limits
+            def normalFiles = listFiles('${tempDirStr}', [recursive: false])
+            println "Normal limit returned: \${normalFiles.size()} files"
+            
+            // Test with override
+            def result = withOverride(maxListResults: 200) {
+                def manyFiles = listFiles('${tempDirStr}', [recursive: false])
+                println "Override limit returned: \${manyFiles.size()} files"
+                return manyFiles.size()
+            }
+            
+            // Test limits restored
+            def afterFiles = listFiles('${tempDirStr}', [recursive: false])
+            println "After override returned: \${afterFiles.size()} files"
+            
+            return result
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "withOverride works correctly"
+        result.success == true
+        result.output.any { it.contains("Normal limit returned: 100 files") }
+        result.output.any { it.contains("Override limit returned: 150 files") }
+        result.output.any { it.contains("After override returned: 100 files") }
+        result.result == 150
+    }
+
 }

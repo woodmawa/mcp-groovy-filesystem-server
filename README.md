@@ -316,9 +316,21 @@ mcp:
 ```yaml
 mcp:
   filesystem:
-    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude
+    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude,C:/Users/willw
     max-file-size-mb: 10
     enable-write: true
+    allow-symlinks: false
+    
+    # 🆕 TOKEN OPTIMIZATION: Prevent unbounded result sets
+    active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server  # Default project scope
+    max-list-results: 100          # Max files returned by listDirectory
+    max-search-results: 50         # Max search matches
+    max-search-matches-per-file: 10  # Max matches per file in searchFiles
+    max-tree-depth: 5              # Max directory tree depth
+    max-tree-files: 200            # Max total files in directory tree
+    max-read-multiple: 10          # Max files in readMultipleFiles batch
+    max-line-length: 1000          # Max chars per line (truncate long lines)
+    max-response-size-kb: 100      # Max response size before warning
   
   script:
     max-memory-mb: 256

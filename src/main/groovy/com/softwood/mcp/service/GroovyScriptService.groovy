@@ -21,6 +21,7 @@ class GroovyScriptService {
     private final ScriptSecurityService securityService
     private final AuditService auditService
     private final CommandWhitelistConfig whitelistConfig
+    private final GitHubService githubService
     
     GroovyScriptService(
         FileSystemService fileSystemService,
@@ -28,7 +29,8 @@ class GroovyScriptService {
         ScriptExecutor scriptExecutor,
         ScriptSecurityService securityService,
         AuditService auditService,
-        CommandWhitelistConfig whitelistConfig
+        CommandWhitelistConfig whitelistConfig,
+        GitHubService githubService
     ) {
         this.fileSystemService = fileSystemService
         this.pathService = pathService
@@ -36,6 +38,7 @@ class GroovyScriptService {
         this.securityService = securityService
         this.auditService = auditService
         this.whitelistConfig = whitelistConfig
+        this.githubService = githubService
     }
     
     /**
@@ -115,6 +118,7 @@ class GroovyScriptService {
             script.pathService = pathService
             script.scriptExecutor = scriptExecutor
             script.whitelistConfig = whitelistConfig
+            script.githubService = githubService
         }
         
         // Now run the script

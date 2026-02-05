@@ -24,6 +24,7 @@ class McpControllerSpec extends Specification {
     ScriptSecurityService securityService
     AuditService auditService
     CommandWhitelistConfig whitelistConfig
+    GitHubService githubService
     
     def setup() {
         pathService = new PathService()
@@ -38,10 +39,25 @@ class McpControllerSpec extends Specification {
         whitelistConfig.bashAllowed = ['.*']  // Allow all in tests
         whitelistConfig.bashBlocked = []
         
+        // Mock GitHubService
+        githubService = Mock(GitHubService)
+        
         fileSystemService = new FileSystemService(pathService)
         fileSystemService.allowedDirectoriesString = tempDir.toString()
         fileSystemService.init()
         fileSystemService.enableWrite = true
+
+        //  FIX: SET BOUNDED LIMITS FOR TESTS (prevents 0-limit failures)
+        fileSystemService.maxListResults = 100
+        fileSystemService.maxSearchResults = 50
+        fileSystemService.maxSearchMatchesPerFile = 10
+        fileSystemService.maxTreeDepth = 5
+        fileSystemService.maxTreeFiles = 200
+        fileSystemService.maxReadMultiple = 10
+        fileSystemService.maxLineLength = 1000
+        fileSystemService.maxResponseSizeKb = 100
+        fileSystemService.maxFileSizeMb = 10
+        fileSystemService.activeProjectRoot = tempDir.toString()
         
         groovyScriptService = new GroovyScriptService(
             fileSystemService,
@@ -49,7 +65,8 @@ class McpControllerSpec extends Specification {
             scriptExecutor,
             securityService,
             auditService,
-            whitelistConfig
+            whitelistConfig,
+            githubService
         )
         
         controller = new McpController(
