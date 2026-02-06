@@ -57,6 +57,31 @@ abstract class SecureMcpScript extends Script {
         return new File(workingDir, path).canonicalPath
     }
 
+    /**
+     * Get a File object with path resolved against working directory.
+     * Use this helper when you need direct File API access with correct path resolution.
+     * 
+     * Examples:
+     *   file('src/main/groovy').eachFileRecurse { ... }
+     *   file('build.gradle').text
+     *   file('target/output').mkdirs()
+     * 
+     * @param path Relative or absolute path
+     * @return File object with resolved path
+     */
+    File file(String path) {
+        if (!path) return null
+        
+        File f = new File(path)
+        // If already absolute, return as-is
+        if (f.isAbsolute()) {
+            return f
+        }
+        
+        // Relative path - resolve against workingDir
+        return new File(workingDir, path).canonicalFile
+    }
+
     // ========================================================================
     // File Operations (delegated to FileSystemService)
     // ========================================================================

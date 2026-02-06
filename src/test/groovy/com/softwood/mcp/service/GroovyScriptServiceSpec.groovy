@@ -264,4 +264,225 @@ class GroovyScriptServiceSpec extends Specification {
         result.result == 150
     }
 
+    // ========================================================================
+    // NEW TESTS: file() helper for relative path resolution
+    // ========================================================================
+    
+    def "file() helper should resolve relative paths against workingDir"() {
+        given: "a nested directory structure"
+        def subdir = tempDir.resolve("src/main/groovy").toFile()
+        subdir.mkdirs()
+        def testFile = new File(subdir, "Test.groovy")
+        testFile.text = "class Test {}"
+        
+        and: "a script using file() helper with relative path"
+        def script = """
+            // Use relative path with file() helper
+            def srcDir = file('src/main/groovy')
+            
+            println "Resolved path: \${srcDir.absolutePath}"
+            println "Exists: \${srcDir.exists()}"
+            println "Is directory: \${srcDir.isDirectory()}"
+            
+            // List files
+            def files = []
+            srcDir.eachFile { f ->
+                files << f.name
+            }
+            
+            println "Files found: \${files}"
+            return files
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "relative path is resolved correctly against workingDir"
+        result.success == true
+        result.output.any { it.contains("Resolved path:") && it.contains("src") }
+        result.output.any { it.contains("Exists: true") }
+        result.output.any { it.contains("Is directory: true") }
+        result.output.any { it.contains("Files found: [Test.groovy]") }
+        result.result == ['Test.groovy']
+    }
+    
+    def "file() helper should handle absolute paths unchanged"() {
+        given: "an absolute path"
+        def absolutePath = tempDir.toString().replace('\\', '/')
+        
+        and: "a script using file() helper with absolute path"
+        def script = """
+            def absDir = file('${absolutePath}')
+            println "Absolute path: \${absDir.absolutePath}"
+            println "Exists: \${absDir.exists()}"
+            return absDir.absolutePath
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "absolute path is preserved"
+        result.success == true
+        result.output.any { it.contains("Exists: true") }
+        result.result.replace('\\', '/').contains(tempDir.toString().replace('\\', '/'))
+    }
+    
+    def "file() helper should work with eachFileRecurse for nested directories"() {
+        given: "a nested directory structure with multiple files"
+        def structure = [
+            'src/main/groovy/Model.groovy': 'class Model {}',
+            'src/main/groovy/Controller.groovy': 'class Controller {}',
+            'src/test/groovy/ModelSpec.groovy': 'class ModelSpec {}',
+            'README.md': '# Test Project'
+        ]
+        
+        structure.each { path, content ->
+            def file = tempDir.resolve(path).toFile()
+            file.parentFile.mkdirs()
+            file.text = content
+        }
+        
+        and: "a script using file() with eachFileRecurse"
+        def script = """
+            def results = []
+            file('src').eachFileRecurse { f ->
+                if (f.name.endsWith('.groovy')) {
+                    results << f.name
+                }
+            }
+            
+            println "Found \${results.size()} Groovy files"
+            results.each { println "  - \${it}" }
+            return results.sort()
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "all nested files are found"
+        result.success == true
+        result.result == ['Controller.groovy', 'Model.groovy', 'ModelSpec.groovy']
+        result.output.any { it.contains("Found 3 Groovy files") }
+    }
+    
+    def "file() helper should work with File text property"() {
+        given: "a text file"
+        def testFile = tempDir.resolve("config.txt").toFile()
+        testFile.text = "key=value\nfoo=bar"
+        
+        and: "a script reading file with file() helper"
+        def script = """
+            def content = file('config.txt').text
+            println "Content length: \${content.length()}"
+            
+            def lines = file('config.txt').readLines()
+            println "Lines: \${lines.size()}"
+            
+            return lines
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "file content is read correctly"
+        result.success == true
+        result.result == ['key=value', 'foo=bar']
+        result.output.any { it.contains("Lines: 2") }
+    }
+    
+    def "file() helper should work with mkdirs"() {
+        given: "a script creating nested directories"
+        def script = """
+            def targetDir = file('build/output/reports')
+            def created = targetDir.mkdirs()
+            
+            println "Created: \${created}"
+            println "Exists: \${targetDir.exists()}"
+            println "Path: \${targetDir.absolutePath}"
+            
+            return targetDir.exists()
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "directories are created relative to workingDir"
+        result.success == true
+        result.result == true
+        result.output.any { it.contains("Created: true") }
+        tempDir.resolve("build/output/reports").toFile().exists()
+    }
+    
+    def "file() helper should return null for null path"() {
+        given: "a script testing null handling"
+        def script = """
+            def result = file(null)
+            println "Result: \${result}"
+            return result
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "null is returned"
+        result.success == true
+        result.result == null
+        result.output.any { it.contains("Result: null") }
+    }
+    
+    def "file() helper should work with exists() check"() {
+        given: "a file and non-existent path"
+        tempDir.resolve("exists.txt").toFile().text = "content"
+        
+        and: "a script checking existence"
+        def script = """
+            def existing = file('exists.txt').exists()
+            def missing = file('missing.txt').exists()
+            
+            println "Existing file: \${existing}"
+            println "Missing file: \${missing}"
+            
+            return [existing: existing, missing: missing]
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "existence checks work correctly"
+        result.success == true
+        result.result.existing == true
+        result.result.missing == false
+    }
+
+    def "file() helper prevents FileNotFoundException with relative paths"() {
+        given: "a nested directory structure"
+        def srcDir = tempDir.resolve("src/main/groovy").toFile()
+        srcDir.mkdirs()
+        (1..3).each { i ->
+            new File(srcDir, "File${i}.groovy").text = "class File${i} {}"
+        }
+        
+        and: "a script that would fail without file() helper"
+        def script = """
+            // This would fail with: new File('src/main/groovy')
+            // Because it resolves against JVM's working dir (Claude Desktop app dir)
+            // But file() helper resolves against workingDir parameter
+            
+            def results = []
+            file('src/main/groovy').eachFile { f ->
+                results << f.name
+            }
+            
+            println "Successfully listed \${results.size()} files using file() helper"
+            return results.sort()
+        """
+        
+        when: "executing the script"
+        def result = groovyScriptService.executeScript(script, tempDir.toString())
+        
+        then: "no FileNotFoundException occurs"
+        result.success == true
+        result.result == ['File1.groovy', 'File2.groovy', 'File3.groovy']
+        result.output.any { it.contains("Successfully listed 3 files") }
+    }
 }
