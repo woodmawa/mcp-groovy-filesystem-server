@@ -119,6 +119,72 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
 
 Restart Claude Desktop.
 
+## Regex Pattern Best Practices
+
+Many tools accept regex patterns for filtering filenames or searching content. Understanding how patterns work will help you get accurate results:
+
+### Pattern Matching Behavior
+- **Filename matching** (`listChildrenOnly`, `listDirectory`, `getDirectoryTree`): Matches against the **filename only**, not the full path
+- **Filename finding** (`findFilesByName`): Uses `.find()` for **partial matches** - pattern can appear anywhere in filename
+- **Content searching** (`grepFile`, `searchInProject`, `searchFiles`): Matches against file content line-by-line
+
+### Regex Examples
+
+#### ✅ Good Patterns
+```groovy
+// Simple substring match
+"Controller"              // Matches: UserController.groovy, BlogController.java
+
+// File extension
+".*\\.groovy"            // Matches: Service.groovy, Controller.groovy
+".*\\.(groovy|java)"     // Matches: *.groovy OR *.java
+
+// Prefix/suffix
+"^Test.*"                // Matches filenames starting with "Test"
+".*Spec$"                // Matches filenames ending with "Spec"
+
+// Combined
+"^Test.*Controller"      // Matches: TestUserController, TestBlogController
+```
+
+#### ❌ Patterns That Don't Work As Expected
+```groovy
+// Anchors on full paths (these match filename only)
+".*src/main.*"           // ❌ Won't match path, only filename
+
+// Escaped backslashes for anchors (not needed for filename matching)
+".*Service\\.groovy$"    // ⚠️  Works but anchor unnecessary for .find()
+"Service\\.groovy"       // ✅ Simpler, same result
+```
+
+### Safe Regex Fallback
+All regex tools use `safeCompilePattern()` which:
+- ✅ Validates regex syntax
+- ✅ Falls back to **literal match** if regex is invalid
+- ✅ Logs warning about fallback behavior
+
+**This means invalid regex won't crash - it just matches literally!**
+
+```groovy
+// Invalid regex - falls back to literal match
+".*[invalid"             // Treated as literal string ".*[invalid"
+```
+
+### Tool-Specific Tips
+
+| Tool | Pattern Behavior | Example |
+|------|------------------|---------|
+| `findFilesByName` | Uses `.find()` - partial match | `"Controller"` finds `UserController.groovy` |
+| `listChildrenOnly` | Uses `.matches()` - full match | `".*\\.groovy"` matches full filename |
+| `grepFile` | Uses `.find()` - line search | `"def\\s+\\w+"` finds method definitions |
+| `searchInProject` | Uses `.find()` - line search | `"import\\s+.*Service"` finds imports |
+
+### Recommended Approach
+1. **Start simple**: Use substring matches first (`"Controller"`)
+2. **Add specificity**: Use regex when you need precision (`".*Controller\\.groovy"`)
+3. **Test incrementally**: Start broad, narrow down with more specific patterns
+4. **Check logs**: If no results, check if pattern fell back to literal match
+
 ## Groovy Script DSL
 
 The `executeGroovyScript` tool provides a rich DSL via `SecureMcpScript`:
@@ -219,7 +285,14 @@ mcp:
 
 ## Version History
 
-### v0.0.3 (Current)
+### v0.0.4 (Current)
+- **Cross-platform path handling**: Linux absolute paths (`/home/claude/...`) now map to configurable workspace
+- **New config**: `claude-workspace-root` for mapping Claude.ai Linux paths to Windows/WSL
+- **Path priority**: WSL mounts → Linux paths → Relative → Windows (4-level intelligent resolution)
+- **Tests**: 27 PathService tests (up from 12), comprehensive Linux path coverage
+- **Zero breaking changes**: Fully backward compatible with v0.0.3
+
+### v0.0.3
 - **Architecture**: Decomposed monolithic FileSystemService (930+ lines) into 4 focused services with ToolHandler auto-discovery
 - **New tools**: `replaceInFile`, `appendToFile` — 60-80% token savings on file edits
 - **Streaming I/O**: `headFile`, `tailFile`, `readFileRange`, `grepFile` use BufferedReader, never load full file

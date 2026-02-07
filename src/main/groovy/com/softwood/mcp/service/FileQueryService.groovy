@@ -14,6 +14,13 @@ import java.util.stream.Stream
 /**
  * File query operations - listing, searching, tree views
  * PHASE 1: Safe regex compilation via safeCompilePattern()
+ * 
+ * REGEX PATTERN GUIDANCE:
+ * - Simple substring: "Controller" matches any filename containing "Controller"
+ * - Java regex: ".*\\.groovy" matches filenames ending in .groovy
+ * - Anchors work on filename only (not full path): "^Test.*" matches filenames starting with "Test"
+ * - Invalid regex gracefully falls back to literal match via Pattern.quote()
+ * - Examples: "Service" | ".*Controller\\.groovy" | "^Test.*Spec"
  */
 @Service
 @Slf4j
@@ -34,7 +41,7 @@ class FileQueryService extends AbstractFileService implements ToolHandler {
                     type: "object",
                     properties: createMap([
                         path: createMap([type: "string", description: "Directory path"]),
-                        pattern: createMap([type: "string", description: "Filename regex pattern (optional)"]),
+                        pattern: createMap([type: "string", description: "Filename regex pattern (optional). Simple substring (Controller) or Java regex (.*\\.groovy). Matches filename only, not full path. Invalid regex falls back to literal match."]),
                         maxResults: createMap([type: "integer", description: "Max results (default: 100)"])
                     ]),
                     required: ["path"]
@@ -47,7 +54,7 @@ class FileQueryService extends AbstractFileService implements ToolHandler {
                     type: "object",
                     properties: createMap([
                         path: createMap([type: "string", description: "Directory path"]),
-                        pattern: createMap([type: "string", description: "Filename regex pattern (optional)"]),
+                        pattern: createMap([type: "string", description: "Filename regex pattern (optional). Simple substring (Controller) or Java regex (.*\\.groovy). Matches filename only, not full path. Invalid regex falls back to literal match."]),
                         recursive: createMap([type: "boolean", description: "List recursively ( may hit limits)"])
                     ]),
                     required: ["path"]
@@ -59,8 +66,8 @@ class FileQueryService extends AbstractFileService implements ToolHandler {
                 inputSchema: createMap([
                     type: "object",
                     properties: createMap([
-                        contentPattern: createMap([type: "string", description: "Regex pattern to search for in file contents"]),
-                        filePattern: createMap([type: "string", description: "Regex pattern for filenames (default: .(groovy|java|gradle)\$)"]),
+                        contentPattern: createMap([type: "string", description: "Regex pattern to search for in file contents. Java regex syntax (e.g., 'def\\s+\\w+' for method definitions). Invalid regex falls back to literal match."]),
+                        filePattern: createMap([type: "string", description: "Regex pattern for filenames (default: .(groovy|java|gradle)\$). Matches filename only. Examples: .*\\.groovy | .*Controller\\. | Test.*"]),
                         maxResults: createMap([type: "integer", description: "Max results (default: 50)"])
                     ]),
                     required: ["contentPattern"]
@@ -73,8 +80,8 @@ class FileQueryService extends AbstractFileService implements ToolHandler {
                     type: "object",
                     properties: createMap([
                         directory: createMap([type: "string", description: "Directory to search in"]),
-                        contentPattern: createMap([type: "string", description: "Regex pattern to search for in file contents"]),
-                        filePattern: createMap([type: "string", description: "Regex pattern for filenames (default: groovy files)"])
+                        contentPattern: createMap([type: "string", description: "Regex pattern to search for in file contents. Java regex syntax (e.g., 'def\\s+\\w+' for method definitions). Invalid regex falls back to literal match."]),
+                        filePattern: createMap([type: "string", description: "Regex pattern for filenames (default: groovy files). Matches filename only. Examples: .*\\.groovy | .*Controller\\. | Test.*"])
                     ]),
                     required: ["directory", "contentPattern"]
                 ])
@@ -85,7 +92,7 @@ class FileQueryService extends AbstractFileService implements ToolHandler {
                 inputSchema: createMap([
                     type: "object",
                     properties: createMap([
-                        pattern: createMap([type: "string", description: "Filename pattern (regex, substring match). Examples: Controller, .*\\.groovy\$, Test.*Spec"]),
+                        pattern: createMap([type: "string", description: "Filename pattern. Simple substring (Controller) or Java regex (.*\\.groovy). Uses .find() not .matches() - so partial matches work. Examples: Controller | .*\\.groovy | Test.*Spec. Invalid regex falls back to literal match."]),
                         directory: createMap([type: "string", description: "Directory to search (default: project root)"]),
                         maxDepth: createMap([type: "integer", description: "Maximum directory depth (default: 10)"]),
                         maxResults: createMap([type: "integer", description: "Maximum results (default: 100)"])
@@ -112,7 +119,7 @@ class FileQueryService extends AbstractFileService implements ToolHandler {
                     type: "object",
                     properties: createMap([
                         path: createMap([type: "string", description: "Directory path"]),
-                        excludePatterns: createMap([type: "array", items: createMap([type: "string"]), description: "Regex patterns to exclude (e.g., ['node_modules', '\\.git'])"])
+                        excludePatterns: createMap([type: "array", items: createMap([type: "string"]), description: "Regex patterns to exclude (e.g., ['node_modules', '\\.git']). Matches against directory/file names. Invalid regex falls back to literal match."])
                     ]),
                     required: ["path"]
                 ])

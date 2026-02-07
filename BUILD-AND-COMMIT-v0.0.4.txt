@@ -1,0 +1,37 @@
+===========================================
+v0.0.4 READY FOR BUILD & COMMIT
+===========================================
+
+WHAT WE BUILT:
+- Cross-platform Linux/Windows/WSL path handling
+- Maps Claude.ai Linux paths (/home/claude/...) to Windows workspace
+- 4-level intelligent path resolution priority
+- 27 comprehensive tests (up from 12)
+
+FILES CHANGED:
+✓ PathService.groovy - Core implementation (9173 bytes)
+✓ application.yml - New claude-workspace-root config
+✓ PathServiceSpec.groovy - 27 tests (10853 bytes)
+✓ README.md - Version history updated
+✓ CHANGELOG-v0.0.4.md - Release notes
+✓ v0.0.4-IMPLEMENTATION-SUMMARY.md - Quick reference
+✓ PRE-COMMIT-CHECKLIST-v0.0.4.md - Build verification
+
+BACKUP FILES CREATED:
+✓ PathService.groovy.backup
+✓ PathServiceSpec.groovy.backup
+
+YOUR NEXT STEPS:
+===========================================
+1. Build & Test:
+   .\gradlew.bat clean build
+   .\gradlew.bat test --tests PathServiceSpec
+
+2. If all pass, commit:
+   git add -A
+   git commit -m "feat: Add cross-platform Linux path handling (v0.0.4)"
+
+3. Then test live with Claude.ai using Linux paths like:
+   /home/claude/test-file.md
+
+===========================================

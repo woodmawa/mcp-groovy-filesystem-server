@@ -75,7 +75,7 @@ class FileReadService extends AbstractFileService implements ToolHandler {
                     type: "object",
                     properties: createMap([
                         path: createMap([type: "string", description: "File path"]),
-                        pattern: createMap([type: "string", description: "Regex pattern to search for"]),
+                        pattern: createMap([type: "string", description: "Regex pattern to search for in file contents. Java regex syntax. Invalid regex falls back to literal match."]),
                         maxMatches: createMap([type: "integer", description: "Maximum matches to return (default: 100)"]),
                         encoding: createMap([type: "string", description: "Character encoding (default: UTF-8)"])
                     ]),

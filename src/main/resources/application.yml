@@ -18,6 +18,11 @@ mcp:
 
     # TOKEN OPTIMIZATION: Bounded result limits
     active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
+    
+    # v0.0.4: Cross-platform workspace mapping for Linux paths from Claude.ai
+    # Linux paths like /home/claude/file.md are mapped here
+    # If not set, falls back to active-project-root
+    claude-workspace-root: C:/Users/willw/claude
     max-list-results: 100
     max-search-results: 50
     max-search-matches-per-file: 10
