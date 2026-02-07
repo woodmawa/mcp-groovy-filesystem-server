@@ -2,6 +2,7 @@ package com.softwood.mcp.service
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
 import java.nio.file.Path
@@ -10,6 +11,7 @@ import java.nio.file.Paths
 /**
  * Path normalization and conversion service
  * Handles Windows <-> WSL path translation
+ * PHASE 1: Relative paths resolved against active-project-root
  */
 @Service
 @Slf4j
@@ -18,8 +20,12 @@ class PathService {
 
     private static final boolean IS_WINDOWS = System.getProperty("os.name").toLowerCase().contains("windows")
 
+    @Value('${mcp.filesystem.active-project-root:}')
+    String activeProjectRoot
+
     /**
      * Normalize a path to use forward slashes and handle both Windows and WSL formats
+     * PHASE 1 FIX: Resolves relative paths against activeProjectRoot
      */
     String normalizePath(String path) {
         if (!path) return path
@@ -30,6 +36,15 @@ class PathService {
         // Handle WSL paths (/mnt/c/...) -> convert to Windows (C:/...)
         if (normalized.startsWith('/mnt/')) {
             normalized = convertWslToWindows(normalized)
+        }
+
+        // PHASE 1 FIX: Resolve relative paths against project root
+        Path p = Paths.get(normalized)
+        if (!p.isAbsolute() && activeProjectRoot) {
+            String resolvedRoot = activeProjectRoot.replace('\\', '/')
+            normalized = Paths.get(resolvedRoot, normalized)
+                .toAbsolutePath().normalize().toString().replace('\\', '/')
+            log.debug("Resolved relative path '${path}' to '${normalized}'")
         }
 
         return normalized
@@ -44,15 +59,13 @@ class PathService {
 
         String normalized = windowsPath.replace('\\', '/')
 
-        // Check if it's already a WSL path
         if (normalized.startsWith('/mnt/')) {
             return normalized
         }
 
-        // Extract drive letter
         if (normalized.matches('^[A-Za-z]:/.*')) {
-            String driveLetter = normalized.substring(0, 1).toLowerCase()  // FIX: Use substring instead of [0]
-            String pathWithoutDrive = normalized.substring(2) // Remove "C:"
+            String driveLetter = normalized.substring(0, 1).toLowerCase()
+            String pathWithoutDrive = normalized.substring(2)
             return "/mnt/${driveLetter}${pathWithoutDrive}"
         }
 
@@ -66,9 +79,7 @@ class PathService {
     String convertWslToWindows(String wslPath) {
         if (!wslPath) return wslPath
 
-        // Check if it's a WSL path
         if (wslPath.startsWith('/mnt/')) {
-            // Extract drive letter and path
             def matcher = wslPath =~ /^\/mnt\/([a-z])(\/.*)?$/
             if (matcher.matches()) {
                 String driveLetter = matcher.group(1).toUpperCase()
@@ -121,7 +132,6 @@ class PathService {
             String component = components[i]
             if (!component) continue
 
-            // Remove leading slash from component if result doesn't end with slash
             if (result.endsWith('/')) {
                 result += component.startsWith('/') ? component.substring(1) : component
             } else {

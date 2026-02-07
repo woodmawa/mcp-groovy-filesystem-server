@@ -10,12 +10,16 @@ import org.springframework.stereotype.Service
 /**
  * Service for executing Groovy scripts with secure base script
  * Enhanced with security validation and audit logging
+ * REFACTORED: Uses new sub-services (FileReadService, FileWriteService, etc.)
  */
 @Service
 @Slf4j
 class GroovyScriptService {
     
-    private final FileSystemService fileSystemService
+    private final FileReadService fileReadService
+    private final FileWriteService fileWriteService
+    private final FileQueryService fileQueryService
+    private final FileMetadataService fileMetadataService
     private final PathService pathService
     private final ScriptExecutor scriptExecutor
     private final ScriptSecurityService securityService
@@ -24,7 +28,10 @@ class GroovyScriptService {
     private final GitHubService githubService
     
     GroovyScriptService(
-        FileSystemService fileSystemService,
+        FileReadService fileReadService,
+        FileWriteService fileWriteService,
+        FileQueryService fileQueryService,
+        FileMetadataService fileMetadataService,
         PathService pathService,
         ScriptExecutor scriptExecutor,
         ScriptSecurityService securityService,
@@ -32,7 +39,10 @@ class GroovyScriptService {
         CommandWhitelistConfig whitelistConfig,
         GitHubService githubService
     ) {
-        this.fileSystemService = fileSystemService
+        this.fileReadService = fileReadService
+        this.fileWriteService = fileWriteService
+        this.fileQueryService = fileQueryService
+        this.fileMetadataService = fileMetadataService
         this.pathService = pathService
         this.scriptExecutor = scriptExecutor
         this.securityService = securityService
@@ -53,7 +63,7 @@ class GroovyScriptService {
             
             // Validate working directory
             String normalized = pathService.normalizePath(workingDirectory)
-            if (!fileSystemService.isPathAllowed(normalized)) {
+            if (!fileMetadataService.isPathAllowed(normalized)) {
                 auditService.logUnauthorizedAccess(normalized, "Working directory not in allowed list")
                 throw new SecurityException("Working directory not allowed: ${normalized}")
             }
@@ -97,31 +107,30 @@ class GroovyScriptService {
      * Internal script execution method
      */
     private ScriptExecutionResult doExecuteScript(String scriptText, String workingDir, long startTime) {
-        // Create binding with services and output capture
         def scriptOutput = []
         def binding = new Binding([
             workingDir: workingDir,
             scriptOutput: scriptOutput
         ])
         
-        // Configure compiler with secure base script
         def config = new CompilerConfiguration()
         config.scriptBaseClass = SecureMcpScript.name
         
-        // Create shell and execute
         def shell = new GroovyShell(binding, config)
         def script = shell.parse(scriptText)
         
         // Inject services into the script instance
         if (script instanceof SecureMcpScript) {
-            script.fileSystemService = fileSystemService
+            script.fileReadService = fileReadService
+            script.fileWriteService = fileWriteService
+            script.fileQueryService = fileQueryService
+            script.fileMetadataService = fileMetadataService
             script.pathService = pathService
             script.scriptExecutor = scriptExecutor
             script.whitelistConfig = whitelistConfig
             script.githubService = githubService
         }
         
-        // Now run the script
         def result = script.run()
         
         long duration = System.currentTimeMillis() - startTime
@@ -142,7 +151,6 @@ class GroovyScriptService {
         String workingDirectory,
         int timeoutSeconds
     ) {
-        // Create a future for timeout
         def executor = java.util.concurrent.Executors.newSingleThreadExecutor()
         def future = executor.submit({
             executeScript(scriptText, workingDirectory)
