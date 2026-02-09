@@ -110,7 +110,7 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
         "-Dspring.profiles.active=stdio",
         "-Dmcp.mode=stdio",
         "-jar",
-        "C:\\path\\to\\mcp-groovy-filesystem-server-0.0.3-SNAPSHOT.jar"
+        "C:\\path\\to\\mcp-groovy-filesystem-server-0.0.5-SNAPSHOT.jar"
       ]
     }
   }
@@ -285,7 +285,14 @@ mcp:
 
 ## Version History
 
-### v0.0.4 (Current)
+### v0.0.5 (Current)
+- **Request lifecycle events**: `McpRequestEvent` published at 6 stages (RECEIVED→PARSED→DISPATCHED→COMPLETED→SENT→ERROR) with timing, payload size, response size
+- **Diagnostics listener**: `McpDiagnosticsListener` logs timing summaries, warns on slow requests (>2s) and large payloads (>50KB)
+- **Support package extracted**: `Sanitizer` (shared sanitization), `JsonRpcWriter` (stdout output + fallbacks), `LogCleaner` (startup log cleanup)
+- **StdioMcpServer refactored**: 357 lines down to 170 lines — read loop + event publishing only
+- **McpController**: Uses shared `Sanitizer`, removed duplicate sanitize method
+
+### v0.0.4
 - **Cross-platform path handling**: Linux absolute paths (`/home/claude/...`) now map to configurable workspace
 - **New config**: `claude-workspace-root` for mapping Claude.ai Linux paths to Windows/WSL
 - **Path priority**: WSL mounts → Linux paths → Relative → Windows (4-level intelligent resolution)
@@ -309,3 +316,15 @@ mcp:
 ### v0.0.1
 - Initial release: 10 MCP tools, Groovy script DSL, security, audit logging
 - 67 tests
+
+## Package Structure (v0.0.5)
+
+```
+controller/    McpController (thin dispatcher, shared Sanitizer)
+service/       ToolHandler interface + 4 FileServices + GroovyScript + Path + Security + Audit
+support/       Sanitizer, JsonRpcWriter, LogCleaner (extracted from StdioMcpServer)
+event/         McpRequestEvent (lifecycle stages), McpDiagnosticsListener (timing/alerts)
+script/        SecureMcpScript DSL
+model/         McpRequest, McpResponse, CommandResult, ScriptExecutionResult
+config/        CommandWhitelistConfig
+```

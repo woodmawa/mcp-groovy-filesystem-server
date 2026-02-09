@@ -3,323 +3,168 @@ package com.softwood.mcp
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.annotation.JsonInclude
 import com.softwood.mcp.controller.McpController
+import com.softwood.mcp.event.McpRequestEvent
+import com.softwood.mcp.event.McpRequestEvent.Stage
 import com.softwood.mcp.model.McpRequest
 import com.softwood.mcp.model.McpResponse
+import com.softwood.mcp.support.JsonRpcWriter
+import com.softwood.mcp.support.LogCleaner
+import com.softwood.mcp.support.Sanitizer
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.boot.CommandLineRunner
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.Paths
 
+/**
+ * STDIO MCP Server - reads JSON-RPC from stdin, writes responses to stdout.
+ *
+ * Responsibilities (this class only handles the read loop + event publishing):
+ *   - Sanitization         → Sanitizer
+ *   - JSON-RPC output      → JsonRpcWriter
+ *   - Log cleanup          → LogCleaner
+ *   - Lifecycle events     → McpRequestEvent / McpDiagnosticsListener
+ *
+ * v0.0.5: Refactored from 357 lines to ~150. Support classes extracted.
+ *         Added request lifecycle events for stall diagnosis.
+ */
 @Component
 @ConditionalOnProperty(name = "mcp.mode", havingValue = "stdio")
 @Slf4j
 @CompileStatic
 class StdioMcpServer implements CommandLineRunner {
-    
+
     private static final boolean DEBUG = System.getenv("MCP_DEBUG") != null
-    
+
     private final McpController mcpController
-    private final ObjectMapper objectMapper
-    
-    StdioMcpServer(McpController mcpController) {
+    private final ApplicationEventPublisher eventPublisher
+    private final ObjectMapper objectMapper = new ObjectMapper()
+        .setSerializationInclusion(JsonInclude.Include.NON_NULL)
+    private final JsonRpcWriter writer = new JsonRpcWriter()
+
+    StdioMcpServer(McpController mcpController, ApplicationEventPublisher eventPublisher) {
         this.mcpController = mcpController
-        this.objectMapper = new ObjectMapper()
-            .setSerializationInclusion(JsonInclude.Include.NON_NULL)
+        this.eventPublisher = eventPublisher
     }
-    
-    /**
-     * Clear the log files on startup to avoid accumulation across Claude sessions
-     * This makes it easier to spot issues and keeps logs relevant to current session only
-     * Clears both ~/.mcp-logs and Claude's AppData logs
-     */
-    private static void clearLogFileOnStartup() {
-        String sessionHeader = "=== Log cleared on startup - New Claude session ===\n" +
-                               "Timestamp: ${new Date()}\n" +
-                               "=" * 60 + "\n\n"
-        
-        int clearedCount = 0
-        
-        // 1. Clear ~/.mcp-logs/filesystem-server.log
-        try {
-            String userHome = System.getProperty("user.home")
-            Path logDir = Paths.get(userHome, ".mcp-logs")
-            Path logFile = logDir.resolve("filesystem-server.log")
-            
-            if (Files.exists(logFile)) {
-                Files.newBufferedWriter(logFile).withCloseable { writer ->
-                    writer.write(sessionHeader)
-                }
-                clearedCount++
-                debugLog("Cleared: ${logFile}")
-            }
-        } catch (Exception e) {
-            debugLog("Warning: Could not clear ~/.mcp-logs file: ${e.message}")
-        }
-        
-        // 2. Clear Claude's AppData MCP server logs
-        try {
-            String userHome = System.getProperty("user.home")
-            Path claudeLogsDir = Paths.get(userHome, "AppData", "Roaming", "Claude", "logs")
-            
-            if (Files.exists(claudeLogsDir)) {
-                // Clear the groovy-filesystem MCP server log
-                Path mcpServerLog = claudeLogsDir.resolve("mcp-server-groovy-filesystem.log")
-                if (Files.exists(mcpServerLog)) {
-                    Files.newBufferedWriter(mcpServerLog).withCloseable { writer ->
-                        writer.write(sessionHeader)
-                    }
-                    clearedCount++
-                    debugLog("Cleared: ${mcpServerLog}")
-                }
-                
-                // Also clear the general mcp.log if it's large (> 1MB)
-                Path mcpLog = claudeLogsDir.resolve("mcp.log")
-                if (Files.exists(mcpLog) && Files.size(mcpLog) > 1_000_000) {
-                    Files.newBufferedWriter(mcpLog).withCloseable { writer ->
-                        writer.write(sessionHeader)
-                    }
-                    clearedCount++
-                    debugLog("Cleared: ${mcpLog} (was > 1MB)")
-                }
-            }
-        } catch (Exception e) {
-            debugLog("Warning: Could not clear Claude AppData logs: ${e.message}")
-        }
-        
-        debugLog("Log cleanup complete: ${clearedCount} file(s) cleared")
-    }
-    
-    /**
-     * Sanitize string by removing control characters (except newlines and tabs)
-     * CRITICAL: Prevents JSON serialization errors in exception messages
-     */
-    private static String sanitize(String text) {
-        if (!text) return text
-        try {
-            // Remove control characters except \n (10) and \t (9)
-            String cleaned = text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]/, '')
-            
-            // Additional safety: replace any remaining non-printable characters
-            cleaned = cleaned.replaceAll(/[^\p{Print}\p{Space}]/, '')
-            
-            return cleaned
-        } catch (Exception e) {
-            return "[sanitization error]"
-        }
-    }
-    
-    /**
-     * Sanitize object recursively for safe JSON serialization
-     */
-    private static Object sanitizeObject(Object obj) {
-        try {
-            if (obj == null) {
-                return null
-            } else if (obj instanceof String) {
-                return sanitize((String) obj)
-            } else if (obj instanceof Map) {
-                Map result = [:]
-                ((Map) obj).each { k, v ->
-                    result[sanitizeObject(k)] = sanitizeObject(v)
-                }
-                return result
-            } else if (obj instanceof List) {
-                return ((List) obj).collect { sanitizeObject(it) }
-            } else {
-                return obj
-            }
-        } catch (Exception e) {
-            return "[object sanitization error]"
-        }
-    }
-    
+
     @Override
     void run(String... args) {
-        // Clear log file at startup for fresh Claude sessions
-        clearLogFileOnStartup()
-        
-        debugLog("Starting MCP stdio server...")
-        debugLog("Debug mode: ${DEBUG}")
-        
+        LogCleaner.clearLogsOnStartup()
+
+        debugLog("Starting MCP stdio server v0.0.5...")
+
         BufferedReader reader = new BufferedReader(new InputStreamReader(System.in))
         int requestCount = 0
-        
+
         try {
             while (true) {
-                String line = null
+                String line
                 try {
                     line = reader.readLine()
                 } catch (IOException e) {
-                    debugLog("Error reading input: ${sanitize(e.message)}")
+                    debugLog("Error reading input: ${Sanitizer.sanitize(e.message)}")
                     break
                 }
-                
+
                 if (line == null) {
                     debugLog("EOF received, shutting down")
                     break
                 }
-                
+
                 line = line.trim()
-                if (line.isEmpty()) {
-                    continue
-                }
-                
+                if (line.isEmpty()) continue
+
                 requestCount++
-                debugLog("Request ${requestCount}: ${line.take(200)}${line.length() > 200 ? '...' : ''}")
-                
-                // Parse request with enhanced error handling
-                McpRequest request = null
-                String requestId = "unknown-${requestCount}"
-                
+                long startNanos = System.nanoTime()
+                int payloadSize = line.length()
+
+                debugLog("Request ${requestCount} (${payloadSize}B): ${line.take(200)}${payloadSize > 200 ? '...' : ''}")
+                publishEvent(Stage.RECEIVED, null, null, null, requestCount, startNanos, payloadSize)
+
+                // --- Parse ---
+                McpRequest request
+                Object requestId = "unknown-${requestCount}" as String
+                String method = null
+                String toolName = null
+
                 try {
                     request = objectMapper.readValue(line, McpRequest.class)
-                    requestId = request?.id ?: requestId
-                    debugLog("Parsed request ID: ${requestId}")
-                } catch (Exception parseError) {
-                    debugLog("JSON parse error: ${sanitize(parseError.message)}")
-                    sendJsonRpcError(requestId, -32700, "Parse error: ${sanitize(parseError.message)}")
+                    requestId = request.id ?: requestId
+                    method = request.method
+                    toolName = request.params?.name as String
+                    publishEvent(Stage.PARSED, requestId, method, toolName, requestCount, startNanos, payloadSize)
+                } catch (Exception e) {
+                    debugLog("Parse error: ${Sanitizer.sanitize(e.message)}")
+                    publishEvent(Stage.ERROR, requestId, null, null, requestCount, startNanos, payloadSize, 0, Sanitizer.sanitize(e.message))
+                    writer.sendError(requestId as String, -32700, "Parse error: ${Sanitizer.sanitize(e.message)}")
                     continue
                 }
-                
-                // Process request with enhanced error handling
+
+                // --- Dispatch ---
                 try {
+                    publishEvent(Stage.DISPATCHED, requestId, method, toolName, requestCount, startNanos, payloadSize)
+
                     McpResponse response = mcpController.handleRequest(request)
-                    
-                    // Check if this was a notification (no response expected)
+
                     if (response == null) {
-                        debugLog("Notification processed, no response sent")
+                        debugLog("Notification, no response")
                         continue
                     }
-                    
-                    sendResponse(response, requestCount)
-                    
+
+                    publishEvent(Stage.COMPLETED, requestId, method, toolName, requestCount, startNanos, payloadSize)
+
+                    int responseSize = writer.sendResponse(response)
+                    long elapsedMs = (long)((System.nanoTime() - startNanos) / 1_000_000L)
+
+                    publishEvent(Stage.SENT, requestId, method, toolName, requestCount, startNanos, payloadSize, responseSize)
+                    debugLog("Request ${requestCount} done in ${elapsedMs}ms (in=${payloadSize}B out=${responseSize}B)")
+
                 } catch (SecurityException e) {
-                    debugLog("Security error: ${sanitize(e.message)}")
-                    sendJsonRpcError(requestId, -32001, "Security error: ${sanitize(e.message)}")
+                    handleError(e, requestId, method, toolName, requestCount, startNanos, payloadSize, -32001, "Security error")
                 } catch (FileNotFoundException e) {
-                    debugLog("File not found: ${sanitize(e.message)}")
-                    sendJsonRpcError(requestId, -32002, "File not found: ${sanitize(e.message)}")
+                    handleError(e, requestId, method, toolName, requestCount, startNanos, payloadSize, -32002, "File not found")
                 } catch (IllegalArgumentException e) {
-                    debugLog("Invalid argument: ${sanitize(e.message)}")
-                    sendJsonRpcError(requestId, -32602, "Invalid params: ${sanitize(e.message)}")
+                    handleError(e, requestId, method, toolName, requestCount, startNanos, payloadSize, -32602, "Invalid params")
                 } catch (Throwable t) {
-                    debugLog("Unexpected error: ${t.class.simpleName}: ${sanitize(t.message)}")
-                    sendJsonRpcError(requestId, -32603, "${t.class.simpleName}: ${sanitize(t.message ?: 'Unknown error')}")
+                    handleError(t, requestId, method, toolName, requestCount, startNanos, payloadSize, -32603, t.class.simpleName)
                 }
             }
         } catch (Throwable t) {
-            debugLog("Fatal error in stdio server: ${t.class.simpleName}: ${sanitize(t.message)}")
+            debugLog("Fatal: ${t.class.simpleName}: ${Sanitizer.sanitize(t.message)}")
             t.printStackTrace(System.err)
         } finally {
-            debugLog("Stdio server stopped")
+            debugLog("Stdio server stopped after ${requestCount} requests")
         }
     }
-    
-    /**
-     * Send a successful response with robust error handling
-     */
-    private void sendResponse(McpResponse response, int requestCount) {
+
+    private void handleError(Throwable error, Object requestId, String method, String toolName,
+                             int requestNumber, long startNanos, int payloadSize, int code, String prefix) {
+        String msg = Sanitizer.sanitize(error.message ?: 'Unknown error')
+        debugLog("${prefix}: ${msg}")
+        publishEvent(Stage.ERROR, requestId, method, toolName, requestNumber, startNanos, payloadSize, 0, msg)
+        writer.sendError(requestId as String, code, "${prefix}: ${msg}")
+    }
+
+    private void publishEvent(Stage stage, Object requestId, String method, String toolName,
+                              int requestNumber, long startNanos, int payloadSize = 0,
+                              int responseSize = 0, String errorMessage = null) {
         try {
-            // Sanitize the entire response before serialization
-            def sanitizedResponse = sanitizeObject(response)
-            
-            String json = null
-            try {
-                json = objectMapper.writeValueAsString(sanitizedResponse)
-            } catch (Exception jsonError) {
-                debugLog("JSON serialization error: ${sanitize(jsonError.message)}")
-                // Try to send a minimal error response instead
-                sendJsonRpcError(
-                    response?.id as String ?: "error",
-                    -32603,
-                    "Response serialization failed: ${sanitize(jsonError.message)}"
-                )
-                return
-            }
-            
-            // Validate JSON doesn't contain control characters
-            if (json.find(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/) != null) {
-                debugLog("WARNING: Response contains control characters, attempting to clean")
-                json = sanitize(json)
-            }
-            
-            System.out.println(json)
-            System.out.flush()
-            debugLog("Response ${requestCount} sent successfully (${json.length()} bytes)")
-            
-        } catch (Throwable t) {
-            debugLog("Critical error sending response: ${t.class.simpleName}")
-            // Last resort - try to send minimal error
-            try {
-                System.out.println('{"jsonrpc":"2.0","id":"error","error":{"code":-32603,"message":"Response transmission failed"}}')
-                System.out.flush()
-            } catch (Exception e2) {
-                debugLog("Failed to send last resort error")
-            }
+            eventPublisher.publishEvent(new McpRequestEvent(
+                this, stage, requestId, method, toolName, requestNumber, startNanos,
+                payloadSize, responseSize, errorMessage
+            ))
+        } catch (Exception e) {
+            debugLog("Event publish failed: ${e.message}")
         }
     }
-    
-    /**
-     * Send a JSON-RPC error response with maximum robustness
-     */
-    private void sendJsonRpcError(String requestId, int code, String message) {
-        try {
-            // Ensure all fields are sanitized
-            String safeId = sanitize(requestId ?: "unknown")
-            String safeMessage = sanitize(message ?: "Unknown error")
-            
-            // Build minimal error response
-            def errorResponse = [
-                jsonrpc: "2.0",
-                id: safeId,
-                error: [
-                    code: code,
-                    message: safeMessage
-                ]
-            ]
-            
-            String json = null
-            try {
-                json = objectMapper.writeValueAsString(errorResponse)
-            } catch (Exception jsonError) {
-                // If even this fails, send hardcoded minimal JSON
-                debugLog("Error response serialization failed: ${sanitize(jsonError.message)}")
-                json = """{"jsonrpc":"2.0","id":"${safeId.replaceAll('"', '\\\\"')}","error":{"code":${code},"message":"Error serialization failed"}}"""
-            }
-            
-            // Final sanitization check
-            json = sanitize(json)
-            
-            System.out.println(json)
-            System.out.flush()
-            debugLog("Error response sent: code=${code}, message=${safeMessage.take(100)}")
-            
-        } catch (Throwable t) {
-            debugLog("CRITICAL: Failed to send error response: ${t.class.simpleName}")
-            // Absolute last resort - hardcoded minimal error
-            try {
-                System.out.println('{"jsonrpc":"2.0","id":"error","error":{"code":-32603,"message":"Critical error"}}')
-                System.out.flush()
-            } catch (Exception e2) {
-                // If even this fails, we can't do anything more
-                debugLog("CRITICAL: All error response attempts failed")
-            }
-        }
-    }
-    
+
     private static void debugLog(String message) {
         if (DEBUG) {
             try {
-                String timestamp = java.time.LocalTime.now().toString()
-                System.err.println("[${timestamp}] MCP: ${message}")
+                System.err.println("[${java.time.LocalTime.now()}] MCP: ${message}")
                 System.err.flush()
-            } catch (Exception e) {
-                // If even logging fails, silently ignore
-            }
+            } catch (Exception ignored) {}
         }
     }
 }
