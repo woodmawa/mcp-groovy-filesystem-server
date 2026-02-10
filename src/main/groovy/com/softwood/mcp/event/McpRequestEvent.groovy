@@ -17,6 +17,7 @@ import org.springframework.context.ApplicationEvent
  * All timing is relative to requestStartNanos for the same requestId.
  *
  * v0.0.5: Added to diagnose intermittent stalls on large writeFile payloads.
+ * v0.0.6: Added toolArgs for token efficiency tracking (file path lookups).
  */
 class McpRequestEvent extends ApplicationEvent {
 
@@ -35,10 +36,13 @@ class McpRequestEvent extends ApplicationEvent {
     final int responseSizeBytes
     final String errorMessage
 
+    /** v0.0.6: Tool arguments map - allows listeners to inspect file paths, etc. */
+    final Map<String, Object> toolArgs
+
     McpRequestEvent(Object source, Stage stage, Object requestId, String method,
                     String toolName, int requestNumber, long requestStartNanos,
                     int payloadSizeBytes = 0, int responseSizeBytes = 0,
-                    String errorMessage = null) {
+                    String errorMessage = null, Map<String, Object> toolArgs = null) {
         super(source)
         this.stage = stage
         this.requestId = requestId
@@ -50,6 +54,7 @@ class McpRequestEvent extends ApplicationEvent {
         this.payloadSizeBytes = payloadSizeBytes
         this.responseSizeBytes = responseSizeBytes
         this.errorMessage = errorMessage
+        this.toolArgs = toolArgs
     }
 
     /** Elapsed time since request started, in milliseconds */

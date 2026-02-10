@@ -109,8 +109,12 @@ class StdioMcpServer implements CommandLineRunner {
                 }
 
                 // --- Dispatch ---
+                // v0.0.6: Extract tool args for efficiency tracking
+                Map<String, Object> toolArgs = (method == 'tools/call')
+                    ? (request.params?.arguments as Map<String, Object>) : null
+
                 try {
-                    publishEvent(Stage.DISPATCHED, requestId, method, toolName, requestCount, startNanos, payloadSize)
+                    publishEvent(Stage.DISPATCHED, requestId, method, toolName, requestCount, startNanos, payloadSize, 0, null, toolArgs)
 
                     McpResponse response = mcpController.handleRequest(request)
 
@@ -119,12 +123,12 @@ class StdioMcpServer implements CommandLineRunner {
                         continue
                     }
 
-                    publishEvent(Stage.COMPLETED, requestId, method, toolName, requestCount, startNanos, payloadSize)
+                    publishEvent(Stage.COMPLETED, requestId, method, toolName, requestCount, startNanos, payloadSize, 0, null, toolArgs)
 
                     int responseSize = writer.sendResponse(response)
                     long elapsedMs = (long)((System.nanoTime() - startNanos) / 1_000_000L)
 
-                    publishEvent(Stage.SENT, requestId, method, toolName, requestCount, startNanos, payloadSize, responseSize)
+                    publishEvent(Stage.SENT, requestId, method, toolName, requestCount, startNanos, payloadSize, responseSize, null, toolArgs)
                     debugLog("Request ${requestCount} done in ${elapsedMs}ms (in=${payloadSize}B out=${responseSize}B)")
 
                 } catch (SecurityException e) {
@@ -155,11 +159,12 @@ class StdioMcpServer implements CommandLineRunner {
 
     private void publishEvent(Stage stage, Object requestId, String method, String toolName,
                               int requestNumber, long startNanos, int payloadSize = 0,
-                              int responseSize = 0, String errorMessage = null) {
+                              int responseSize = 0, String errorMessage = null,
+                              Map<String, Object> toolArgs = null) {
         try {
             eventPublisher.publishEvent(new McpRequestEvent(
                 this, stage, requestId, method, toolName, requestNumber, startNanos,
-                payloadSize, responseSize, errorMessage
+                payloadSize, responseSize, errorMessage, toolArgs
             ))
         } catch (Exception e) {
             debugLog("Event publish failed: ${e.message}")

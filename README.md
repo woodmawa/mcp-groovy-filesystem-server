@@ -33,7 +33,14 @@ config/
   CommandWhitelistConfig  ← Configurable PowerShell/Bash whitelists (YAML, no rebuild)
 ```
 
-## Tools (29)
+## Tools (30)
+
+### Token Efficiency Tracking (TokenEfficiencyTracker)
+| Tool | Description |
+|------|-------------|
+| `getEfficiencyStats` | Get daily efficiency stats: per-tool bytes saved, optimised vs full-read ratios, estimated tokens saved. Pass `includeRecent: true` for last 100 call details |
+
+The tracker hooks into the `McpRequestEvent` lifecycle and automatically measures how much data the bounded-read tools (`headFile`, `tailFile`, `grepFile`, `readFileRange`, `countLines`, `getFileSummary`, etc.) save compared to naive full-file reads. For file-targeting tools, it uses the **actual file size** from tool arguments when available, falling back to conservative heuristic multipliers. Stats reset daily at midnight.
 
 ### File Reading (FileReadService)
 | Tool | Description |
@@ -285,7 +292,13 @@ mcp:
 
 ## Version History
 
-### v0.0.5 (Current)
+### v0.0.6 (Current)
+- **Token efficiency tracking**: `TokenEfficiencyTracker` service hooks into `McpRequestEvent` lifecycle to measure bytes saved by optimised read tools vs naive full-file reads
+- **New tool**: `getEfficiencyStats`  query daily per-tool savings, call ratios, estimated tokens saved
+- **McpRequestEvent enhanced**: Added optional `toolArgs` field so event listeners can inspect file paths and compute actual file sizes
+- **StdioMcpServer**: Passes tool arguments through to DISPATCHED/COMPLETED/SENT events for `tools/call` requests
+
+### v0.0.5
 - **Request lifecycle events**: `McpRequestEvent` published at 6 stages (RECEIVED→PARSED→DISPATCHED→COMPLETED→SENT→ERROR) with timing, payload size, response size
 - **Diagnostics listener**: `McpDiagnosticsListener` logs timing summaries, warns on slow requests (>2s) and large payloads (>50KB)
 - **Support package extracted**: `Sanitizer` (shared sanitization), `JsonRpcWriter` (stdout output + fallbacks), `LogCleaner` (startup log cleanup)
@@ -317,13 +330,13 @@ mcp:
 - Initial release: 10 MCP tools, Groovy script DSL, security, audit logging
 - 67 tests
 
-## Package Structure (v0.0.5)
+## Package Structure (v0.0.6)
 
 ```
 controller/    McpController (thin dispatcher, shared Sanitizer)
-service/       ToolHandler interface + 4 FileServices + GroovyScript + Path + Security + Audit
+service/       ToolHandler interface + 4 FileServices + TokenEfficiencyTracker + GroovyScript + Path + Security + Audit
 support/       Sanitizer, JsonRpcWriter, LogCleaner (extracted from StdioMcpServer)
-event/         McpRequestEvent (lifecycle stages), McpDiagnosticsListener (timing/alerts)
+event/         McpRequestEvent (lifecycle stages + toolArgs), McpDiagnosticsListener (timing/alerts)
 script/        SecureMcpScript DSL
 model/         McpRequest, McpResponse, CommandResult, ScriptExecutionResult
 config/        CommandWhitelistConfig
