@@ -38,6 +38,31 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
                 ])
             ]),
             createMap([
+                name: "writeFileFromBase64",
+                description: "Write a file from Base64-encoded content. Use this for large files (>1KB) to avoid JSON escaping issues with STDIO transport.",
+                inputSchema: createMap([
+                    type: "object",
+                    properties: createMap([
+                        path: createMap([type: "string", description: "File path (Windows or WSL format)"]),
+                        base64Content: createMap([type: "string", description: "Base64-encoded file content"]),
+                        createBackup: createMap([type: "boolean", description: "Create .backup file before overwriting"])
+                    ]),
+                    required: ["path", "base64Content"]
+                ])
+            ]),
+            createMap([
+                name: "appendFileFromBase64",
+                description: "Append Base64-encoded content to a file. Use with writeFileFromBase64 to send large files in chunks.",
+                inputSchema: createMap([
+                    type: "object",
+                    properties: createMap([
+                        path: createMap([type: "string", description: "File path"]),
+                        base64Content: createMap([type: "string", description: "Base64-encoded content to append"])
+                    ]),
+                    required: ["path", "base64Content"]
+                ])
+            ]),
+            createMap([
                 name: "replaceInFile",
                 description: "Replace a unique string in a file without full read+write round-trip. oldText must appear exactly once.",
                 inputSchema: createMap([
@@ -119,7 +144,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 
     @Override
     boolean canHandle(String toolName) {
-        toolName in ['writeFile', 'replaceInFile', 'appendToFile', 'copyFile', 'moveFile', 'deleteFile', 'createDirectory']
+        toolName in ['writeFile', 'writeFileFromBase64', 'appendFileFromBase64', 'replaceInFile', 'appendToFile', 'copyFile', 'moveFile', 'deleteFile', 'createDirectory']
     }
 
     @Override
@@ -128,6 +153,15 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
             case 'writeFile':
                 def result = writeFile(args.path as String, args.content as String,
                     (args.encoding as String) ?: 'UTF-8', (args.createBackup as Boolean) ?: false)
+                return textResponse(requestId, result)
+
+            case 'writeFileFromBase64':
+                def result = writeFileFromBase64(args.path as String, args.base64Content as String,
+                    (args.createBackup as Boolean) ?: false)
+                return textResponse(requestId, result)
+
+            case 'appendFileFromBase64':
+                def result = appendFileFromBase64(args.path as String, args.base64Content as String)
                 return textResponse(requestId, result)
 
             case 'replaceInFile':
@@ -207,6 +241,75 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     }
 
     /**
+     * Write file from Base64-encoded content.
+     * Avoids JSON escaping issues with large payloads over STDIO transport.
+     */
+    Map<String, Object> writeFileFromBase64(String path, String base64Content, boolean createBackup = false) {
+        try {
+            validateWriteEnabled()
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+
+            // Auto-create parent directories
+            Path parent = filePath.getParent()
+            if (parent != null && !Files.exists(parent)) {
+                Files.createDirectories(parent)
+            }
+
+            String backupPath = null
+            if (createBackup && Files.exists(filePath)) {
+                backupPath = "${normalized}.backup"
+                Files.copy(filePath, Paths.get(backupPath), StandardCopyOption.REPLACE_EXISTING)
+            }
+
+            byte[] decoded = Base64.getDecoder().decode(base64Content)
+            Files.write(filePath, decoded)
+
+            return createMap([
+                path: sanitize(normalized),
+                size: Files.size(filePath),
+                backup: backupPath ? sanitize(backupPath) : null
+            ])
+        } catch (Exception e) {
+            log.error("Error writing file from base64: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
+     *  NEW: Append Base64-encoded content to a file.
+     * Used with writeFileFromBase64 to send large files in ~800B chunks.
+     */
+    Map<String, Object> appendFileFromBase64(String path, String base64Content) {
+        try {
+            validateWriteEnabled()
+            String normalized = pathService.normalizePath(path)
+
+            if (!isPathAllowed(normalized)) {
+                throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+            }
+
+            Path filePath = Paths.get(normalized)
+            byte[] decoded = Base64.getDecoder().decode(base64Content)
+            Files.write(filePath, decoded, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+
+            return createMap([
+                path: sanitize(normalized),
+                appendedBytes: decoded.length,
+                fileSize: Files.size(filePath)
+            ])
+        } catch (Exception e) {
+            log.error("Error appending base64 to file: ${sanitize(e.message)}")
+            throw e
+        }
+    }
+
+    /**
      *  NEW: Replace a unique string in file without full read+write round-trip
      * 60-80% token savings for typical edits
      * Fails safely if oldText not found or found multiple times
@@ -220,14 +323,25 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 
             String content = new String(Files.readAllBytes(filePath), encoding)
 
+            // Normalize line endings: if file uses CRLF and search text uses LF, adapt
+            String effectiveOld = oldText
+            String effectiveNew = newText
+            boolean fileHasCRLF = content.contains('\r\n')
+            boolean searchHasLF = oldText.contains('\n') && !oldText.contains('\r\n')
+            if (fileHasCRLF && searchHasLF) {
+                effectiveOld = oldText.replace('\n', '\r\n')
+                effectiveNew = newText.replace('\n', '\r\n')
+                log.debug("Adapted search text from LF to CRLF to match file")
+            }
+
             // Count occurrences for safety
             int count = 0
             int searchFrom = 0
             while (true) {
-                int idx = content.indexOf(oldText, searchFrom)
+                int idx = content.indexOf(effectiveOld, searchFrom)
                 if (idx < 0) break
                 count++
-                searchFrom = idx + oldText.length()
+                searchFrom = idx + effectiveOld.length()
                 if (count > 1) break  // No need to count further
             }
 
@@ -253,7 +367,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
             }
 
             // Perform replacement and write
-            String newContent = content.replace(oldText, newText)
+            String newContent = content.replace(effectiveOld, effectiveNew)
             Files.write(filePath, newContent.getBytes(encoding))
 
             return createMap([

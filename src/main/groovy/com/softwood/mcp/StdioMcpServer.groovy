@@ -57,10 +57,17 @@ class StdioMcpServer implements CommandLineRunner {
         BufferedReader reader = new BufferedReader(new InputStreamReader(System.in))
         int requestCount = 0
 
+        // Log when server is ready for input
+        log.info("STDIO server ready, waiting for input...")
+
         try {
             while (true) {
                 String line
                 try {
+                    // Check for available input with a polling approach for diagnostics
+                    if (!reader.ready()) {
+                        log.trace("Waiting for input...")
+                    }
                     line = reader.readLine()
                 } catch (IOException e) {
                     debugLog("Error reading input: ${Sanitizer.sanitize(e.message)}")
