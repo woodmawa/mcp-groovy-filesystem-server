@@ -16,13 +16,11 @@ mcp:
     enable-write: true
     allow-symlinks: false
 
-    # TOKEN OPTIMIZATION: Bounded result limits
+    # Active project and workspace roots
     active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
-    
-    # v0.0.4: Cross-platform workspace mapping for Linux paths from Claude.ai
-    # Linux paths like /home/claude/file.md are mapped here
-    # If not set, falls back to active-project-root
     claude-workspace-root: C:/Users/willw/claude
+
+    # Result bounds — keep responses token-efficient
     max-list-results: 100
     max-search-results: 50
     max-search-matches-per-file: 10
@@ -32,21 +30,30 @@ mcp:
     max-line-length: 1000
     max-response-size-kb: 100
 
-  # Script execution security settings
+    # v0.0.7: Chunked read threshold (KB) — files larger than this are auto-chunked
+    read-chunk-threshold-kb: 300
+
+    # v0.0.7: Default file pattern for project/content searches
+    default-file-pattern: '.*\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$'
+
+  # Script execution settings
   script:
     max-memory-mb: 256
     max-threads: 10
     max-execution-time-seconds: 60
     max-script-length: 100000
-    enable-dangerous-pattern-check: true
-    enable-file-path-validation: true
-    enable-audit-logging: true
+    max-working-dir-length: 4096
 
-    # Command whitelists - PERMISSIVE for normal operations
+    # v0.0.7: Per-executor enable flags
+    enable-bash: true
+    enable-powershell: true
+    enable-groovy: true
+    enable-cmd: true
+
+    # Command whitelists — blocked list takes precedence over allowed
     whitelist:
       powershell-allowed:
-        - '.*'  # Allow all - blocked list takes precedence
-
+        - '.*'
       powershell-blocked:
         - '.*Remove-Item.*'
         - '.*Clear-.*Content.*'
@@ -55,10 +62,8 @@ mcp:
         - '.*Format-Volume.*'
         - '.*Invoke-Expression.*'
         - '.*Set-ExecutionPolicy.*'
-
       bash-allowed:
-        - '.*'  # Allow all - blocked list takes precedence
-
+        - '.*'
       bash-blocked:
         - '.*rm .*'
         - '.*chmod.*'
@@ -91,4 +96,3 @@ logging:
     root: INFO
     com.softwood.mcp: DEBUG
     org.springframework: WARN
-    com.softwood.mcp.service.AuditService: INFO

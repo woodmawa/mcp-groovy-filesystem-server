@@ -1,305 +1,179 @@
 package com.softwood.mcp.script
 
-import com.softwood.mcp.config.CommandWhitelistConfig
-import com.softwood.mcp.model.CommandResult
-import com.softwood.mcp.service.FileReadService
-import com.softwood.mcp.service.FileWriteService
-import com.softwood.mcp.service.FileQueryService
-import com.softwood.mcp.service.FileMetadataService
 import com.softwood.mcp.service.PathService
-import com.softwood.mcp.service.ScriptExecutor
+import groovy.util.logging.Slf4j
+
+import java.util.concurrent.TimeUnit
 
 /**
- * Secure base script for MCP Groovy script execution
- * Provides whitelisted access to file operations, PowerShell, Bash, Git, Gradle
- * REFACTORED: Uses decomposed file services instead of monolithic FileSystemService
+ * SecureMcpScript — base class for Groovy scripts executed via ExecuteService.
+ *
+ * Provides a safe DSL: git, gradle, bash, powershell, cmd, file helpers.
+ * Dangerous reflective APIs (GroovyShell, Class.forName, etc.) are blocked
+ * by SecurityService before the script reaches this class.
+ *
+ * Script output is captured via the scriptOutput binding variable.
+ *
+ * v0.0.7 — cleaned up, removed old service dependencies
  */
+@Slf4j
 abstract class SecureMcpScript extends Script {
 
-    // Injected services (set by GroovyScriptService)
-    FileReadService fileReadService
-    FileWriteService fileWriteService
-    FileQueryService fileQueryService
-    FileMetadataService fileMetadataService
-    PathService pathService
-    ScriptExecutor scriptExecutor
-    CommandWhitelistConfig whitelistConfig
-    com.softwood.mcp.service.GitHubService githubService
+    private static final int DEFAULT_TIMEOUT_SECONDS = 60
+
+    // -----------------------------------------------------------------------
+    // Binding helpers
+    // -----------------------------------------------------------------------
 
     String getWorkingDir() {
-        binding.getVariable('workingDir') as String
+        binding.hasVariable('workingDir') ? binding.getVariable('workingDir') as String : System.getProperty('user.dir')
     }
 
-    private static String sanitize(String text) {
-        if (!text) return text
-        return text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/, '')
+    List<String> getArgs() {
+        binding.hasVariable('args') ? binding.getVariable('args') as List<String> : []
     }
 
-    /**
-     * Resolve path against working directory if relative
-     */
-    private String resolvePath(String path) {
-        if (!path) return path
-        if (path.matches('^[A-Za-z]:[\\\\/].*') || path.startsWith('/')) {
-            return path
+    private List<String> getScriptOutput() {
+        if (!binding.hasVariable('scriptOutput')) {
+            binding.setVariable('scriptOutput', [])
         }
-        return new File(workingDir, path).canonicalPath
+        return binding.getVariable('scriptOutput') as List<String>
     }
 
-    /**
-     * Get a File object with path resolved against working directory
-     */
-    File file(String path) {
-        if (!path) return null
-        File f = new File(path)
-        if (f.isAbsolute()) return f
-        return new File(workingDir, path).canonicalFile
-    }
-
-    // ========================================================================
-    // File Read Operations (via FileReadService)
-    // ========================================================================
-
-    def readFile(String path, String encoding = 'UTF-8') {
-        fileReadService.readFile(resolvePath(path), encoding)
-    }
-
-    def readFileRange(String path, int startLine = 1, int maxLines = 100) {
-        fileReadService.readFileRange(resolvePath(path), startLine, maxLines)
-    }
-
-    def grepFile(String path, String pattern, int maxMatches = 100) {
-        fileReadService.grepFile(resolvePath(path), pattern, maxMatches)
-    }
-
-    def tailFile(String path, int lines = 50) {
-        fileReadService.tailFile(resolvePath(path), lines)
-    }
-
-    def headFile(String path, int lines = 50) {
-        fileReadService.headFile(resolvePath(path), lines)
-    }
-
-    def countLines(String path) {
-        fileReadService.countLines(resolvePath(path))
-    }
-
-    def readMultipleFiles(List<String> paths) {
-        fileReadService.readMultipleFiles(paths.collect { resolvePath(it) })
-    }
-
-    // ========================================================================
-    // File Write Operations (via FileWriteService)
-    // ========================================================================
-
-    def writeFile(String path, String content, Map options = [:]) {
-        String encoding = options.encoding ?: 'UTF-8'
-        boolean backup = options.backup ?: false
-        fileWriteService.writeFile(resolvePath(path), content, encoding, backup)
-    }
-
-    def replaceInFile(String path, String oldText, String newText, Map options = [:]) {
-        String encoding = options.encoding ?: 'UTF-8'
-        boolean backup = options.backup ?: false
-        fileWriteService.replaceInFile(resolvePath(path), oldText, newText, encoding, backup)
-    }
-
-    def appendToFile(String path, String content) {
-        fileWriteService.appendToFile(resolvePath(path), content)
-    }
-
-    def copyFile(String source, String dest, boolean overwrite = false) {
-        fileWriteService.copyFile(resolvePath(source), resolvePath(dest), overwrite)
-    }
-
-    def moveFile(String source, String dest, boolean overwrite = false) {
-        fileWriteService.moveFile(resolvePath(source), resolvePath(dest), overwrite)
-    }
-
-    def deleteFile(String path, boolean recursive = false) {
-        fileWriteService.deleteFile(resolvePath(path), recursive)
-    }
-
-    def createDirectory(String path) {
-        fileWriteService.createDirectory(resolvePath(path))
-    }
-
-    // ========================================================================
-    // File Query Operations (via FileQueryService)
-    // ========================================================================
-
-    def listFiles(String path, Map options = [:]) {
-        String pattern = options.pattern
-        boolean recursive = options.recursive ?: false
-        fileQueryService.listDirectory(resolvePath(path), pattern, recursive)
-    }
-
-    def searchFiles(String directory, String contentPattern, String filePattern = null) {
-        fileQueryService.searchFiles(resolvePath(directory), contentPattern, filePattern ?: '.*')
-    }
-
-    def findFilesByName(String pattern, String directory = null, int maxDepth = 5, int maxResults = 100) {
-        String searchDir = directory ? resolvePath(directory) : fileMetadataService.getProjectRoot()
-        fileQueryService.findFilesByName(pattern, searchDir, maxDepth, maxResults)
-    }
-
-    def getDirectoryTree(String path, List<String> excludePatterns = []) {
-        fileQueryService.getDirectoryTree(resolvePath(path), excludePatterns)
-    }
-
-    def listFilesWithSizes(String path, String sortBy = 'name') {
-        fileQueryService.listDirectoryWithSizes(resolvePath(path), sortBy)
-    }
-
-    // ========================================================================
-    // File Metadata Operations (via FileMetadataService)
-    // ========================================================================
-
-    def fileExists(String path) {
-        fileMetadataService.fileExists(resolvePath(path))
-    }
-
-    def getFileInfo(String path) {
-        fileMetadataService.getFileInfo(resolvePath(path))
-    }
-
-    def getFileSummary(String path) {
-        fileMetadataService.getFileSummary(resolvePath(path))
-    }
-
-    // ========================================================================
-    // Path Operations
-    // ========================================================================
-
-    String toWslPath(String windowsPath) { pathService.convertWindowsToWsl(windowsPath) }
-    String toWindowsPath(String wslPath) { pathService.convertWslToWindows(wslPath) }
-    String normalizePath(String path) { pathService.normalizePath(path) }
-    Map<String, String> getPathInfo(String path) { pathService.getPathRepresentations(path) }
-
-    // ========================================================================
-    // Git Operations - Returns CommandResult
-    // ========================================================================
-
-    CommandResult git(String... args) { executeCommand('git', args.toList()) }
-    CommandResult gitStatus() { git('status') }
-    CommandResult gitAdd(String... paths) { git(['add'] + paths.toList() as String[]) }
-    CommandResult gitCommit(String message) { git('commit', '-m', message) }
-    CommandResult gitPush(String remote = 'origin', String branch = null) {
-        branch ? git('push', remote, branch) : git('push', remote)
-    }
-    CommandResult gitPull(String remote = 'origin', String branch = null) {
-        branch ? git('pull', remote, branch) : git('pull', remote)
-    }
-    CommandResult gitClone(String url, String directory = null) {
-        directory ? git('clone', url, directory) : git('clone', url)
-    }
-    CommandResult gitBranch(String name = null, boolean delete = false) {
-        name == null ? git('branch') : (delete ? git('branch', '-d', name) : git('branch', name))
-    }
-    CommandResult gitCheckout(String branch, boolean createNew = false) {
-        createNew ? git('checkout', '-b', branch) : git('checkout', branch)
-    }
-    CommandResult gitLog(int count = 10) { git('log', '--pretty=format:%h %s', '-n', count.toString()) }
-    CommandResult gitDiff(boolean cached = false) { cached ? git('diff', '--cached') : git('diff') }
-    String getCurrentBranch() { git('rev-parse', '--abbrev-ref', 'HEAD').stdout.trim() }
-    boolean isWorkingDirectoryClean() { git('status', '--porcelain').stdout.trim().isEmpty() }
-
-    // ========================================================================
-    // GitHub API Operations
-    // ========================================================================
-
-    boolean isGitHubAvailable() { githubService?.isAvailable() ?: false }
-    Map<String, Object> githubGetUser() { githubService.getUser() }
-    List<Map<String, Object>> githubListRepos(String visibility = 'all') { githubService.listRepos(visibility, 30) }
-
-    Map<String, Object> githubGetRepo(String repo) {
-        def parts = repo.split('/')
-        if (parts.length == 2) return githubService.getRepo(parts[0], parts[1])
-        def user = githubGetUser()
-        return githubService.getRepo(user.login as String, repo)
-    }
-
-    Map<String, Object> githubCreatePR(String repo, String title, String body, String head, String base = 'main') {
-        def parts = repo.split('/')
-        if (parts.length != 2) throw new IllegalArgumentException('Repo format must be "owner/repo"')
-        githubService.createPullRequest(parts[0], parts[1], title, body, head, base)
-    }
-
-    List<Map<String, Object>> githubListPRs(String repo, String state = 'open') {
-        def parts = repo.split('/')
-        if (parts.length != 2) throw new IllegalArgumentException('Repo format must be "owner/repo"')
-        githubService.listPullRequests(parts[0], parts[1], state)
-    }
-
-    Map<String, Object> githubCreateIssue(String repo, String title, String body, List<String> labels = []) {
-        def parts = repo.split('/')
-        if (parts.length != 2) throw new IllegalArgumentException('Repo format must be "owner/repo"')
-        githubService.createIssue(parts[0], parts[1], title, body, labels)
-    }
-
-    List<Map<String, Object>> githubListIssues(String repo, String state = 'open') {
-        def parts = repo.split('/')
-        if (parts.length != 2) throw new IllegalArgumentException('Repo format must be "owner/repo"')
-        githubService.listIssues(parts[0], parts[1], state)
-    }
-
-    Map<String, Object> githubGetFile(String repo, String path, String ref = 'main') {
-        def parts = repo.split('/')
-        if (parts.length != 2) throw new IllegalArgumentException('Repo format must be "owner/repo"')
-        githubService.getFileContents(parts[0], parts[1], path, ref)
-    }
-
-    // ========================================================================
-    // Gradle Operations
-    // ========================================================================
-
-    CommandResult gradle(String... args) {
-        List<String> cmdArgs = ['cmd', '/c', 'gradlew.bat'] + args.toList()
-        executeCommand(cmdArgs[0], cmdArgs.drop(1))
-    }
-
-    CommandResult gradlew(String... args) { gradle(args) }
-
-    // ========================================================================
-    // PowerShell / Bash (Whitelisted)
-    // ========================================================================
-
-    CommandResult powershell(String command) {
-        if (!whitelistConfig.isPowershellAllowed(command)) {
-            throw new SecurityException("PowerShell command not whitelisted: ${sanitize(command.take(50))}")
-        }
-        scriptExecutor.executePowerShell(command, workingDir)
-    }
-
-    CommandResult ps(String command) { powershell(command) }
-
-    CommandResult bash(String command) {
-        if (!whitelistConfig.isBashAllowed(command)) {
-            throw new SecurityException("Bash command not whitelisted: ${sanitize(command.take(50))}")
-        }
-        scriptExecutor.executeBash(command, workingDir)
-    }
-
-    // ========================================================================
-    // Utility
-    // ========================================================================
-
-    private CommandResult executeCommand(String executable, List args) {
-        scriptExecutor.executeCommand(executable, args, workingDir)
-    }
+    // -----------------------------------------------------------------------
+    // Output capture — override println/print so output is returned to caller
+    // -----------------------------------------------------------------------
 
     void println(Object message) {
-        def output = binding.getVariable('scriptOutput') as List
-        output.add(message.toString())
+        scriptOutput.add(message?.toString() ?: 'null')
     }
 
     void print(Object message) {
-        def output = binding.getVariable('scriptOutput') as List
-        if (output.isEmpty()) {
-            output.add(message.toString())
-        } else {
-            String lastItem = output.last() as String
-            output.set(output.size() - 1, lastItem + message.toString())
+        List<String> out = scriptOutput
+        String s = message?.toString() ?: ''
+        if (out.isEmpty()) { out.add(s) } else { out.set(out.size() - 1, out.last() + s) }
+    }
+
+    // -----------------------------------------------------------------------
+    // File helpers
+    // -----------------------------------------------------------------------
+
+    File file(String path) {
+        if (!path) return null
+        File f = new File(path)
+        return f.isAbsolute() ? f : new File(workingDir, path).canonicalFile
+    }
+
+    String readText(String path, String encoding = 'UTF-8') {
+        file(path).getText(encoding)
+    }
+
+    void writeText(String path, String content, String encoding = 'UTF-8') {
+        file(path).setText(content, encoding)
+    }
+
+    void appendText(String path, String content, String encoding = 'UTF-8') {
+        file(path).append(content, encoding)
+    }
+
+    boolean fileExists(String path) { file(path).exists() }
+
+    List<String> listDir(String path) {
+        File d = file(path)
+        d.isDirectory() ? d.list().toList().sort() : []
+    }
+
+    // -----------------------------------------------------------------------
+    // Shell execution helpers
+    // -----------------------------------------------------------------------
+
+    /** Run a git sub-command in workingDir */
+    Map<String, Object> git(String... args) {
+        runCmd(['git'] + args.toList())
+    }
+
+    /** Common git shortcuts */
+    Map<String, Object> gitStatus()                          { git('status', '--short') }
+    Map<String, Object> gitAdd(String... paths)              { git(['add'] + paths.toList() as String[]) }
+    Map<String, Object> gitCommit(String message)            { git('commit', '-m', message) }
+    Map<String, Object> gitPush(String remote = 'origin')   { git('push', remote) }
+    Map<String, Object> gitPull(String remote = 'origin')   { git('pull', remote) }
+    Map<String, Object> gitLog(int n = 10)                  { git('log', '--pretty=format:%h %s', '-n', n.toString()) }
+    String gitBranch()                                       { git('rev-parse', '--abbrev-ref', 'HEAD').stdout?.trim() }
+
+    /** Run a gradle wrapper task */
+    Map<String, Object> gradle(String... args) {
+        boolean windows = System.getProperty('os.name').toLowerCase().contains('windows')
+        String wrapper  = new File(workingDir, windows ? 'gradlew.bat' : 'gradlew').exists()
+            ? (windows ? 'gradlew.bat' : './gradlew') : 'gradle'
+        runCmd([wrapper] + args.toList() + ['--no-daemon'])
+    }
+
+    /** Run a PowerShell command */
+    Map<String, Object> powershell(String command) {
+        runCmd(['powershell', '-NoProfile', '-NonInteractive', '-Command', command])
+    }
+    Map<String, Object> ps(String command) { powershell(command) }
+
+    /** Run a bash command */
+    Map<String, Object> bash(String command) {
+        runCmd(['bash', '-c', command])
+    }
+
+    /** Run a cmd /c command (Windows) */
+    Map<String, Object> cmd(String command) {
+        runCmd(['cmd', '/c', command])
+    }
+
+    /**
+     * Core process runner — shared by all shell helpers.
+     * Returns [exitCode, stdout, stderr, success, durationMs].
+     */
+    Map<String, Object> runCmd(List<String> cmd, int timeoutSeconds = DEFAULT_TIMEOUT_SECONDS) {
+        long start = System.currentTimeMillis()
+        Process process = null
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd)
+            pb.directory(new File(workingDir))
+            pb.redirectErrorStream(false)
+            process = pb.start()
+
+            StringBuilder stdout = new StringBuilder()
+            StringBuilder stderr = new StringBuilder()
+
+            Thread t1 = Thread.ofVirtual().start({ process.inputStream.eachLine { stdout.append(it).append('\n') } })
+            Thread t2 = Thread.ofVirtual().start({ process.errorStream.eachLine { stderr.append(it).append('\n') } })
+
+            boolean done = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            t1.join(1000); t2.join(1000)
+
+            long ms = System.currentTimeMillis() - start
+            if (!done) { process.destroyForcibly() }
+
+            int exitCode = done ? process.exitValue() : -1
+            return [exitCode: exitCode, stdout: stdout.toString(), stderr: stderr.toString(),
+                    success: exitCode == 0, durationMs: ms]
+        } catch (Exception e) {
+            process?.destroyForcibly()
+            long ms = System.currentTimeMillis() - start
+            return [exitCode: -1, stdout: '', stderr: e.message, success: false, durationMs: ms]
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Path helpers
+    // -----------------------------------------------------------------------
+
+    String normalizePath(String path) {
+        path?.replace('\\', '/')
+    }
+
+    String toWslPath(String winPath) {
+        if (!winPath) return winPath
+        String n = winPath.replace('\\', '/')
+        if (n.matches('^[A-Za-z]:/.*')) {
+            return "/mnt/${n[0].toLowerCase()}${n.substring(2)}"
+        }
+        return n
     }
 }

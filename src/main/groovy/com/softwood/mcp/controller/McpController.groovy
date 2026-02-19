@@ -2,10 +2,8 @@ package com.softwood.mcp.controller
 
 import com.softwood.mcp.model.McpRequest
 import com.softwood.mcp.model.McpResponse
-import com.softwood.mcp.service.GroovyScriptService
 import com.softwood.mcp.service.ToolHandler
 import com.softwood.mcp.support.Sanitizer
-import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.web.bind.annotation.PostMapping
@@ -13,23 +11,26 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RestController
 
 /**
- * MCP Controller - thin dispatcher using auto-discovered ToolHandler beans.
- * Tool definitions and handling logic live in the service classes, not here.
+ * McpController — thin dispatcher for all MCP JSON-RPC requests.
  *
- * v0.0.5: Uses shared Sanitizer from support package.
+ * Auto-discovers all ToolHandler beans via Spring injection.
+ * No business logic here — all tool behaviour lives in the service layer.
+ *
+ * v0.0.7: 7 consolidated tools, no GroovyScriptService dependency.
  */
 @RestController
 @Slf4j
 @CompileStatic
 class McpController {
 
-    private final List<ToolHandler> toolHandlers
-    private final GroovyScriptService groovyScriptService
-    private final Map<String, ToolHandler> handlerMap = [:]
+    static final String SERVER_VERSION = '0.7.1'
+    static final String PROTOCOL_VERSION = '2024-11-05'
 
-    McpController(List<ToolHandler> toolHandlers, GroovyScriptService groovyScriptService) {
+    private final List<ToolHandler> toolHandlers
+    private final Map<String, ToolHandler> handlerMap = new LinkedHashMap<String, ToolHandler>()
+
+    McpController(List<ToolHandler> toolHandlers) {
         this.toolHandlers = toolHandlers
-        this.groovyScriptService = groovyScriptService
         buildHandlerMap()
     }
 
@@ -38,50 +39,57 @@ class McpController {
             handler.getToolDefinitions().each { Map<String, Object> toolDef ->
                 String name = toolDef.name as String
                 if (handlerMap.containsKey(name)) {
-                    log.warn("Duplicate tool name '{}' - overwriting previous handler", name)
+                    log.warn("Duplicate tool name '{}' — overwriting with {}", name, handler.class.simpleName)
                 }
                 handlerMap[name] = handler
-                log.debug("Registered tool: {} → {}", name, handler.class.simpleName)
+                log.debug("Registered tool: {}  {}", name, handler.class.simpleName)
             }
         }
-        log.info("Registered {} tools from {} handlers", handlerMap.size(), toolHandlers.size())
+        log.info("v{} ready — {} tools registered from {} handlers: {}",
+            SERVER_VERSION, handlerMap.size(), toolHandlers.size(), handlerMap.keySet().join(', '))
     }
 
-    @PostMapping("/")
+    @PostMapping('/')
     McpResponse handleRequest(@RequestBody McpRequest request) {
         try {
             return dispatch(request)
         } catch (Exception e) {
-            log.error("Error handling request", e)
-            return McpResponse.error(request.id, -32603, Sanitizer.sanitize("Internal error: ${e.message}") as String)
+            log.error("Unhandled error in handleRequest", e)
+            return McpResponse.error(request?.id, -32603,
+                Sanitizer.sanitize("Internal error: ${e.message}") as String)
         }
     }
 
     private McpResponse dispatch(McpRequest request) {
+        // Notifications (no id) — acknowledge silently
         if (request.id == null) {
-            log.debug("Received notification: {}", request.method)
+            log.debug("Notification received: {}", request.method)
             return null
         }
 
         switch (request.method) {
-            case "initialize":
-                return handleInitialize(request)
-            case "tools/list":
-                return handleToolsList(request)
-            case "tools/call":
-                return handleToolsCall(request)
+            case 'initialize'  : return handleInitialize(request)
+            case 'tools/list'  : return handleToolsList(request)
+            case 'tools/call'  : return handleToolsCall(request)
+            case 'ping'        : return McpResponse.success(request.id, [:] as Map<String, Object>)
             default:
+                log.warn("Unknown MCP method: {}", request.method)
                 return McpResponse.error(request.id, -32601, "Unknown method: ${request.method}" as String)
         }
     }
 
+    // -----------------------------------------------------------------------
+    // MCP protocol handlers
+    // -----------------------------------------------------------------------
+
     private McpResponse handleInitialize(McpRequest request) {
-        def clientVersion = request.params.protocolVersion
+        String clientVersion = request.params?.protocolVersion as String ?: PROTOCOL_VERSION
+        log.info("Client initializing with protocolVersion={}", clientVersion)
         return McpResponse.success(request.id, [
-                protocolVersion: clientVersion ?: "2024-11-05",
-                capabilities: [tools: [:]],
-                serverInfo: [name: "mcp-groovy-filesystem-server", version: "0.0.5"]
-        ])
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities   : [tools: [:]] as Map<String, Object>,
+            serverInfo     : [name: 'mcp-groovy-filesystem-server', version: SERVER_VERSION] as Map<String, Object>
+        ] as Map<String, Object>)
     }
 
     private McpResponse handleToolsList(McpRequest request) {
@@ -89,41 +97,26 @@ class McpController {
         toolHandlers.each { ToolHandler handler ->
             allTools.addAll(handler.getToolDefinitions())
         }
-
-        allTools.add([
-            name: "executeGroovyScript",
-            description: "Execute a Groovy script with secure DSL for PowerShell, Bash, Git, and Gradle commands",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    script: [type: "string", description: "Groovy script to execute"],
-                    workingDirectory: [type: "string", description: "Working directory for script execution"]
-                ],
-                required: ["script", "workingDirectory"]
-            ]
-        ] as Map<String, Object>)
-
+        log.debug("tools/list returning {} tools", allTools.size())
         return McpResponse.success(request.id, [tools: allTools] as Map<String, Object>)
     }
 
     private McpResponse handleToolsCall(McpRequest request) {
-        String toolName = request.params.name as String
-        Map<String, Object> arguments = request.params.arguments as Map<String, Object> ?: [:]
-
-        if (toolName == 'executeGroovyScript') {
-            String script = arguments.script as String
-            String workingDirectory = arguments.workingDirectory as String
-            def result = groovyScriptService.executeScript(script, workingDirectory)
-            return McpResponse.success(request.id, [
-                content: [[type: "text", text: JsonOutput.toJson(result)]]
-            ] as Map<String, Object>)
+        String toolName = request.params?.name as String
+        if (!toolName) {
+            return McpResponse.error(request.id, -32602, "tools/call missing required param: name")
         }
+
+        Map<String, Object> arguments = (request.params?.arguments as Map<String, Object>) ?: [:] as Map<String, Object>
 
         ToolHandler handler = handlerMap[toolName]
         if (!handler) {
-            return McpResponse.error(request.id, -32601, "Unknown tool: ${toolName}" as String)
+            log.warn("Unknown tool called: {}", toolName)
+            return McpResponse.error(request.id, -32601,
+                "Unknown tool: '${toolName}'. Available: ${handlerMap.keySet().join(', ')}" as String)
         }
 
+        log.debug("Dispatching tool: {}", toolName)
         return handler.handleToolCall(toolName, arguments, request.id)
     }
 }

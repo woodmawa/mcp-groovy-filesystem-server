@@ -1,0 +1,51 @@
+spring:
+  application:
+    name: mcp-groovy-filesystem-server-test
+  main:
+    web-application-type: servlet
+  jackson:
+    default-property-inclusion: non_null
+
+mcp:
+  mode: http
+
+  filesystem:
+    allowed-directories: ${java.io.tmpdir},C:/Users/willw/IdeaProjects,C:/Users/willw/claude
+    max-file-size-mb: 10
+    enable-write: true
+    allow-symlinks: false
+    active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
+    claude-workspace-root: C:/Users/willw/claude
+    max-list-results: 100
+    max-search-results: 50
+    max-search-matches-per-file: 10
+    max-tree-depth: 5
+    max-tree-files: 200
+    max-read-multiple: 10
+    max-line-length: 1000
+    max-response-size-kb: 100
+    read-chunk-threshold-kb: 300
+    default-file-pattern: '.*\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$'
+
+  script:
+    max-memory-mb: 256
+    max-threads: 10
+    max-execution-time-seconds: 30
+    max-script-length: 100000
+    max-working-dir-length: 4096
+    enable-bash: true
+    enable-powershell: true
+    enable-groovy: true
+    enable-cmd: true
+    whitelist:
+      powershell-allowed:
+        - '.*'
+      powershell-blocked: []
+      bash-allowed:
+        - '.*'
+      bash-blocked: []
+
+logging:
+  level:
+    root: WARN
+    com.softwood.mcp: INFO

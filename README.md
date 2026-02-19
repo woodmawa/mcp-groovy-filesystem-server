@@ -1,240 +1,130 @@
-# MCP Groovy Filesystem Server
+# McpGroovyFileSystemServer v0.7.1
 
-A Model Context Protocol (MCP) server providing 29 filesystem tools and Groovy script execution, built on Spring Boot 4.0.2, Groovy 5.0.4, and Java 25.
+A Spring Boot MCP (Model Context Protocol) server providing filesystem and developer toolchain operations to Claude Desktop via stdio transport.
 
-Designed for use with Claude Desktop via STDIO transport.
+## What's New in v0.7.1
+
+**Major consolidation rebuild (from v0.0.6):**
+- **22 tools → 7 parameterised tools** — ~1,190 token saving per conversation init
+- **Chunked read & write** — overcomes ~700 KB stdio transport limit via `ChunkBufferService`
+- **Self-contained Promise module** — `Promise`/`PromiseImpl`/`Promises` on `CompletableFuture` + virtual threads (Java 25)
+- **Consolidated security** — `SecurityService` replaces `ScriptSecurityService` + `ResourceControlService`
+- **`file_list` and `file_search` split** from `file_read` for better inference-time tool selection
+- **AbstractFileService** base class — centralised sanitisation, path validation, safe regex compilation
+- **Per-executor enable flags** — individually enable/disable bash, powershell, groovy, cmd
+- **Command whitelists** — allow/block patterns per shell type
+- **UsageTracker** — lightweight per-action call counts, response sizes, bounded vs full read ratio (via `tools stats`)
+- **Gradle wrapper fix** — `gradlew.bat` resolved via absolute path for reliable ProcessBuilder execution
 
 ## Architecture
 
-The server uses a **ToolHandler auto-discovery** pattern — each service implements a `ToolHandler` interface and self-registers its tools at startup. Adding a new tool means editing one file only.
-
 ```
 controller/
-  McpController           ← Thin dispatcher: tools/list + handlerMap lookup
+  McpController.groovy          — thin JSON-RPC dispatcher, auto-discovers ToolHandlers
 service/
-  ToolHandler             ← Interface: getToolDefinitions(), canHandle(), handleToolCall()
-  AbstractFileService     ← Base class: sanitize(), isPathAllowed(), safeCompilePattern(), config
-  FileReadService         ← 7 tools: readFile, readFileRange, headFile, tailFile, grepFile, countLines, readMultipleFiles
-  FileWriteService        ← 7 tools: writeFile, replaceInFile, appendToFile, copyFile, moveFile, deleteFile, createDirectory
-  FileQueryService        ← 7 tools: listChildrenOnly, listDirectory, searchInProject, searchFiles, findFilesByName, listDirectoryWithSizes, getDirectoryTree
-  FileMetadataService     ← 7 tools: fileExists, getFileInfo, getFileSummary, getProjectRoot, normalizePath, getAllowedDirectories, isSymlinksAllowed
-  GroovyScriptService     ← Executes Groovy scripts with secure DSL
-  PathService             ← Windows ↔ WSL path conversion, relative path resolution
-  ScriptExecutor          ← External command execution (PowerShell, Bash, Git, Gradle)
-  ScriptSecurityService   ← Dangerous pattern detection, input validation
-  AuditService            ← Audit logging for all operations
+  ToolHandler.groovy            — interface: getToolDefinitions(), canHandle(), handleToolCall()
+  AbstractFileService.groovy    — shared base: sanitize(), safeCompilePattern(), path validation
+  FileLifecycleService.groovy   — create, delete, copy, move, rename, touch
+  FileListService.groovy        — children, list, tree, sizes
+  FileSearchService.groovy      — content, name, project search
+  FileReadService.groovy        — read, head, tail, range, grep, multi, info, exists, diff, checksum, chunked read
+  FileWriteService.groovy       — write, append, replace, multi_replace, patch, chunked write
+  ExecuteService.groovy         — bash, powershell, groovy, cmd execution
+  ToolsService.groovy           — git, gradle, mvn, npm, project_scan, stats
+  ChunkBufferService.groovy     — chunked transfer session management (read + write)
+  SecurityService.groovy        — script validation, redaction, bounded execution, resource monitoring
+  UsageTracker.groovy           — per-action call counts, response sizes, bounded/full read ratio
+  PathService.groovy            — cross-platform path normalisation, WSL ↔ Windows conversion
+promise/
+  Promise.groovy                — lightweight async interface
+  PromiseImpl.groovy            — CompletableFuture + virtual thread implementation
+  Promises.groovy               — static factory (newPromise, async, all, any)
 script/
-  SecureMcpScript         ← Groovy DSL base class: file(), readFile(), git(), gradle(), powershell(), etc.
-model/
-  McpRequest/McpResponse  ← JSON-RPC 2.0 message types
-  CommandResult           ← Typed command execution result
-  ScriptExecutionResult   ← Typed script execution result
+  SecureMcpScript.groovy        — Groovy script base class with DSL (powershell, bash, git helpers)
 config/
-  CommandWhitelistConfig  ← Configurable PowerShell/Bash whitelists (YAML, no rebuild)
+  CommandWhitelistConfig.groovy — YAML-driven allow/block lists per shell type
+support/
+  JsonRpcWriter.groovy          — safe JSON-RPC output to stdout
+  Sanitizer.groovy              — control character removal for clean JSON
+  LogCleaner.groovy             — session log hygiene
 ```
 
-## Tools (30)
+## The 7 Tools
 
-### Token Efficiency Tracking (TokenEfficiencyTracker)
-| Tool | Description |
-|------|-------------|
-| `getEfficiencyStats` | Get daily efficiency stats: per-tool bytes saved, optimised vs full-read ratios, estimated tokens saved. Pass `includeRecent: true` for last 100 call details |
+| Tool | Actions |
+|------|---------|
+| `file_lifecycle` | create, delete, copy, move, rename, touch |
+| `file_list` | children, list, tree, sizes |
+| `file_search` | content, name, project |
+| `file_read` | read, head, tail, range, grep, multi, info, summary, exists, project_root, allowed_dirs, normalize, diff, checksum, structure, chunk_read, finalise_read |
+| `file_write` | write, append, replace, multi_replace, patch, chunk_write, finalise_write, abort_write |
+| `execute` | bash, powershell, groovy, cmd |
+| `tools` | git, gradle, mvn, npm, project_scan, stats |
 
-The tracker hooks into the `McpRequestEvent` lifecycle and automatically measures how much data the bounded-read tools (`headFile`, `tailFile`, `grepFile`, `readFileRange`, `countLines`, `getFileSummary`, etc.) save compared to naive full-file reads. For file-targeting tools, it uses the **actual file size** from tool arguments when available, falling back to conservative heuristic multipliers. Stats reset daily at midnight.
+## Chunked Transfer (Large Files)
 
-### File Reading (FileReadService)
-| Tool | Description |
-|------|-------------|
-| `readFile` | Read complete file contents with encoding support |
-| `readFileRange` | Read specific line range (streaming, bounded) |
-| `readMultipleFiles` | Read up to 10 files in one call |
-| `grepFile` | Regex search with early termination |
-| `headFile` | First N lines (streaming) |
-| `tailFile` | Last N lines (circular buffer, streaming) |
-| `countLines` | Line count without loading content |
+Files larger than 300 KB are automatically chunked into ≤400 KB segments to stay within the ~700 KB stdio transport limit.
 
-### File Writing (FileWriteService)
-| Tool | Description |
-|------|-------------|
-| `writeFile` | Write with optional backup, auto-creates parent dirs |
-| `replaceInFile` | Find unique text and replace — no full read+write round-trip |
-| `appendToFile` | Append without reading existing content |
-| `copyFile` | Copy with optional overwrite |
-| `moveFile` | Move/rename with optional overwrite |
-| `deleteFile` | Delete file or directory (optionally recursive) |
-| `createDirectory` | Create directory including parents |
+**Reading large files:**
+```
+file_read action=read path=<large-file>
+→ returns sessionId + totalChunks (when file exceeds threshold)
 
-### File Queries (FileQueryService)
-| Tool | Description |
-|------|-------------|
-| `listChildrenOnly` | Immediate children only, bounded to max results |
-| `listDirectory` | List with optional pattern filter and recursion |
-| `searchInProject` | Search active project root (bounded) |
-| `searchFiles` | Regex content search across files |
-| `findFilesByName` | Find files by name pattern |
-| `listDirectoryWithSizes` | List with sizes, sortable by name or size |
-| `getDirectoryTree` | Recursive tree structure (max depth 5, max 200 files) |
-
-### File Metadata (FileMetadataService)
-| Tool | Description |
-|------|-------------|
-| `fileExists` | Check existence (no content read) |
-| `getFileInfo` | Detailed metadata (size, dates, permissions) |
-| `getFileSummary` | Metadata + line count without content |
-| `getProjectRoot` | Active project root directory |
-| `normalizePath` | Convert between Windows and WSL path formats |
-| `getAllowedDirectories` | List allowed directories |
-| `isSymlinksAllowed` | Check symlink policy |
-
-### Script Execution
-| Tool | Description |
-|------|-------------|
-| `executeGroovyScript` | Execute Groovy with secure DSL (file ops, git, gradle, powershell, bash) |
-
-## Quick Start
-
-### Prerequisites
-- Java 25 (JDK)
-- Gradle 9.3+
-- Claude Desktop
-
-### Build
-```powershell
-.\gradlew.bat clean build
+file_read action=chunk_read options={sessionId, chunkIndex: 0}
+file_read action=chunk_read options={sessionId, chunkIndex: 1}
+...
+file_read action=finalise_read options={sessionId}
 ```
 
-### Configure Claude Desktop
+**Writing large files:**
+```
+file_write action=chunk_write content=<chunk0> options={sessionId, chunkIndex: 0}
+file_write action=chunk_write content=<chunk1> options={sessionId, chunkIndex: 1}
+...
+file_write action=finalise_write path=<target> options={sessionId, totalChunks: N}
+```
 
-Edit `%APPDATA%\Claude\claude_desktop_config.json`:
+Sessions auto-expire after 30 minutes if not finalised.
+
+## Usage Tracking
+
+The `tools stats` action returns live session metrics including per-action call counts, response sizes, and bounded vs full read ratio — no separate tool needed:
 
 ```json
 {
-  "mcpServers": {
-    "groovy-filesystem": {
-      "command": "C:\\Program Files\\Java\\jdk-25\\bin\\java.exe",
-      "args": [
-        "--enable-native-access=ALL-UNNAMED",
-        "-Dspring.profiles.active=stdio",
-        "-Dmcp.mode=stdio",
-        "-jar",
-        "C:\\path\\to\\mcp-groovy-filesystem-server-0.0.5-SNAPSHOT.jar"
-      ]
-    }
+  "serverVersion": "0.7.1",
+  "jvm": { "usedMemoryMb": 124, "availableProc": 32 },
+  "chunkBuffer": { "activeWriteSessions": 0, "activeReadSessions": 0 },
+  "usage": {
+    "totalCalls": 15,
+    "boundedReads": 12,
+    "fullReads": 1,
+    "boundedRatio": 92,
+    "perAction": [
+      { "key": "file_read:head", "calls": 5, "responseKB": 2 },
+      { "key": "file_search:content", "calls": 3, "responseKB": 4 }
+    ]
   }
 }
 ```
 
-Restart Claude Desktop.
-
-## Regex Pattern Best Practices
-
-Many tools accept regex patterns for filtering filenames or searching content. Understanding how patterns work will help you get accurate results:
-
-### Pattern Matching Behavior
-- **Filename matching** (`listChildrenOnly`, `listDirectory`, `getDirectoryTree`): Matches against the **filename only**, not the full path
-- **Filename finding** (`findFilesByName`): Uses `.find()` for **partial matches** - pattern can appear anywhere in filename
-- **Content searching** (`grepFile`, `searchInProject`, `searchFiles`): Matches against file content line-by-line
-
-### Regex Examples
-
-#### ✅ Good Patterns
-```groovy
-// Simple substring match
-"Controller"              // Matches: UserController.groovy, BlogController.java
-
-// File extension
-".*\\.groovy"            // Matches: Service.groovy, Controller.groovy
-".*\\.(groovy|java)"     // Matches: *.groovy OR *.java
-
-// Prefix/suffix
-"^Test.*"                // Matches filenames starting with "Test"
-".*Spec$"                // Matches filenames ending with "Spec"
-
-// Combined
-"^Test.*Controller"      // Matches: TestUserController, TestBlogController
-```
-
-#### ❌ Patterns That Don't Work As Expected
-```groovy
-// Anchors on full paths (these match filename only)
-".*src/main.*"           // ❌ Won't match path, only filename
-
-// Escaped backslashes for anchors (not needed for filename matching)
-".*Service\\.groovy$"    // ⚠️  Works but anchor unnecessary for .find()
-"Service\\.groovy"       // ✅ Simpler, same result
-```
-
-### Safe Regex Fallback
-All regex tools use `safeCompilePattern()` which:
-- ✅ Validates regex syntax
-- ✅ Falls back to **literal match** if regex is invalid
-- ✅ Logs warning about fallback behavior
-
-**This means invalid regex won't crash - it just matches literally!**
-
-```groovy
-// Invalid regex - falls back to literal match
-".*[invalid"             // Treated as literal string ".*[invalid"
-```
-
-### Tool-Specific Tips
-
-| Tool | Pattern Behavior | Example |
-|------|------------------|---------|
-| `findFilesByName` | Uses `.find()` - partial match | `"Controller"` finds `UserController.groovy` |
-| `listChildrenOnly` | Uses `.matches()` - full match | `".*\\.groovy"` matches full filename |
-| `grepFile` | Uses `.find()` - line search | `"def\\s+\\w+"` finds method definitions |
-| `searchInProject` | Uses `.find()` - line search | `"import\\s+.*Service"` finds imports |
-
-### Recommended Approach
-1. **Start simple**: Use substring matches first (`"Controller"`)
-2. **Add specificity**: Use regex when you need precision (`".*Controller\\.groovy"`)
-3. **Test incrementally**: Start broad, narrow down with more specific patterns
-4. **Check logs**: If no results, check if pattern fell back to literal match
-
-## Groovy Script DSL
-
-The `executeGroovyScript` tool provides a rich DSL via `SecureMcpScript`:
-
-```groovy
-// File operations (relative paths resolve against workingDirectory)
-def content = readFile('src/main/groovy/App.groovy')
-writeFile('output.txt', 'Hello')
-replaceInFile('config.yml', 'old-value', 'new-value')
-appendToFile('log.txt', 'New entry\n')
-def files = listFiles('src', [pattern: '.*\\.groovy$', recursive: true])
-
-// file() helper for native Groovy File operations
-file('src/main/groovy').eachFileRecurse { f ->
-    if (f.name.endsWith('.groovy')) println f.name
-}
-
-// Git
-git('status')
-gitCommit('feat: new feature')
-gitPush()
-def branch = getCurrentBranch()
-
-// Gradle
-gradle('clean', 'build')
-
-// PowerShell / Bash (whitelisted)
-powershell('Get-ChildItem -Recurse')
-bash('find . -name "*.groovy" | wc -l')
-
-// GitHub API
-def repos = githubListRepos()
-def pr = githubCreatePR('owner/repo', 'Title', 'Body', 'feature-branch')
-```
-
 ## Security
 
-- **Path validation**: All paths checked against allowed directories
-- **Symlink control**: Configurable symlink policy
-- **Script validation**: Size limits, dangerous pattern detection (System.exit, Runtime.getRuntime, ProcessBuilder, etc.)
-- **Command whitelisting**: PowerShell and Bash commands filtered by configurable regex patterns in `application.yml`
-- **Audit logging**: All script executions, commands, and security violations logged
-- **Safe regex**: Invalid patterns fall back to literal match via `Pattern.quote()`
+- **Script validation** — length limits, dangerous pattern detection (System.exit, ProcessBuilder, etc.), restricted system path checks
+- **Command whitelists** — YAML-configured allow/block regex lists per shell (powershell, bash)
+- **Bounded execution** — configurable timeouts via virtual threads
+- **Path security** — all operations validated against allowed-directories; symlink access controlled; path traversal blocked
+- **Sanitisation** — control characters stripped from all output; recursive sanitisation for nested Maps/Lists
+- **Sensitive data redaction** — passwords, tokens, API keys scrubbed from logs
+- **Windows reserved names** — NUL, CON, PRN etc. detected and handled
+- **SecureMcpScript** — Groovy scripts run with controlled base class
+
+## Tech Stack
+
+- Spring Boot 4.0.2
+- Groovy 5.0.4
+- Java 25 (virtual threads)
+- Spock 2.4 for testing
 
 ## Configuration
 
@@ -245,99 +135,62 @@ mcp:
   filesystem:
     allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude
     active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
+    claude-workspace-root: C:/Users/willw/claude
     enable-write: true
+    read-chunk-threshold-kb: 300
     max-file-size-mb: 10
     max-list-results: 100
     max-search-results: 50
-    max-search-matches-per-file: 10
     max-tree-depth: 5
     max-tree-files: 200
-    max-read-multiple: 10
     max-line-length: 1000
     max-response-size-kb: 100
+
   script:
+    max-execution-time-seconds: 60
+    enable-bash: true
+    enable-powershell: true
+    enable-groovy: true
+    enable-cmd: true
     whitelist:
-      powershell-allowed: ['^Get-ChildItem.*', '^\\.\\gradlew\\.bat.*']
-      powershell-blocked: ['.*Remove-Item.*', '.*Invoke-Expression.*']
-      bash-allowed: ['^ls.*', '^\\.\/gradlew.*']
-      bash-blocked: ['.*rm .*', '.*sudo.*']
+      powershell-allowed: ['.*']
+      powershell-blocked: ['.*Remove-Item.*', '.*Stop-Computer.*', '.*Format-Volume.*']
+      bash-allowed: ['.*']
+      bash-blocked: ['.*rm .*', '.*sudo.*', '.*shutdown.*']
 ```
 
-## Testing
+## Claude Desktop Config
 
-```powershell
-.\gradlew.bat test                                    # All 85 tests
-.\gradlew.bat test --tests FileServicesSpec            # File service tests
-.\gradlew.bat test --tests McpControllerSpec           # Integration tests
-.\gradlew.bat test --tests GroovyScriptServiceSpec     # Script execution tests
+```json
+{
+  "mcpServers": {
+    "groovy-filesystem": {
+      "command": "java",
+      "args": [
+        "--enable-native-access=ALL-UNNAMED",
+        "-jar",
+        "C:/path/to/mcp-groovy-filesystem-server-0.7.1.jar",
+        "--spring.profiles.active=stdio"
+      ]
+    }
+  }
+}
 ```
 
-### Test Coverage (85 tests)
-| Spec | Tests | Covers |
-|------|-------|--------|
-| FileServicesSpec | 23 | FileReadService, FileWriteService, FileQueryService, FileMetadataService |
-| GroovyScriptServiceSpec | 18 | Script execution, DSL, file() helper, service injection |
-| McpControllerSpec | 11 | MCP protocol, tool dispatch, ToolHandler wiring |
-| ScriptExecutorSpec | 10 | PowerShell, Bash, generic command execution |
-| PathServiceSpec | 8 | Windows ↔ WSL conversion, normalization |
-| ScriptSecurityServiceSpec | 8 | Dangerous patterns, path traversal, input validation |
-| AuditServiceSpec | 7 | Audit logging operations |
+## Build
 
-## Stack
-- **Spring Boot 4.0.2** — Application framework
-- **Groovy 5.0.4** — Language and scripting engine
-- **Java 25** — Virtual threads, native access
-- **Spring AI MCP 1.1.2** — MCP protocol support
-- **Spock 2.4** — Testing framework
+```bash
+./gradlew compileGroovy        # compile check
+./gradlew test                 # run Spock tests
+./gradlew bootJar              # build deployable jar
+```
+
+The bootJar output goes to `build/libs/mcp-groovy-filesystem-server-0.7.1.jar`.
 
 ## Version History
 
-### v0.0.6 (Current)
-- **Token efficiency tracking**: `TokenEfficiencyTracker` service hooks into `McpRequestEvent` lifecycle to measure bytes saved by optimised read tools vs naive full-file reads
-- **New tool**: `getEfficiencyStats`  query daily per-tool savings, call ratios, estimated tokens saved
-- **McpRequestEvent enhanced**: Added optional `toolArgs` field so event listeners can inspect file paths and compute actual file sizes
-- **StdioMcpServer**: Passes tool arguments through to DISPATCHED/COMPLETED/SENT events for `tools/call` requests
-
-### v0.0.5
-- **Request lifecycle events**: `McpRequestEvent` published at 6 stages (RECEIVED→PARSED→DISPATCHED→COMPLETED→SENT→ERROR) with timing, payload size, response size
-- **Diagnostics listener**: `McpDiagnosticsListener` logs timing summaries, warns on slow requests (>2s) and large payloads (>50KB)
-- **Support package extracted**: `Sanitizer` (shared sanitization), `JsonRpcWriter` (stdout output + fallbacks), `LogCleaner` (startup log cleanup)
-- **StdioMcpServer refactored**: 357 lines down to 170 lines — read loop + event publishing only
-- **McpController**: Uses shared `Sanitizer`, removed duplicate sanitize method
-
-### v0.0.4
-- **Cross-platform path handling**: Linux absolute paths (`/home/claude/...`) now map to configurable workspace
-- **New config**: `claude-workspace-root` for mapping Claude.ai Linux paths to Windows/WSL
-- **Path priority**: WSL mounts → Linux paths → Relative → Windows (4-level intelligent resolution)
-- **Tests**: 27 PathService tests (up from 12), comprehensive Linux path coverage
-- **Zero breaking changes**: Fully backward compatible with v0.0.3
-
-### v0.0.3
-- **Architecture**: Decomposed monolithic FileSystemService (930+ lines) into 4 focused services with ToolHandler auto-discovery
-- **New tools**: `replaceInFile`, `appendToFile` — 60-80% token savings on file edits
-- **Streaming I/O**: `headFile`, `tailFile`, `readFileRange`, `grepFile` use BufferedReader, never load full file
-- **Safe regex**: `safeCompilePattern()` with graceful fallback to literal match
-- **Removed**: Non-functional `watchDirectory`/`pollDirectoryWatch` tools
-- **Tests**: 85 tests (up from 71), all rewritten for new architecture
-
-### v0.0.2
-- Automatic relative path resolution
-- Configurable command whitelists (YAML, no rebuild)
-- Token-optimized bounded results on all query tools
-- 71 tests
-
-### v0.0.1
-- Initial release: 10 MCP tools, Groovy script DSL, security, audit logging
-- 67 tests
-
-## Package Structure (v0.0.6)
-
-```
-controller/    McpController (thin dispatcher, shared Sanitizer)
-service/       ToolHandler interface + 4 FileServices + TokenEfficiencyTracker + GroovyScript + Path + Security + Audit
-support/       Sanitizer, JsonRpcWriter, LogCleaner (extracted from StdioMcpServer)
-event/         McpRequestEvent (lifecycle stages + toolArgs), McpDiagnosticsListener (timing/alerts)
-script/        SecureMcpScript DSL
-model/         McpRequest, McpResponse, CommandResult, ScriptExecutionResult
-config/        CommandWhitelistConfig
-```
+| Version | Highlights |
+|---------|-----------|
+| 0.7.1 | 7 consolidated tools, chunked I/O, Promise module, SecurityService, UsageTracker, gradle absolutePath fix |
+| 0.0.6 | 22 individual tools, token efficiency tracker |
+| 0.0.3 | ToolHandler refactoring, 85 tests, McpController auto-discovery |
