@@ -50,7 +50,7 @@ Write, append, or modify file content. Actions:
 - write: write (or overwrite) entire file content
 - append: append content to end of file
 - replace: replace a unique string in a file (must appear exactly once)
-- patch: apply multiple line-based patches
+- patch: apply line-range patches (options.replacements: list of {startLine, endLine, newText}, 1-indexed, top-to-bottom order)
 - multi_replace: apply a list of {oldText, newText} replacements in sequence
 - chunk_write: send one chunk of a large write session
 - finalise_write: assemble all chunks and write to disk
@@ -73,8 +73,8 @@ Write, append, or modify file content. Actions:
                                   totalChunks : [type: 'integer', description: 'Total chunk count for finalise_write'],
                                   oldText     : [type: 'string',  description: 'Text to replace (must be unique) for replace action'],
                                   newText     : [type: 'string',  description: 'Replacement text for replace action'],
-                                  replacements: [type: 'array',   description: 'List of {oldText, newText} for multi_replace',
-                                                 items: [type: 'object', properties: [oldText: [type: 'string'], newText: [type: 'string']]]]
+                                  replacements: [type: 'array',   description: 'List of {oldText, newText} for multi_replace; or {startLine, endLine(int), newText} for patch',
+                                                 items: [type: 'object', properties: [oldText: [type: 'string'], newText: [type: 'string'], startLine: [type: 'integer'], endLine: [type: 'integer']]]]
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -220,19 +220,67 @@ Write, append, or modify file content. Actions:
     }
 
     private McpResponse doPatch(String path, String content, Map<String, Object> options, Object requestId) {
-        // Simple line-based patch: content is a unified-diff-style description handled as direct replacement blocks
-        // For v0.0.7 this is a thin wrapper around multi_replace accepting inline content
-        // Full unified diff parsing deferred to a later enhancement
+        // Line-range patch: options.replacements = list of {startLine, endLine, newText}
+        // Lines are 1-indexed, endLine inclusive.
+        // Replacements must be ordered top-to-bottom; applied in reverse so earlier line numbers stay valid.
         String normalized = normalizAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean backup    = options.backup as boolean ?: false
 
-        if (backup) makeBackup(Paths.get(normalized))
-        new File(normalized).setText(content ?: '', encoding)
+        List<Map<String, Object>> replacements = (options.replacements instanceof List)
+            ? options.replacements as List<Map<String, Object>>
+            : []
 
-        log.info("Patch (full replace) applied to {}", normalized)
-        return textResponse(requestId, [action: 'patch', path: normalized, success: true,
-                                        note: 'v0.0.7 patch = full content replace; unified diff parsing planned'])
+        if (!replacements) {
+            return McpResponse.error(requestId, -32602,
+                'patch requires options.replacements: list of {startLine, endLine, newText}. ' +
+                'Use action=write for full content replacement, multi_replace for string-based replacement.')
+        }
+
+        List<String> lines = new File(normalized).readLines(encoding)
+        int originalLineCount = lines.size()
+
+        // Sort descending by startLine so we apply from bottom up - keeps earlier indices valid
+        List<Map<String, Object>> sorted = replacements.sort(false) { Map a, Map b ->
+            (b.startLine as int) <=> (a.startLine as int)
+        }
+
+        int applied = 0
+        List<String> errors = []
+        sorted.each { Map<String, Object> rep ->
+            int start = (rep.startLine as int) - 1   // 0-indexed
+            int end   = (rep.endLine   as int) - 1
+            String newText = rep.newText as String ?: ''
+
+            if (start < 0 || end < start || start >= lines.size() || end >= lines.size()) {
+                String rangeErr = "Invalid range [${rep.startLine}..${rep.endLine}] (file has ${lines.size()} lines)" as String
+                errors << rangeErr
+                return
+            }
+            List<String> replacement = newText ? newText.split('\n', -1).toList() : []
+            lines[start..end] = replacement
+            applied++
+        }
+
+        if (errors) {
+            return McpResponse.error(requestId, -32602,
+                "patch: ${errors.size()} range error(s): ${errors.join('; ')}" as String)
+        }
+
+        if (backup) makeBackup(Paths.get(normalized))
+        new File(normalized).setText(lines.join('\n'), encoding)
+
+        log.info("patch: applied {} replacement(s) to {} ({} -> {} lines)",
+            applied, normalized, originalLineCount, lines.size())
+
+        return textResponse(requestId, [
+            action        : 'patch',
+            path          : normalized,
+            success       : true,
+            applied       : applied,
+            original_lines: originalLineCount,
+            result_lines  : lines.size()
+        ])
     }
 
     // -----------------------------------------------------------------------

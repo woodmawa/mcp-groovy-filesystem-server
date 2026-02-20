@@ -161,7 +161,7 @@ Read files and query filesystem metadata. Actions:
                 sessionId : sessionInfo.sessionId,
                 totalChunks: sessionInfo.totalChunks,
                 chunkSize : sessionInfo.chunkSize,
-                message   : "File is large — use action=chunk_read with sessionId and chunkIndex 0..${(sessionInfo.totalChunks as int) - 1}, then action=finalise_read when done"
+                message   : "File is large — use action=chunk_read with sessionId and chunkIndex 0..${(sessionInfo.totalChunks as int) - 1}, then action=finalise_read when done as String"
             ])
         }
 
@@ -211,7 +211,7 @@ Read files and query filesystem metadata. Actions:
             while ((line = br.readLine()) != null) {
                 current++
                 if (current < startLine) continue
-                if (current >= startLine + maxLines) break
+                if (current > startLine + maxLines - 1) break
                 result << truncateAndSanitize(line)
             }
         }

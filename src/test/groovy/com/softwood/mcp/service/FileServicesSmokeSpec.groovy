@@ -152,6 +152,27 @@ class FileServicesSmokeSpec extends Specification {
         response.result != null
     }
 
+    def "FileReadService range returns exactly maxLines lines"() {
+        given:
+        File tmp = File.createTempFile('range-test', '.txt')
+        tmp.deleteOnExit()
+        tmp.text = (1..10).collect { "line${it}" }.join('\n')
+
+        when: "request 3 lines starting at line 2"
+        McpResponse r = fileReadService.handleToolCall('file_read', [
+            action : 'range',
+            path   : tmp.absolutePath,
+            options: [startLine: 2, maxLines: 3]
+        ], 'test-range-1')
+
+        then:
+        r.error == null
+        def result = new groovy.json.JsonSlurper().parseText(
+            r.result.content[0].text as String) as Map
+        result.lines == 3
+        result.content == 'line2\nline3\nline4'
+    }
+
     // -----------------------------------------------------------------------
     // FileWriteService
     // -----------------------------------------------------------------------
@@ -161,6 +182,49 @@ class FileServicesSmokeSpec extends Specification {
         fileWriteService.canHandle('file_write')
         fileWriteService.toolDefinitions.size() == 1
         fileWriteService.toolDefinitions[0].name == 'file_write'
+    }
+
+    def "FileWriteService patch replaces specified line ranges"() {
+        given:
+        File tmp = File.createTempFile('patch-test', '.txt')
+        tmp.deleteOnExit()
+        tmp.text = 'line1\nline2\nline3\nline4\nline5'
+
+        when: "replace lines 2-3 with two new lines"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : tmp.absolutePath,
+            options: [replacements: [
+                [startLine: 2, endLine: 3, newText: 'replaced2\nreplaced3']
+            ]]
+        ], 'test-patch-1')
+
+        then:
+        r.error == null
+        def result = new groovy.json.JsonSlurper().parseText(
+            r.result.content[0].text as String) as Map
+        result.applied == 1
+        result.original_lines == 5
+        result.result_lines == 5
+        tmp.readLines() == ['line1', 'replaced2', 'replaced3', 'line4', 'line5']
+    }
+
+    def "FileWriteService patch returns error when no replacements provided"() {
+        given:
+        File tmp = File.createTempFile('patch-noarg', '.txt')
+        tmp.deleteOnExit()
+        tmp.text = 'hello'
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : tmp.absolutePath,
+            options: [:]
+        ], 'test-patch-2')
+
+        then: "error returned, file untouched"
+        r.error != null
+        tmp.text == 'hello'
     }
 
     def "FileWriteService chunk_write and finalise_write round-trip"() {
