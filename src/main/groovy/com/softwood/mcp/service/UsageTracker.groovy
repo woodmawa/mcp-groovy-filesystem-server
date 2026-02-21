@@ -169,6 +169,8 @@ class UsageTracker {
     }
 
     private Map<String, Object> buildTodayStats() {
+        // Persist current state on every stats read - cheap and crash-safe
+        if (dbPath) { try { flushToDb(currentDate) } catch (Exception e) { log.warn('Stats flush failed: {}', e.message) } }
         int total     = totalCalls.get()
         int bounded   = boundedCalls.get()
         int fullReads = fullReadCalls.get()
