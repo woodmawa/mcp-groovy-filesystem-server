@@ -13,7 +13,7 @@ import java.nio.file.StandardCopyOption
 import java.util.regex.Pattern
 
 /**
- * FileWriteService — handles the file_write tool.
+ * FileWriteService  handles the file_write tool.
  *
  * actions: write | append | replace | patch | multi_replace |
  *          chunk_write | finalise_write | abort_write
@@ -23,7 +23,8 @@ import java.util.regex.Pattern
  *   2. Call finalise_write with sessionId, totalChunks, path to assemble and write to disk
  *   (abort_write discards a session without writing)
  *
- * v0.0.7 — Phase 2 Core File Tools
+ * v0.0.7  Phase 2 Core File Tools
+ * v0.7.2p  doPatch hardened: overlap detection, atomic temp-file write, post-write verification
  */
 @Service
 @Slf4j
@@ -171,7 +172,6 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         File file = new File(normalized)
         String current = file.getText(encoding)
 
-        // Count occurrences to enforce uniqueness
         int count = countOccurrences(current, oldText)
         if (count == 0) {
             return McpResponse.error(requestId, -32602,
@@ -229,10 +229,15 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
     }
 
     private McpResponse doPatch(String path, String content, Map<String, Object> options, Object requestId) {
-        // v0.7.2: Line-range patch with atomic validation and line-ending preservation.
-        // options.replacements = [{startLine, endLine, newText}], 1-indexed, endLine inclusive.
-        // ALL ranges validated before any write (atomic) - file untouched if any range is invalid.
-        // Original CRLF/LF preserved. Incoming \r stripped to prevent \r\r\n corruption.
+        // HARDENED patch (v0.7.2p):
+        //   Phase 1  : validate all ranges (bounds + newText present)
+        //   Phase 1b : detect overlapping ranges (would silently corrupt without this)
+        //   Phase 2  : apply bottom-up on in-memory list (original untouched until Phase 3)
+        //   Phase 3  : atomic write via .patch_tmp + Files.move/rename
+        //              -> original file is never touched if write or rename fails
+        //   Phase 4  : post-write verification (re-read, confirm expected line count)
+        //              -> logs ERROR + sets success=false + adds verify_warning in response
+        //   CRLF/LF detected on read and restored on write; incoming \r stripped
         String normalized = normalizAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean backup    = options.backup as boolean ?: false
@@ -247,19 +252,29 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
                 'Use write for full-file replacement, multi_replace for string-based edits.')
         }
 
-        // Read raw to detect line ending style, then normalise to LF in-memory
-        String rawContent = new File(normalized).getText(encoding)
+        log.debug("patch: starting on '{}' with {} replacement(s)", normalized, replacements.size())
+
+        // ---- Read file + detect line endings ----
+        String rawContent
+        try {
+            rawContent = new File(normalized).getText(encoding)
+        } catch (Exception e) {
+            log.error("patch: failed to read '{}': {}", normalized, sanitize(e.message))
+            return McpResponse.error(requestId, -32603, "patch: could not read file: ${sanitize(e.message)}")
+        }
+
         boolean hasCrLf   = rawContent.contains('\r\n')
         String normalised  = rawContent.replace('\r\n', '\n').replace('\r', '\n')
         List<String> lines = normalised.split('\n', -1).toList()
         int originalLineCount = lines.size()
+        log.debug("patch: read {} lines from '{}' (endings: {})", originalLineCount, normalized, hasCrLf ? 'CRLF' : 'LF')
 
-        // Sort descending so we apply bottom-up (keeps upper line numbers valid)
+        // Sort descending by startLine for bottom-up application
         List<Map<String, Object>> sorted = replacements.sort(false) { Map a, Map b ->
             (b.startLine as int) <=> (a.startLine as int)
         }
 
-        // PHASE 1: Validate ALL ranges atomically - abort entire patch if any fail
+        // ---- Phase 1: Validate all ranges ----
         List<String> errors = []
         sorted.each { Map<String, Object> rep ->
             int start = rep.startLine as int
@@ -271,40 +286,96 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
                 errors << ("Missing newText for range [${start}..${end}]" as String)
             }
         }
+
+        // ---- Phase 1b: Detect overlapping ranges ----
+        if (!errors) {
+            List<Map<String, Object>> ascSorted = replacements.sort(false) { Map a, Map b ->
+                (a.startLine as int) <=> (b.startLine as int)
+            }
+            for (int i = 0; i < ascSorted.size() - 1; i++) {
+                int endI   = ascSorted[i].endLine as int
+                int startJ = ascSorted[i + 1].startLine as int
+                if (endI >= startJ) {
+                    errors << ("Overlapping ranges: [${ascSorted[i].startLine}..${endI}] and [${startJ}..${ascSorted[i + 1].endLine}]" as String)
+                }
+            }
+        }
+
         if (errors) {
+            log.warn("patch: validation failed on '{}': {}", normalized, errors.join('; '))
             return McpResponse.error(requestId, -32602,
                 "patch validation failed (file NOT modified): ${errors.join('; ')}" as String)
         }
 
-        // PHASE 2: Apply bottom-up (already sorted descending)
+        // ---- Phase 2: Apply bottom-up (sorted descending already) ----
         int applied = 0
+        int expectedDelta = 0
         sorted.each { Map<String, Object> rep ->
-            int start = (rep.startLine as int) - 1   // convert to 0-indexed
-            int end   = (rep.endLine   as int) - 1
-            // Strip \r from incoming newText to avoid \r\r\n on reassembly
+            int start  = (rep.startLine as int) - 1   // convert to 0-indexed
+            int end    = (rep.endLine   as int) - 1
             String newText = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
             List<String> replacement = newText ? newText.split('\n', -1).toList() : []
+            int removed = end - start + 1
+            int added   = replacement.size()
             lines[start..end] = replacement
+            expectedDelta += (added - removed)
             applied++
+            log.debug("patch: applied [{}..{}] -> {} lines (net delta {})", start + 1, end + 1, added, added - removed)
         }
 
-        if (backup) makeBackup(Paths.get(normalized))
+        int expectedResultLines = originalLineCount + expectedDelta
 
-        // Reassemble preserving original line endings
+        // ---- Phase 3: Atomic write via temp file + rename ----
         String lineEnding = hasCrLf ? '\r\n' : '\n'
-        new File(normalized).setText(lines.join(lineEnding), encoding)
+        String assembled  = lines.join(lineEnding)
+        Path targetPath   = Paths.get(normalized)
+        Path tempPath     = Paths.get("${normalized}.patch_tmp")
 
-        log.info("patch: {} replacements to {} ({} -> {} lines, endings: {})",
-            applied, normalized, originalLineCount, lines.size(), hasCrLf ? 'CRLF' : 'LF')
+        try {
+            if (backup) makeBackup(targetPath)
+            new File(tempPath.toString()).setText(assembled, encoding)
+            Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING)
+            log.debug("patch: atomic rename succeeded for '{}'", normalized)
+        } catch (Exception e) {
+            try { Files.deleteIfExists(tempPath) } catch (Exception ignored) {}
+            log.error("patch: write/rename failed for '{}': {}", normalized, sanitize(e.message))
+            return McpResponse.error(requestId, -32603,
+                "patch: write failed (original file untouched): ${sanitize(e.message)}")
+        }
 
-        return textResponse(requestId, [
+        // ---- Phase 4: Post-write verification ----
+        String verifyError = null
+        int verifiedLines  = -1
+        try {
+            String written     = new File(normalized).getText(encoding)
+            String normWritten = written.replace('\r\n', '\n').replace('\r', '\n')
+            verifiedLines      = normWritten.split('\n', -1).length
+            if (verifiedLines != expectedResultLines) {
+                verifyError = "line count mismatch: expected ${expectedResultLines}, file has ${verifiedLines}"
+                log.error("patch: post-write verification FAILED on '{}': {}", normalized, verifyError)
+            } else {
+                log.info("patch: verified OK - {} lines written as expected in '{}'", verifiedLines, normalized)
+            }
+        } catch (Exception e) {
+            verifyError = "could not verify: ${sanitize(e.message)}"
+            log.warn("patch: post-write verification skipped for '{}': {}", normalized, sanitize(e.message))
+        }
+
+        log.info("patch: {} replacement(s) on '{}' ({} -> {} lines, endings: {})",
+            applied, normalized, originalLineCount, expectedResultLines, hasCrLf ? 'CRLF' : 'LF')
+
+        Map<String, Object> result = [
             action        : 'patch',
             path          : normalized,
-            success       : true,
+            success       : (verifyError == null),
             applied       : applied,
             original_lines: originalLineCount,
-            result_lines  : lines.size()
-        ])
+            result_lines  : expectedResultLines
+        ] as Map<String, Object>
+        if (verifyError) {
+            result.put('verify_warning', verifyError)
+        }
+        return textResponse(requestId, result)
     }
 
     // -----------------------------------------------------------------------
@@ -332,7 +403,7 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
     private McpResponse doFinaliseWrite(String path, Map<String, Object> options, Object requestId) {
         String sessionId = options.sessionId as String
         int totalChunks  = (options.totalChunks as Integer) ?: 0
-        if (!sessionId)    return McpResponse.error(requestId, -32602, "options.sessionId required for finalise_write")
+        if (!sessionId)      return McpResponse.error(requestId, -32602, "options.sessionId required for finalise_write")
         if (totalChunks < 1) return McpResponse.error(requestId, -32602, "options.totalChunks required for finalise_write")
 
         String normalized = normalizAndCheckPath(path)

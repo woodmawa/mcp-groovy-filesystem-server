@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 /**
- * FileReadService — handles the file_read tool.
+ * FileReadService  handles the file_read tool.
  *
  * actions: read | head | tail | range | grep | multi | info | summary |
  *          exists | project_root | allowed_dirs | normalize |
@@ -27,7 +27,8 @@ import java.util.regex.Pattern
  *
  * Large files are automatically chunked via ChunkBufferService.
  *
- * v0.0.7 — Phase 2 Core File Tools
+ * v0.0.7  Phase 2 Core File Tools
+ * v0.7.2p  P2 fixes: structure parser broadened, double-normalise removed, summary line count efficient
  */
 @Service
 @Slf4j
@@ -154,7 +155,7 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         if (ChunkBufferService.needsChunking(content)) {
             String sessionId = ChunkBufferService.newSessionId()
             Map<String, Object> sessionInfo = chunkBufferService.createReadSession(sessionId, content)
-            log.info("file_read auto-chunked '{}' — {} chunks", normalized, sessionInfo.totalChunks)
+            log.info("file_read auto-chunked '{}'  {} chunks", normalized, sessionInfo.totalChunks)
             return textResponse(requestId, [
                 action    : 'read',
                 path      : normalized,
@@ -255,13 +256,19 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         if (paths.size() > maxReadMultiple) paths = paths.take(maxReadMultiple)
 
         String encoding = options.encoding as String ?: 'UTF-8'
+        long sizeCapBytes = (long) readChunkThresholdKb * 1024
 
-        // Parallel file reads via Promises — each on its own virtual thread
+        // Parallel file reads via Promises  each on its own virtual thread
+        // P2 fix: guard each file against oversized reads before loading
         List<Promise<Map<String, Object>>> promises = paths.collect { String p ->
             Promises.async({ ->
                 try {
                     String normalized = validateFilePath(p)
-                    String content    = new File(normalized).getText(encoding)
+                    long fileSize = Files.size(Paths.get(normalized))
+                    if (fileSize > sizeCapBytes) {
+                        return [path: normalized, error: "File too large for multi (${fileSize} bytes > ${sizeCapBytes} cap). Use read with chunking.", success: false] as Map<String, Object>
+                    }
+                    String content = new File(normalized).getText(encoding)
                     return [path: normalized, content: sanitize(content), size: content.length(), success: true] as Map<String, Object>
                 } catch (Exception e) {
                     return [path: sanitize(p), error: sanitize(e.message), success: false] as Map<String, Object>
@@ -290,11 +297,15 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         String normalized = validateFilePath(path)
         Path p = Paths.get(normalized)
         BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes.class)
-        int lineCount = 0
-        try { lineCount = new File(normalized).readLines().size() } catch (Exception ignored) {}
+        // P2 fix: streaming line count - no full file load into memory
+        long lineCount = 0L
+        try {
+            java.util.stream.Stream<String> ls = Files.lines(p)
+            ls.withCloseable { lineCount = it.count() }
+        } catch (Exception ignored) {}
         return textResponse(requestId, [
             action: 'summary', path: normalized,
-            size: attrs.size(), lines: lineCount,
+            size: attrs.size(), lines: (int) lineCount,
             lastModified: attrs.lastModifiedTime().toMillis()
         ])
     }
@@ -331,7 +342,7 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         String normA = validateFilePath(path)
         String normB = validateFilePath(compareTo)
 
-        // Parallel reads — both files loaded concurrently on virtual threads
+        // Parallel reads  both files loaded concurrently on virtual threads
         Promise<List<String>> readA = Promises.async({ -> new File(normA).readLines('UTF-8') } as Callable<List<String>>)
         Promise<List<String>> readB = Promises.async({ -> new File(normB).readLines('UTF-8') } as Callable<List<String>>)
         List<List<String>> both = Promises.all([readA, readB]).get(30, TimeUnit.SECONDS)
@@ -382,14 +393,24 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
     }
 
     private McpResponse doStructure(String path, Object requestId) {
-        // v0.7.2: Clear error when a directory is passed - validateFilePath would throw an opaque IAE
-        String preCheck = pathService.normalizePath(path)
-        if (isPathAllowed(preCheck) && java.nio.file.Files.isDirectory(java.nio.file.Paths.get(preCheck))) {
+        // P2 fix: single normalise - reuse preCheck, no second call to validateFilePath
+        String normalized = pathService.normalizePath(path)
+        if (!isPathAllowed(normalized)) {
+            return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(normalized)}")
+        }
+        Path filePath = Paths.get(normalized)
+        if (Files.isDirectory(filePath)) {
             return McpResponse.error(requestId, -32602,
                 "structure requires a FILE path, not a directory. " +
-                "Use file_list action=tree for directory outlines. Path: ${sanitize(preCheck)}")
+                "Use file_list action=tree for directory outlines. Path: ${sanitize(normalized)}")
         }
-        String normalized = validateFilePath(path)
+        if (!Files.exists(filePath)) {
+            return McpResponse.error(requestId, -32602, "File not found: ${sanitize(normalized)}")
+        }
+        if (!Files.isRegularFile(filePath)) {
+            return McpResponse.error(requestId, -32602, "Path is not a regular file: ${sanitize(normalized)}")
+        }
+
         String ext = normalized.contains('.') ? normalized.tokenize('.').last().toLowerCase() : ''
 
         List<Map<String, Object>> structure = []
@@ -399,25 +420,25 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
             lineNum++
             String trimmed = line.trim()
 
-            // Groovy/Java: class, interface, enum, def method, void/type method
             if (ext in ['groovy', 'java', 'kt', 'kts']) {
-                if (trimmed =~ /^(public|protected|private|static|abstract|final|\s)*(class|interface|enum|record)\s+\w+/) {
+                // Class-level: class, interface, enum, record, trait, annotation
+                if (trimmed =~ /^(public\s+|protected\s+|private\s+|static\s+|abstract\s+|final\s+)*(class|interface|enum|record|trait|@interface)\s+\w+/) {
                     structure << ([line: lineNum, type: 'class', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
-                } else if (trimmed =~ /^\s*(def|void|String|int|long|boolean|List|Map|Object)\s+\w+\s*\(/) {
+                // Method: any access modifier or return type (including custom types) followed by methodName(
+                // Excludes control flow keywords and variable declarations
+                } else if (trimmed =~ /^(public\s+|protected\s+|private\s+|static\s+|final\s+|synchronized\s+|override\s+)*[\w<\[\]>]+\s+\w+\s*\(/ &&
+                           trimmed =~ /\)/ &&
+                           !(trimmed =~ /^(if|else|for|while|switch|catch|try|return|throw|new|import|package|def\s+\w+\s*=|assert)\b/)) {
                     structure << ([line: lineNum, type: 'method', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
                 }
-            }
-            // Markdown: headings
-            else if (ext == 'md') {
+            } else if (ext == 'md') {
                 java.util.regex.Matcher m = trimmed =~ /^(#{1,6})\s+(.+)/
                 if (m.find()) {
                     String hashes  = m.group(1)
                     String heading = m.group(2)
                     structure << ([line: lineNum, type: "h${hashes.length()}", content: sanitize(heading)] as Map<String, Object>)
                 }
-            }
-            // Generic: comments that look like section headers
-            else {
+            } else {
                 if (trimmed =~ /^\/\/ ={4,}/ || trimmed =~ /^# ={4,}/) {
                     structure << ([line: lineNum, type: 'section', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
                 }
