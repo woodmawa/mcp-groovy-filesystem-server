@@ -25,6 +25,7 @@ import java.util.regex.Pattern
  *
  * v0.0.7  Phase 2 Core File Tools
  * v0.7.2p  doPatch hardened: overlap detection, atomic temp-file write, post-write verification
+ * v0.7.3   doFinaliseWrite hardened: atomic temp-file + rename (P1 from Opus assessment)
  */
 @Service
 @Slf4j
@@ -57,7 +58,7 @@ Write, append, or modify file content. Actions:
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] string replacements
 - chunk_write(path, content, options.sessionId, options.chunkIndex): buffer one large-content chunk
 - finalise_write(path, options.sessionId, options.totalChunks): assemble chunks and write to disk
-- abort_write(options.sessionId): discard buffered chunks without writing
+- abort_write(options.sessionId): discard buffered chunks without writing. NOTE: path is ignored for this action - pass any dummy value.
 USE write for full-file replacement, patch for targeted line edits, replace for unique-string swaps.''',
             inputSchema: [
                 type      : 'object',
@@ -456,8 +457,16 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         if (mkdirs && target.parent) Files.createDirectories(target.parent)
         if (backup && Files.exists(target)) makeBackup(target)
 
-        new File(normalized).setText(assembled, encoding)
-        log.info("finalise_write: wrote {}B to {} from {} chunks", assembled.length(), normalized, totalChunks)
+        // Atomic write: temp file + rename so partial failures never zero the target
+        Path tempPath = Paths.get("${normalized}.finalize_tmp")
+        try {
+            Files.write(tempPath, assembled.getBytes(encoding))
+            Files.move(tempPath, target, StandardCopyOption.REPLACE_EXISTING)
+        } catch (Exception e) {
+            try { Files.deleteIfExists(tempPath) } catch (Exception ignored) {}
+            throw e
+        }
+        log.info("finalise_write: wrote {}B to {} from {} chunks (atomic)", assembled.length(), normalized, totalChunks)
 
         return textResponse(requestId, [
             action     : 'finalise_write',

@@ -68,7 +68,9 @@ class SecurityService {
     private static final List<String> DANGEROUS_SCRIPT_PATTERNS = [
         'System.exit',
         'Runtime.getRuntime()',
+        'Runtime.exec',          // direct exec bypass
         'ProcessBuilder',
+        '.execute()',            // Groovy String.execute() shell bypass
         'Class.forName',
         'GroovyClassLoader',
         'GroovyShell',

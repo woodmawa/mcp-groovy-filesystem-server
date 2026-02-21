@@ -125,12 +125,20 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
     private McpResponse doBash(String script, String workingDir, int timeout, Object requestId) {
         if (!enableBash) return McpResponse.error(requestId, -32603, "Bash execution is disabled")
+        if (!whitelistConfig.isBashAllowed(script)) {
+            log.warn("Bash script rejected by whitelist/blacklist config")
+            return McpResponse.error(requestId, -32603, "Bash command not permitted by whitelist configuration")
+        }
         List<String> cmd = ['bash', '-c', script]
         return runProcess(cmd, workingDir, timeout, 'bash', requestId)
     }
 
     private McpResponse doPowershell(String script, String workingDir, int timeout, Object requestId) {
         if (!enablePowershell) return McpResponse.error(requestId, -32603, "PowerShell execution is disabled")
+        if (!whitelistConfig.isPowershellAllowed(script)) {
+            log.warn("PowerShell script rejected by whitelist/blacklist config")
+            return McpResponse.error(requestId, -32603, "PowerShell command not permitted by whitelist configuration")
+        }
         List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command', script]
         return runProcess(cmd, workingDir, timeout, 'powershell', requestId)
     }

@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController
 @CompileStatic
 class McpController {
 
-    static final String SERVER_VERSION = '0.7.3'
+    static final String SERVER_VERSION = com.softwood.mcp.ServerVersion.VERSION
     static final String PROTOCOL_VERSION = '2024-11-05'
     private final List<ToolHandler> toolHandlers
     private final Map<String, ToolHandler> handlerMap = new LinkedHashMap<String, ToolHandler>()

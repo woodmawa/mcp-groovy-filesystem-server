@@ -51,7 +51,7 @@ class ToolsService extends AbstractFileService implements ToolHandler {
             description: '''\
 Developer toolchain integration. Actions:
 - git(subcommand, args[], options.workingDir, options.message): subcommands: status|log|diff|add|commit|push|pull|branch|stash|clone|fetch|checkout|merge|show|tag|remote|reset|revert.
-  IMPORTANT: git commit requires options.message for the commit message.
+  IMPORTANT: git commit requires options.message. Omitting it will HANG the process waiting for an editor.
 - gradle(subcommand, args[], options.workingDir, options.timeout): tasks: build|test|clean|compileGroovy|compileJava|bootRun|bootJar|jar|dependencies|tasks|check|assemble|publish|wrapper
 - mvn(subcommand, args[], options.workingDir): goals: package|test|clean|install|verify|compile|dependency:tree
 - npm(subcommand, args[], options.workingDir): commands: install|build|test|run|start|lint|audit
@@ -129,8 +129,12 @@ Developer toolchain integration. Actions:
 
         List<String> cmd = ['git', subcommand]
 
-        // Special handling for commit — inject -m message
-        if (subcommand == 'commit' && options.message) {
+        // Commit MUST have a message - without it git opens an editor which hangs in headless mode
+        if (subcommand == 'commit') {
+            if (!options.message) {
+                return McpResponse.error(requestId, -32602,
+                    'git commit requires options.message - omitting it causes the process to hang waiting for an editor')
+            }
             cmd += ['-m', options.message as String]
         }
 
@@ -235,7 +239,7 @@ Developer toolchain integration. Actions:
 
         return textResponse(requestId, [
             action        : 'stats',
-            serverVersion : '0.7.2',
+            serverVersion : com.softwood.mcp.ServerVersion.VERSION,
             jvm: [
                 usedMemoryMb : used.intdiv(1024 * 1024),
                 totalMemoryMb: total.intdiv(1024 * 1024),

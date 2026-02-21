@@ -192,12 +192,22 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         int lines         = (options.lines as Integer) ?: 50
         String encoding   = options.encoding as String ?: 'UTF-8'
 
-        List<String> all = new File(normalized).readLines(encoding)
-        int from = Math.max(0, all.size() - lines)
-        List<String> result = all.subList(from, all.size()).collect { truncateAndSanitize(it) }
+        // Ring-buffer: stream the file without loading it all into memory
+        // ArrayDeque acts as a fixed-size ring buffer holding the last N lines
+        ArrayDeque<String> ring = new ArrayDeque<String>(lines + 1)
+        new File(normalized).withReader(encoding) { Reader r ->
+            BufferedReader br = new BufferedReader(r)
+            String line
+            while ((line = br.readLine()) != null) {
+                ring.addLast(line)
+                if (ring.size() > lines) ring.pollFirst()
+            }
+        }
+        List<String> result = ring.collect { truncateAndSanitize(it) }
 
         return textResponse(requestId, [action: 'tail', path: normalized, lines: result.size(), content: result.join('\n')])
     }
+
 
     private McpResponse doRange(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
