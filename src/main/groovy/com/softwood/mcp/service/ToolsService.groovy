@@ -50,21 +50,23 @@ class ToolsService extends AbstractFileService implements ToolHandler {
             name       : 'tools',
             description: '''\
 Developer toolchain integration. Actions:
-- git: run git subcommands (status|log|diff|add|commit|push|pull|branch|stash|clone)
-- gradle: run gradle tasks (build|test|clean|compileGroovy|bootRun|dependencies|tasks)
-- mvn: run maven goals (package|test|clean|install|dependency:tree)
-- npm: run npm commands (install|build|test|run)
-- project_scan: summarise project structure, git status, build file and key stats in one call
-- stats: JVM memory, chunk buffer stats, and per-action usage/token efficiency metrics''',
+- git(subcommand, args[], options.workingDir, options.message): subcommands: status|log|diff|add|commit|push|pull|branch|stash|clone|fetch|checkout|merge|show|tag|remote|reset|revert.
+  IMPORTANT: git commit requires options.message for the commit message.
+- gradle(subcommand, args[], options.workingDir, options.timeout): tasks: build|test|clean|compileGroovy|compileJava|bootRun|bootJar|jar|dependencies|tasks|check|assemble|publish|wrapper
+- mvn(subcommand, args[], options.workingDir): goals: package|test|clean|install|verify|compile|dependency:tree
+- npm(subcommand, args[], options.workingDir): commands: install|build|test|run|start|lint|audit
+- project_scan(options.workingDir): structure + git status + build system in one call - use before diving into a project
+- stats: server JVM memory, chunk buffer state, allowed dirs''',
             inputSchema: [
                 type      : 'object',
                 properties: [
                     action    : [type: 'string', enum: ['git', 'gradle', 'mvn', 'npm', 'project_scan', 'stats'],
                                  description: 'Toolchain to invoke'],
-                    subcommand: [type: 'string', description: 'Sub-command or task (e.g. status, build, install)'],
+                    subcommand: [type: 'string', description: 'Sub-command or task (required for git/gradle/mvn/npm)'],
                     args      : [type: 'array', items: [type: 'string'],
                                  description: 'Additional arguments passed after the subcommand'],
-                    options   : [type: 'object', description: 'workingDir (string), timeout (int seconds), message (string for git commit)',
+                    options   : [type: 'object',
+                                 description: 'workingDir (string, defaults to active project root), timeout (int seconds), message (string, required for git commit)',
                                  properties: [
                                      workingDir: [type: 'string'],
                                      timeout   : [type: 'integer'],
@@ -233,7 +235,7 @@ Developer toolchain integration. Actions:
 
         return textResponse(requestId, [
             action        : 'stats',
-            serverVersion : '0.7.1',
+            serverVersion : '0.7.2',
             jvm: [
                 usedMemoryMb : used.intdiv(1024 * 1024),
                 totalMemoryMb: total.intdiv(1024 * 1024),

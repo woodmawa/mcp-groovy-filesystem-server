@@ -47,34 +47,43 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
             name       : 'file_write',
             description: '''\
 Write, append, or modify file content. Actions:
-- write: write (or overwrite) entire file content
-- append: append content to end of file
-- replace: replace a unique string in a file (must appear exactly once)
-- patch: apply line-range patches (options.replacements: list of {startLine, endLine, newText}, 1-indexed, top-to-bottom order)
-- multi_replace: apply a list of {oldText, newText} replacements in sequence
-- chunk_write: send one chunk of a large write session
-- finalise_write: assemble all chunks and write to disk
-- abort_write: discard a chunk_write session without writing''',
+- write(path, content): overwrite entire file
+- append(path, content): append to end of file
+- replace(path, options.oldText, options.newText): replace ONE unique string
+- patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed.
+  CRITICAL: ALL line numbers from current file state; ranges validated atomically before any write;
+  send all patches for one file in a SINGLE call ordered top-to-bottom. Preserves CRLF/LF.
+- multi_replace(path, options.replacements[]): ordered [{oldText,newText}] string replacements
+- chunk_write(path, content, options.sessionId, options.chunkIndex): buffer one large-content chunk
+- finalise_write(path, options.sessionId, options.totalChunks): assemble chunks and write to disk
+- abort_write(options.sessionId): discard buffered chunks without writing
+USE write for full-file replacement, patch for targeted line edits, replace for unique-string swaps.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
                     action : [type: 'string',
                               enum: ['write','append','replace','patch','multi_replace',
                                      'chunk_write','finalise_write','abort_write']],
-                    path   : [type: 'string', description: 'Target file path'],
+                    path   : [type: 'string', description: 'Target file path (required for all except abort_write)'],
                     content: [type: 'string', description: 'Content for write/append/chunk_write'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
-                                  encoding    : [type: 'string', description: 'File encoding (default UTF-8)'],
-                                  backup      : [type: 'boolean', description: 'Create .backup file before writing'],
-                                  mkdirs      : [type: 'boolean', description: 'Create parent directories if needed'],
-                                  sessionId   : [type: 'string',  description: 'Chunk session identifier'],
-                                  chunkIndex  : [type: 'integer', description: 'Chunk index (0-based)'],
-                                  totalChunks : [type: 'integer', description: 'Total chunk count for finalise_write'],
-                                  oldText     : [type: 'string',  description: 'Text to replace (must be unique) for replace action'],
-                                  newText     : [type: 'string',  description: 'Replacement text for replace action'],
-                                  replacements: [type: 'array',   description: 'List of {oldText, newText} for multi_replace; or {startLine, endLine(int), newText} for patch',
-                                                 items: [type: 'object', properties: [oldText: [type: 'string'], newText: [type: 'string'], startLine: [type: 'integer'], endLine: [type: 'integer']]]]
+                                  encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
+                                  backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
+                                  mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
+                                  sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write)'],
+                                  chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
+                                  totalChunks : [type: 'integer', description: 'Total chunks (required for finalise_write)'],
+                                  oldText     : [type: 'string',  description: 'Unique string to replace (required for replace - must appear exactly once)'],
+                                  newText     : [type: 'string',  description: 'Replacement string (required for replace)'],
+                                  replacements: [type: 'array',
+                                                 description: 'patch: [{startLine,endLine,newText}] 1-indexed; multi_replace: [{oldText,newText}]',
+                                                 items: [type: 'object', properties: [
+                                                     oldText  : [type: 'string'],
+                                                     newText  : [type: 'string'],
+                                                     startLine: [type: 'integer'],
+                                                     endLine  : [type: 'integer']
+                                                 ]]]
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -220,9 +229,10 @@ Write, append, or modify file content. Actions:
     }
 
     private McpResponse doPatch(String path, String content, Map<String, Object> options, Object requestId) {
-        // Line-range patch: options.replacements = list of {startLine, endLine, newText}
-        // Lines are 1-indexed, endLine inclusive.
-        // Replacements must be ordered top-to-bottom; applied in reverse so earlier line numbers stay valid.
+        // v0.7.2: Line-range patch with atomic validation and line-ending preservation.
+        // options.replacements = [{startLine, endLine, newText}], 1-indexed, endLine inclusive.
+        // ALL ranges validated before any write (atomic) - file untouched if any range is invalid.
+        // Original CRLF/LF preserved. Incoming \r stripped to prevent \r\r\n corruption.
         String normalized = normalizAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean backup    = options.backup as boolean ?: false
@@ -233,45 +243,59 @@ Write, append, or modify file content. Actions:
 
         if (!replacements) {
             return McpResponse.error(requestId, -32602,
-                'patch requires options.replacements: list of {startLine, endLine, newText}. ' +
-                'Use action=write for full content replacement, multi_replace for string-based replacement.')
+                'patch requires options.replacements: [{startLine,endLine,newText}]. ' +
+                'Use write for full-file replacement, multi_replace for string-based edits.')
         }
 
-        List<String> lines = new File(normalized).readLines(encoding)
+        // Read raw to detect line ending style, then normalise to LF in-memory
+        String rawContent = new File(normalized).getText(encoding)
+        boolean hasCrLf   = rawContent.contains('\r\n')
+        String normalised  = rawContent.replace('\r\n', '\n').replace('\r', '\n')
+        List<String> lines = normalised.split('\n', -1).toList()
         int originalLineCount = lines.size()
 
-        // Sort descending by startLine so we apply from bottom up - keeps earlier indices valid
+        // Sort descending so we apply bottom-up (keeps upper line numbers valid)
         List<Map<String, Object>> sorted = replacements.sort(false) { Map a, Map b ->
             (b.startLine as int) <=> (a.startLine as int)
         }
 
-        int applied = 0
+        // PHASE 1: Validate ALL ranges atomically - abort entire patch if any fail
         List<String> errors = []
         sorted.each { Map<String, Object> rep ->
-            int start = (rep.startLine as int) - 1   // 0-indexed
-            int end   = (rep.endLine   as int) - 1
-            String newText = rep.newText as String ?: ''
-
-            if (start < 0 || end < start || start >= lines.size() || end >= lines.size()) {
-                String rangeErr = "Invalid range [${rep.startLine}..${rep.endLine}] (file has ${lines.size()} lines)" as String
-                errors << rangeErr
-                return
+            int start = rep.startLine as int
+            int end   = rep.endLine   as int
+            if (start < 1 || end < start || start > originalLineCount || end > originalLineCount) {
+                errors << ("Invalid range [${start}..${end}] - file has ${originalLineCount} lines" as String)
             }
+            if (!rep.containsKey('newText')) {
+                errors << ("Missing newText for range [${start}..${end}]" as String)
+            }
+        }
+        if (errors) {
+            return McpResponse.error(requestId, -32602,
+                "patch validation failed (file NOT modified): ${errors.join('; ')}" as String)
+        }
+
+        // PHASE 2: Apply bottom-up (already sorted descending)
+        int applied = 0
+        sorted.each { Map<String, Object> rep ->
+            int start = (rep.startLine as int) - 1   // convert to 0-indexed
+            int end   = (rep.endLine   as int) - 1
+            // Strip \r from incoming newText to avoid \r\r\n on reassembly
+            String newText = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
             List<String> replacement = newText ? newText.split('\n', -1).toList() : []
             lines[start..end] = replacement
             applied++
         }
 
-        if (errors) {
-            return McpResponse.error(requestId, -32602,
-                "patch: ${errors.size()} range error(s): ${errors.join('; ')}" as String)
-        }
-
         if (backup) makeBackup(Paths.get(normalized))
-        new File(normalized).setText(lines.join('\n'), encoding)
 
-        log.info("patch: applied {} replacement(s) to {} ({} -> {} lines)",
-            applied, normalized, originalLineCount, lines.size())
+        // Reassemble preserving original line endings
+        String lineEnding = hasCrLf ? '\r\n' : '\n'
+        new File(normalized).setText(lines.join(lineEnding), encoding)
+
+        log.info("patch: {} replacements to {} ({} -> {} lines, endings: {})",
+            applied, normalized, originalLineCount, lines.size(), hasCrLf ? 'CRLF' : 'LF')
 
         return textResponse(requestId, [
             action        : 'patch',

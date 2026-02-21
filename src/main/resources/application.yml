@@ -11,7 +11,7 @@ mcp:
 
   filesystem:
     # Allowed directories for file operations
-    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude
+    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude,C:/Users/willw/claude-sync
     max-file-size-mb: 10
     enable-write: true
     allow-symlinks: false
@@ -20,7 +20,7 @@ mcp:
     active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
     claude-workspace-root: C:/Users/willw/claude
 
-    # Result bounds — keep responses token-efficient
+    # Result bounds - keep responses token-efficient
     max-list-results: 100
     max-search-results: 50
     max-search-matches-per-file: 10
@@ -30,7 +30,7 @@ mcp:
     max-line-length: 1000
     max-response-size-kb: 100
 
-    # v0.0.7: Chunked read threshold (KB) — files larger than this are auto-chunked
+    # v0.0.7: Chunked read threshold (KB) - files larger than this are auto-chunked
     read-chunk-threshold-kb: 300
 
     # v0.0.7: Default file pattern for project/content searches
@@ -50,7 +50,7 @@ mcp:
     enable-groovy: true
     enable-cmd: true
 
-    # Command whitelists — blocked list takes precedence over allowed
+    # Command whitelists - blocked list takes precedence over allowed
     whitelist:
       powershell-allowed:
         - '.*'
@@ -91,8 +91,16 @@ server:
 mcp:
   mode: stdio
 
+# CRITICAL: In stdio mode ALL stdout/stderr must be silent - logback writes to FILE only.
+# Any console output is read by Claude Desktop as JSON-RPC and causes parse errors.
 logging:
   level:
-    root: INFO
-    com.softwood.mcp: DEBUG
-    org.springframework: WARN
+    root: OFF
+    com.softwood.mcp: OFF
+    org.springframework: OFF
+  file:
+    name: logs/mcp-filesystem-stdio.log
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 3

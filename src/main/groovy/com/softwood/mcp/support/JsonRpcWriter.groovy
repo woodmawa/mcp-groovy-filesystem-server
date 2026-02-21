@@ -11,7 +11,8 @@ import groovy.util.logging.Slf4j
  * Handles serialization, sanitization, and robust error fallbacks.
  * All output goes to System.out (stdout) with flush after each message.
  *
- * v0.0.5: Extracted from StdioMcpServer to keep transport concerns separated.
+ * v0.7.2: Preserve request id type (int vs string) so Claude Desktop
+ *         can match error responses to pending requests.
  */
 @Slf4j
 @CompileStatic
@@ -32,7 +33,7 @@ class JsonRpcWriter {
                 json = objectMapper.writeValueAsString(sanitized)
             } catch (Exception jsonError) {
                 log.debug("JSON serialization error: {}", Sanitizer.sanitize(jsonError.message))
-                sendError("error", -32603, "Response serialization failed: ${Sanitizer.sanitize(jsonError.message)}")
+                sendError(null, -32603, "Response serialization failed: ${Sanitizer.sanitize(jsonError.message)}")
                 return 0
             }
 
@@ -54,18 +55,36 @@ class JsonRpcWriter {
     }
 
     /**
-     * Send a JSON-RPC error response
+     * Send a JSON-RPC error response.
+     * Preserves the original id type (integer or string) so Claude Desktop
+     * can correlate the error to the pending request.
      */
-    void sendError(String requestId, int code, String message) {
+    void sendError(Object requestId, int code, String message) {
         try {
-            String safeId = Sanitizer.sanitize(requestId ?: "unknown")
             String safeMessage = Sanitizer.sanitize(message ?: "Unknown error")
+
+            // Preserve id type: integer ids must remain integers in the response.
+            // String ids remain strings. null means notification - use null.
+            Object idValue
+            if (requestId == null) {
+                idValue = null
+            } else if (requestId instanceof Number) {
+                idValue = requestId
+            } else {
+                String sid = requestId.toString()
+                // If it looks like an integer, coerce so the JSON encodes as number
+                if (sid.matches(/\d+/)) {
+                    idValue = sid.toLong()
+                } else {
+                    idValue = Sanitizer.sanitize(sid)
+                }
+            }
 
             def errorResponse = [
                 jsonrpc: "2.0",
-                id: safeId,
-                error: [
-                    code: code,
+                id     : idValue,
+                error  : [
+                    code   : code,
                     message: safeMessage
                 ]
             ]
@@ -75,10 +94,10 @@ class JsonRpcWriter {
                 json = objectMapper.writeValueAsString(errorResponse)
             } catch (Exception jsonError) {
                 log.debug("Error response serialization failed")
-                json = """{"jsonrpc":"2.0","id":"${safeId.replaceAll('"', '\\\\"')}","error":{"code":${code},"message":"Error serialization failed"}}"""
+                String fallbackId = idValue != null ? idValue.toString().replaceAll('"', '\\\\"') : "null"
+                json = """{"jsonrpc":"2.0","id":${fallbackId},"error":{"code":${code},"message":"Error serialization failed"}}"""
             }
 
-            json = Sanitizer.sanitize(json)
             System.out.println(json)
             System.out.flush()
 
@@ -93,7 +112,7 @@ class JsonRpcWriter {
      */
     private static void sendLastResort() {
         try {
-            System.out.println('{"jsonrpc":"2.0","id":"error","error":{"code":-32603,"message":"Critical error"}}')
+            System.out.println('{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Critical error"}}')
             System.out.flush()
         } catch (Exception ignored) {
             // Nothing more we can do

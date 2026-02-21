@@ -35,7 +35,13 @@ class FileListService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'file_list',
-            description: 'List directory contents or generate a directory tree. Actions: children (immediate children only)|list (filtered listing)|tree (recursive JSON tree)|sizes (directory with file sizes).',
+            description: '''\
+List directory contents or generate a directory tree. Actions:
+- children(path): immediate children only - cheapest listing
+- list(path, options): filtered listing; options.recursive=true for full walk
+- tree(path, options.maxDepth=5, options.maxResults=200): recursive JSON tree - best for project overview
+- sizes(path): immediate children sorted by size desc
+ALL actions require a directory path. options.maxDepth default 5.''',
             inputSchema: [
                 type      : 'object',
                 properties: [

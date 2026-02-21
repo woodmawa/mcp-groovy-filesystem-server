@@ -54,23 +54,24 @@ class FileReadService extends AbstractFileService implements ToolHandler {
             name       : 'file_read',
             description: '''\
 Read files and query filesystem metadata. Actions:
-- read: full file content (auto-chunks if >threshold)
-- head: first N lines
-- tail: last N lines
-- range: lines startLine..startLine+maxLines
-- grep: lines matching regex pattern in a SINGLE file (use file_search for directory-wide search)
-- multi: read up to 10 files at once (paths array in options)
-- info: detailed file/dir metadata
-- summary: line count, size, type only (no content)
-- exists: check if path exists
-- project_root: return active project root
-- allowed_dirs: return allowed directory list
-- normalize: convert path between Windows/WSL formats
-- diff: compare two files (path vs options.compareTo)
-- checksum: MD5/SHA-256 of file (options.algorithm)
-- structure: outline of code/markdown structure
-- chunk_read: retrieve chunk N of a paged read session
-- finalise_read: discard a completed read session''',
+- read(path): full file content (auto-chunks if >300KB - follow sessionId/totalChunks in response)
+- head(path, options.lines=50): first N lines
+- tail(path, options.lines=50): last N lines
+- range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
+- grep(path, options.pattern, options.maxMatches=10): regex matches in ONE file
+- multi(options.paths[]): read up to 10 files in parallel - cheapest multi-file read
+- info(path): file/dir metadata
+- summary(path): line count + size only - NO content, cheapest existence check
+- exists(path): boolean exists + type
+- project_root: active project root path
+- allowed_dirs: list of permitted directories
+- normalize(path): Windows/WSL path conversion
+- diff(path, options.compareTo): line-by-line diff of two files
+- checksum(path, options.algorithm=SHA-256): file hash
+- structure(path): code/markdown outline - FILE path only, NOT directory (use file_list tree for dirs)
+- chunk_read(options.sessionId, options.chunkIndex): retrieve one chunk from a paged read
+- finalise_read(options.sessionId): free chunk session when all chunks consumed
+NOTE: Use summary before read on unknown files to check size. Batch reads with multi.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -78,20 +79,20 @@ Read files and query filesystem metadata. Actions:
                               enum: ['read','head','tail','range','grep','multi','info','summary',
                                      'exists','project_root','allowed_dirs','normalize',
                                      'diff','checksum','structure','chunk_read','finalise_read']],
-                    path   : [type: 'string', description: 'File or directory path (not required for project_root/allowed_dirs)'],
+                    path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
-                                  lines     : [type: 'integer', description: 'Lines for head/tail'],
-                                  startLine : [type: 'integer', description: 'Start line for range (1-indexed)'],
-                                  maxLines  : [type: 'integer', description: 'Max lines for range'],
-                                  pattern   : [type: 'string',  description: 'Regex for grep'],
-                                  maxMatches: [type: 'integer', description: 'Max grep matches'],
+                                  lines     : [type: 'integer', description: 'Lines for head/tail (default 50)'],
+                                  startLine : [type: 'integer', description: 'Start line for range, 1-indexed (required for range)'],
+                                  maxLines  : [type: 'integer', description: 'Max lines for range (default 100)'],
+                                  pattern   : [type: 'string',  description: 'Regex for grep (required for grep)'],
+                                  maxMatches: [type: 'integer', description: 'Max grep matches (default 10)'],
                                   encoding  : [type: 'string',  description: 'File encoding (default UTF-8)'],
-                                  paths     : [type: 'array', items: [type: 'string'], description: 'Paths for multi read'],
-                                  compareTo : [type: 'string',  description: 'Second file path for diff'],
-                                  algorithm : [type: 'string',  description: 'Checksum algorithm: MD5|SHA-256'],
-                                  sessionId : [type: 'string',  description: 'Chunk session ID for chunk_read/finalise_read'],
-                                  chunkIndex: [type: 'integer', description: 'Chunk index (0-based) for chunk_read']
+                                  paths     : [type: 'array', items: [type: 'string'], description: 'File paths for multi (required for multi, max 10)'],
+                                  compareTo : [type: 'string',  description: 'Second file for diff (required for diff)'],
+                                  algorithm : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
+                                  sessionId : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
+                                  chunkIndex: [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)']
                               ]]
                 ],
                 required  : ['action']
@@ -161,7 +162,7 @@ Read files and query filesystem metadata. Actions:
                 sessionId : sessionInfo.sessionId,
                 totalChunks: sessionInfo.totalChunks,
                 chunkSize : sessionInfo.chunkSize,
-                message   : "File is large — use action=chunk_read with sessionId and chunkIndex 0..${(sessionInfo.totalChunks as int) - 1}, then action=finalise_read when done as String"
+                message   : ("File is large - use action=chunk_read with sessionId and chunkIndex 0..${(sessionInfo.totalChunks as int) - 1}, then action=finalise_read when done" as String)
             ])
         }
 
@@ -381,6 +382,13 @@ Read files and query filesystem metadata. Actions:
     }
 
     private McpResponse doStructure(String path, Object requestId) {
+        // v0.7.2: Clear error when a directory is passed - validateFilePath would throw an opaque IAE
+        String preCheck = pathService.normalizePath(path)
+        if (isPathAllowed(preCheck) && java.nio.file.Files.isDirectory(java.nio.file.Paths.get(preCheck))) {
+            return McpResponse.error(requestId, -32602,
+                "structure requires a FILE path, not a directory. " +
+                "Use file_list action=tree for directory outlines. Path: ${sanitize(preCheck)}")
+        }
         String normalized = validateFilePath(path)
         String ext = normalized.contains('.') ? normalized.tokenize('.').last().toLowerCase() : ''
 
