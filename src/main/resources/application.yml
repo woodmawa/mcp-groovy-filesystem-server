@@ -36,6 +36,11 @@ mcp:
     # v0.0.7: Default file pattern for project/content searches
     default-file-pattern: '.*\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$'
 
+  # Usage tracking persistence - shared SQLite DB with context server
+  usage:
+    db-path: C:/Users/willw/claude-sync/best_practices.db
+    flush-on-shutdown: true
+
   # Script execution settings
   script:
     max-memory-mb: 256

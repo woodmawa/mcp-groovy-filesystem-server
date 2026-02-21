@@ -5,5 +5,5 @@ package com.softwood.mcp
  * Referenced from both McpController and ToolsService to avoid circular imports.
  */
 class ServerVersion {
-    static final String VERSION = '0.7.3'
+    static final String VERSION = '0.7.4'
 }

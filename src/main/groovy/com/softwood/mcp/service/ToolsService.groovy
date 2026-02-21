@@ -56,7 +56,7 @@ Developer toolchain integration. Actions:
 - mvn(subcommand, args[], options.workingDir): goals: package|test|clean|install|verify|compile|dependency:tree
 - npm(subcommand, args[], options.workingDir): commands: install|build|test|run|start|lint|audit
 - project_scan(options.workingDir): structure + git status + build system in one call - use before diving into a project
-- stats: server JVM memory, chunk buffer state, allowed dirs''',
+- stats: server JVM memory, chunk buffer state, allowed dirs. options.period: today|week|month|all (default: today) for persistent usage history''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -70,7 +70,8 @@ Developer toolchain integration. Actions:
                                  properties: [
                                      workingDir: [type: 'string'],
                                      timeout   : [type: 'integer'],
-                                     message   : [type: 'string']
+                                     message   : [type: 'string'],
+                                     period    : [type: 'string', description: 'Stats period: today|week|month|all (default: today)']
                                  ]]
                 ],
                 required  : ['action']
@@ -103,7 +104,7 @@ Developer toolchain integration. Actions:
                 case 'mvn'         : return doMvn(subcommand, args, workingDir, timeout, requestId)
                 case 'npm'         : return doNpm(subcommand, args, workingDir, timeout, requestId)
                 case 'project_scan': return doProjectScan(workingDir, requestId)
-                case 'stats'       : return doStats(requestId)
+                case 'stats'       : return doStats(requestId, options)
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown tools action: ${action}")
             }
@@ -231,11 +232,17 @@ Developer toolchain integration. Actions:
     }
 
     private McpResponse doStats(Object requestId) {
+        return doStats(requestId, [:] as Map<String, Object>)
+    }
+
+    private McpResponse doStats(Object requestId, Map<String, Object> options) {
         Runtime rt   = Runtime.runtime
         long total   = rt.totalMemory()
         long free    = rt.freeMemory()
         long used    = total - free
         long max     = rt.maxMemory()
+
+        String period = options.period as String ?: 'today'
 
         return textResponse(requestId, [
             action        : 'stats',
@@ -247,7 +254,7 @@ Developer toolchain integration. Actions:
                 availableProc: rt.availableProcessors()
             ],
             chunkBuffer   : chunkBufferService.getStats(),
-            usage         : usageTracker.getStats(),
+            usage         : usageTracker.getStats(period),
             allowedDirs   : allowedDirectories,
             projectRoot   : getProjectRoot()
         ])

@@ -205,6 +205,7 @@ The bootJar output goes to `build/libs/mcp-groovy-filesystem-server-0.7.3.jar`.
 
 | Version | Highlights |
 |---------|-----------|
+| 0.7.4 | UsageTracker SQLite persistence: daily flush to shared best_practices.db, survive restarts, period stats (today/week/month/all) via tools stats options.period |
 | 0.7.3 | Hardening: atomic finalise_write, CommandWhitelistConfig wired, git commit message enforced, .execute() blocked, doTail ring buffer, version constant unified |
 | 0.7.2 | doPatch hardened: overlap detection, atomic write, post-write verification, CRLF preservation |
 | 0.7.1 | 7 consolidated tools, chunked I/O, Promise module, SecurityService, UsageTracker, gradle absolutePath fix |
