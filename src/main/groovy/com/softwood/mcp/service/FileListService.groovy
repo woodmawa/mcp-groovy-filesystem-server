@@ -10,13 +10,14 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.regex.Pattern
+import java.util.stream.Stream
 
 /**
- * FileListService — handles the file_list tool.
+ * FileListService  handles the file_list tool.
  *
  * actions: children | list | tree | sizes
  *
- * v0.0.7 — Phase 2 Core File Tools
+ * v0.7.3  Stream leak fixes: all Files.list()/Files.walk() wrapped in withCloseable{}
  */
 @Service
 @Slf4j
@@ -103,11 +104,14 @@ ALL actions require a directory path. options.maxDepth default 5.''',
         Pattern compiled = pattern ? safeCompilePattern(pattern) : null
 
         List<Map<String, Object>> results = []
-        Files.list(Paths.get(path)).each { Path p ->
-            if (results.size() >= max) return
-            String name = p.fileName.toString()
-            if (compiled && !(name =~ compiled)) return
-            results << pathToMap(p)
+        // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        (Files.list(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
+            stream.each { Path p ->
+                if (results.size() >= max) return
+                String name = p.fileName.toString()
+                if (compiled && !(name =~ compiled)) return
+                results << pathToMap(p)
+            }
         }
 
         log.debug("file_list children: {} entries from {}", results.size(), path)
@@ -123,12 +127,15 @@ ALL actions require a directory path. options.maxDepth default 5.''',
 
         List<Map<String, Object>> results = []
 
-        def stream = recursive ? Files.walk(Paths.get(path)) : Files.list(Paths.get(path))
-        stream.each { Path p ->
-            if (results.size() >= max) return
-            String name = p.fileName.toString()
-            if (compiled && !(name =~ compiled)) return
-            results << pathToMap(p)
+        // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        Stream<Path> stream = recursive ? Files.walk(Paths.get(path)) : Files.list(Paths.get(path))
+        stream.withCloseable { Stream<Path> s ->
+            s.each { Path p ->
+                if (results.size() >= max) return
+                String name = p.fileName.toString()
+                if (compiled && !(name =~ compiled)) return
+                results << pathToMap(p)
+            }
         }
 
         // Sort
@@ -164,9 +171,12 @@ ALL actions require a directory path. options.maxDepth default 5.''',
         String sortBy = options.sortBy as String ?: 'size'
 
         List<Map<String, Object>> results = []
-        Files.list(Paths.get(path)).each { Path p ->
-            if (results.size() >= max) return
-            results << pathToMap(p)
+        // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        (Files.list(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
+            stream.each { Path p ->
+                if (results.size() >= max) return
+                results << pathToMap(p)
+            }
         }
 
         results = results.sort { Map<String, Object> a, Map<String, Object> b ->
@@ -198,27 +208,30 @@ ALL actions require a directory path. options.maxDepth default 5.''',
 
         List<Map<String, Object>> children = []
         try {
-            Files.list(dir).sorted().each { Path child ->
-                if (count[0] >= maxFiles) return
-                String childName = child.fileName.toString()
+            // Fix: wrap in withCloseable to ensure stream is closed after iteration
+            (Files.list(dir) as Stream<Path>).withCloseable { Stream<Path> stream ->
+                stream.sorted().each { Path child ->
+                    if (count[0] >= maxFiles) return
+                    String childName = child.fileName.toString()
 
-                // Apply exclude patterns
-                if (excludePatterns.any { Pattern p -> childName =~ p }) return
+                    // Apply exclude patterns
+                    if (excludePatterns.any { Pattern p -> childName =~ p }) return
 
-                count[0]++
-                if (Files.isDirectory(child)) {
-                    children << buildTree(child, depth + 1, maxDepth, maxFiles, excludePatterns, count)
-                } else {
-                    try {
-                        BasicFileAttributes attrs = Files.readAttributes(child, BasicFileAttributes.class)
-                        children << ([
-                            name: sanitize(childName),
-                            type: 'file',
-                            path: sanitize(child.toAbsolutePath().toString().replace('\\', '/')),
-                            size: attrs.size()
-                        ] as Map<String, Object>)
-                    } catch (Exception e) {
-                        children << ([name: sanitize(childName), type: 'file', error: 'unreadable'] as Map<String, Object>)
+                    count[0]++
+                    if (Files.isDirectory(child)) {
+                        children << buildTree(child, depth + 1, maxDepth, maxFiles, excludePatterns, count)
+                    } else {
+                        try {
+                            BasicFileAttributes attrs = Files.readAttributes(child, BasicFileAttributes.class)
+                            children << ([
+                                name: sanitize(childName),
+                                type: 'file',
+                                path: sanitize(child.toAbsolutePath().toString().replace('\\', '/')),
+                                size: attrs.size()
+                            ] as Map<String, Object>)
+                        } catch (Exception e) {
+                            children << ([name: sanitize(childName), type: 'file', error: 'unreadable'] as Map<String, Object>)
+                        }
                     }
                 }
             }

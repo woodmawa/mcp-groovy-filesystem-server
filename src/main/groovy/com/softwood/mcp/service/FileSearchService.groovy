@@ -11,13 +11,14 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.regex.Matcher
 import java.util.regex.Pattern
+import java.util.stream.Stream
 
 /**
- * FileSearchService — handles the file_search tool.
+ * FileSearchService  handles the file_search tool.
  *
  * actions: content | name | project
  *
- * v0.0.7 — Phase 2 Core File Tools
+ * v0.7.3  Stream leak fixes: all Files.walk() wrapped in withCloseable{}
  */
 @Service
 @Slf4j
@@ -39,7 +40,7 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'file_search',
-            description: 'Search file contents or find files by name. Actions: content (grep-style content search)|name (filename pattern search)|project (search within active project root using default code file filter).',
+            description: 'Search file contents or find files by name. Actions: content (grep-style content search)|name (filename pattern search)|project (search within active project root using default code file filter). ALL actions require a directory path.',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -109,19 +110,22 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
         List<Map<String, Object>> results = []
         int filesScanned = 0
 
-        Files.walk(Paths.get(path)).each { Path p ->
-            if (results.size() >= maxResults) return
-            if (Files.isDirectory(p)) return
-            if (filePattern && !(p.fileName.toString() =~ filePattern)) return
+        // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        (Files.walk(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
+            stream.each { Path p ->
+                if (results.size() >= maxResults) return
+                if (Files.isDirectory(p)) return
+                if (filePattern && !(p.fileName.toString() =~ filePattern)) return
 
-            filesScanned++
-            List<Map<String, Object>> matches = searchFileContent(p, contentPattern, maxMatchesPerFile)
-            if (matches) {
-                results << ([
-                    file   : sanitize(p.toAbsolutePath().toString().replace('\\', '/')),
-                    matches: matches,
-                    count  : matches.size()
-                ] as Map<String, Object>)
+                filesScanned++
+                List<Map<String, Object>> matches = searchFileContent(p, contentPattern, maxMatchesPerFile)
+                if (matches) {
+                    results << ([
+                        file   : sanitize(p.toAbsolutePath().toString().replace('\\', '/')),
+                        matches: matches,
+                        count  : matches.size()
+                    ] as Map<String, Object>)
+                }
             }
         }
 
@@ -148,11 +152,14 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
 
         List<Map<String, Object>> results = []
 
-        Files.walk(Paths.get(path), maxDepth).each { Path p ->
-            if (results.size() >= maxResults) return
-            String name = p.fileName?.toString() ?: ''
-            if (name && compiled && (name =~ compiled || name.find(compiled))) {
-                results << pathToMap(p)
+        // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        (Files.walk(Paths.get(path), maxDepth) as Stream<Path>).withCloseable { Stream<Path> stream ->
+            stream.each { Path p ->
+                if (results.size() >= maxResults) return
+                String name = p.fileName?.toString() ?: ''
+                if (name && compiled && (name =~ compiled || name.find(compiled))) {
+                    results << pathToMap(p)
+                }
             }
         }
 

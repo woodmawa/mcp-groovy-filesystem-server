@@ -35,7 +35,7 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'file_lifecycle',
-            description: 'Create, delete, copy, move, rename files and directories. Actions: create|delete|copy|move|rename|touch.',
+            description: 'Create, delete, copy, move, rename files and directories. Actions: create|delete|copy|move|rename|touch. REQUIRED: dst is required for copy/move/rename; options.recursive=true is required to delete a non-empty directory.',
             inputSchema: [
                 type      : 'object',
                 properties: [

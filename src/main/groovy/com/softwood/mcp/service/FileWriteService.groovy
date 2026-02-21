@@ -169,8 +169,12 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
 
-        File file = new File(normalized)
-        String current = file.getText(encoding)
+        // Read raw bytes to detect line-ending style, then decode to String
+        byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
+        String rawContent = new String(rawBytes, encoding)
+        boolean hasCrLf   = rawContent.contains('\r\n')
+        // Normalise to LF for matching (oldText may contain either style)
+        String current    = hasCrLf ? rawContent.replace('\r\n', '\n') : rawContent
 
         int count = countOccurrences(current, oldText)
         if (count == 0) {
@@ -184,9 +188,11 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
 
         if (backup) makeBackup(Paths.get(normalized))
         String updated = current.replace(oldText, newText)
-        file.setText(updated, encoding)
+        // Restore original line endings before writing
+        if (hasCrLf) updated = updated.replace('\n', '\r\n')
+        Files.write(Paths.get(normalized), updated.getBytes(encoding))
 
-        log.debug("Replaced 1 occurrence in {}", normalized)
+        log.debug("Replaced 1 occurrence in {} (line endings: {})", normalized, hasCrLf ? 'CRLF' : 'LF')
         return textResponse(requestId, [action: 'replace', path: normalized, replacements: 1, success: true])
     }
 
@@ -198,10 +204,15 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
 
-        File file = new File(normalized)
         if (backup) makeBackup(Paths.get(normalized))
 
-        String current = file.getText(encoding)
+        // Read raw bytes to detect line-ending style, then decode to String
+        byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
+        String rawContent = new String(rawBytes, encoding)
+        boolean hasCrLf   = rawContent.contains('\r\n')
+        // Normalise to LF for matching
+        String current    = hasCrLf ? rawContent.replace('\r\n', '\n') : rawContent
+
         int applied = 0
         List<String> errors = []
 
@@ -218,8 +229,10 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
             applied++
         }
 
-        file.setText(current, encoding)
-        log.info("multi_replace: {} applied, {} errors in {}", applied, errors.size(), normalized)
+        // Restore original line endings before writing
+        if (hasCrLf) current = current.replace('\n', '\r\n')
+        Files.write(Paths.get(normalized), current.getBytes(encoding))
+        log.info("multi_replace: {} applied, {} errors in {} (line endings: {})", applied, errors.size(), normalized, hasCrLf ? 'CRLF' : 'LF')
 
         return textResponse(requestId, [
             action    : 'multi_replace', path: normalized,

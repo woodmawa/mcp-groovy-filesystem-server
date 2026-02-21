@@ -25,9 +25,9 @@ class McpController {
 
     static final String SERVER_VERSION = '0.7.2'
     static final String PROTOCOL_VERSION = '2024-11-05'
-
     private final List<ToolHandler> toolHandlers
     private final Map<String, ToolHandler> handlerMap = new LinkedHashMap<String, ToolHandler>()
+    private List<Map<String, Object>> cachedToolDefinitions = []
 
     McpController(List<ToolHandler> toolHandlers) {
         this.toolHandlers = toolHandlers
@@ -35,20 +35,22 @@ class McpController {
     }
 
     private void buildHandlerMap() {
+        List<Map<String, Object>> allDefs = []
         toolHandlers.each { ToolHandler handler ->
             handler.getToolDefinitions().each { Map<String, Object> toolDef ->
                 String name = toolDef.name as String
                 if (handlerMap.containsKey(name)) {
-                    log.warn("Duplicate tool name '{}' — overwriting with {}", name, handler.class.simpleName)
+                    log.warn("Duplicate tool name '{}'  overwriting with {}", name, handler.class.simpleName)
                 }
                 handlerMap[name] = handler
+                allDefs << toolDef
                 log.debug("Registered tool: {}  {}", name, handler.class.simpleName)
             }
         }
-        log.info("v{} ready — {} tools registered from {} handlers: {}",
+        cachedToolDefinitions = allDefs.asImmutable()
+        log.info("v{} ready  {} tools registered from {} handlers: {}",
             SERVER_VERSION, handlerMap.size(), toolHandlers.size(), handlerMap.keySet().join(', '))
     }
-
     @PostMapping('/')
     McpResponse handleRequest(@RequestBody McpRequest request) {
         try {
@@ -93,12 +95,9 @@ class McpController {
     }
 
     private McpResponse handleToolsList(McpRequest request) {
-        List<Map<String, Object>> allTools = []
-        toolHandlers.each { ToolHandler handler ->
-            allTools.addAll(handler.getToolDefinitions())
-        }
-        log.debug("tools/list returning {} tools", allTools.size())
-        return McpResponse.success(request.id, [tools: allTools] as Map<String, Object>)
+        // Use cached definitions built at startup - no rebuild on every call
+        log.debug("tools/list returning {} tools (cached)", cachedToolDefinitions.size())
+        return McpResponse.success(request.id, [tools: cachedToolDefinitions] as Map<String, Object>)
     }
 
     private McpResponse handleToolsCall(McpRequest request) {
