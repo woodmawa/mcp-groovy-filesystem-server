@@ -162,7 +162,8 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
 
     private McpResponse doReplace(String path, Map<String, Object> options, Object requestId) {
         String oldText = options.oldText as String
-        String newText = options.newText as String ?: ''
+        // Fix: strip incoming \r so newText doesn't introduce mixed endings into the LF-normalised content
+        String newText = (options.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
         if (!oldText) return McpResponse.error(requestId, -32602, "options.oldText required for replace")
 
         String normalized = normalizAndCheckPath(path)
@@ -173,8 +174,8 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
         String rawContent = new String(rawBytes, encoding)
         boolean hasCrLf   = rawContent.contains('\r\n')
-        // Normalise to LF for matching (oldText may contain either style)
-        String current    = hasCrLf ? rawContent.replace('\r\n', '\n') : rawContent
+        // Normalise file content to LF for matching
+        String current    = rawContent.replace('\r\n', '\n').replace('\r', '\n')
 
         int count = countOccurrences(current, oldText)
         if (count == 0) {
@@ -192,7 +193,7 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         if (hasCrLf) updated = updated.replace('\n', '\r\n')
         Files.write(Paths.get(normalized), updated.getBytes(encoding))
 
-        log.debug("Replaced 1 occurrence in {} (line endings: {})", normalized, hasCrLf ? 'CRLF' : 'LF')
+        log.debug("replace: 1 occurrence in {} (line endings: {})", normalized, hasCrLf ? 'CRLF' : 'LF')
         return textResponse(requestId, [action: 'replace', path: normalized, replacements: 1, success: true])
     }
 
@@ -210,15 +211,16 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
         String rawContent = new String(rawBytes, encoding)
         boolean hasCrLf   = rawContent.contains('\r\n')
-        // Normalise to LF for matching
-        String current    = hasCrLf ? rawContent.replace('\r\n', '\n') : rawContent
+        // Normalise file content to LF for matching
+        String current    = rawContent.replace('\r\n', '\n').replace('\r', '\n')
 
         int applied = 0
         List<String> errors = []
 
         replacements.each { Map<String, Object> rep ->
             String oldText = rep.oldText as String
-            String newText = rep.newText as String ?: ''
+            // Fix: strip incoming \r so newText doesn't introduce mixed endings into LF-normalised content
+            String newText = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
             if (!oldText) { errors << "Skipped entry with missing oldText".toString(); return }
 
             int count = countOccurrences(current, oldText)
@@ -232,25 +234,31 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         // Restore original line endings before writing
         if (hasCrLf) current = current.replace('\n', '\r\n')
         Files.write(Paths.get(normalized), current.getBytes(encoding))
-        log.info("multi_replace: {} applied, {} errors in {} (line endings: {})", applied, errors.size(), normalized, hasCrLf ? 'CRLF' : 'LF')
+        log.info("multi_replace: {} applied, {} errors in {} (line endings: {})",
+            applied, errors.size(), normalized, hasCrLf ? 'CRLF' : 'LF')
 
         return textResponse(requestId, [
-            action    : 'multi_replace', path: normalized,
-            applied   : applied, errors: errors,
-            success   : errors.isEmpty()
+            action : 'multi_replace', path: normalized,
+            applied: applied, errors: errors,
+            success: errors.isEmpty()
         ])
     }
 
     private McpResponse doPatch(String path, String content, Map<String, Object> options, Object requestId) {
-        // HARDENED patch (v0.7.2p):
+        // HARDENED patch (v0.7.2q):
         //   Phase 1  : validate all ranges (bounds + newText present)
+        //              Line count is the count of REAL content lines (trailing newline stripped
+        //              before split so a 10-line file with trailing \n gives 10, not 11).
+        //              hadTrailingNewline is preserved and restored on reassembly.
         //   Phase 1b : detect overlapping ranges (would silently corrupt without this)
         //   Phase 2  : apply bottom-up on in-memory list (original untouched until Phase 3)
-        //   Phase 3  : atomic write via .patch_tmp + Files.move/rename
+        //              incoming \r stripped from newText before splitting into lines
+        //   Phase 3  : atomic write via Files.write() to .patch_tmp + Files.move/rename
         //              -> original file is never touched if write or rename fails
-        //   Phase 4  : post-write verification (re-read, confirm expected line count)
+        //   Phase 4  : post-write verification (re-read, confirm expected line count using
+        //              same trailing-newline-aware counting)
         //              -> logs ERROR + sets success=false + adds verify_warning in response
-        //   CRLF/LF detected on read and restored on write; incoming \r stripped
+        //   CRLF/LF detected on read and restored on write
         String normalized = normalizAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean backup    = options.backup as boolean ?: false
@@ -268,19 +276,29 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         log.debug("patch: starting on '{}' with {} replacement(s)", normalized, replacements.size())
 
         // ---- Read file + detect line endings ----
-        String rawContent
+        byte[] rawBytes
         try {
-            rawContent = new File(normalized).getText(encoding)
+            rawBytes = Files.readAllBytes(Paths.get(normalized))
         } catch (Exception e) {
             log.error("patch: failed to read '{}': {}", normalized, sanitize(e.message))
             return McpResponse.error(requestId, -32603, "patch: could not read file: ${sanitize(e.message)}")
         }
 
-        boolean hasCrLf   = rawContent.contains('\r\n')
-        String normalised  = rawContent.replace('\r\n', '\n').replace('\r', '\n')
-        List<String> lines = normalised.split('\n', -1).toList()
-        int originalLineCount = lines.size()
-        log.debug("patch: read {} lines from '{}' (endings: {})", originalLineCount, normalized, hasCrLf ? 'CRLF' : 'LF')
+        String rawContent    = new String(rawBytes, encoding)
+        boolean hasCrLf      = rawContent.contains('\r\n')
+        // Normalise to LF; also strip lone \r (old Mac)
+        String normalised    = rawContent.replace('\r\n', '\n').replace('\r', '\n')
+
+        // Fix Bug 1: track whether file had a trailing newline and strip the phantom empty
+        // element it would produce from split('\n', -1), so line numbers are 1-based over
+        // real content lines only.
+        boolean hadTrailingNewline = normalised.endsWith('\n')
+        String toSplit             = hadTrailingNewline ? normalised[0..-2] : normalised
+        List<String> lines         = toSplit ? toSplit.split('\n', -1).toList() : [] as List<String>
+        int originalLineCount      = lines.size()
+
+        log.debug("patch: read {} content lines from '{}' (endings: {}, trailingNewline: {})",
+            originalLineCount, normalized, hasCrLf ? 'CRLF' : 'LF', hadTrailingNewline)
 
         // Sort descending by startLine for bottom-up application
         List<Map<String, Object>> sorted = replacements.sort(false) { Map a, Map b ->
@@ -321,32 +339,36 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         }
 
         // ---- Phase 2: Apply bottom-up (sorted descending already) ----
-        int applied = 0
+        int applied       = 0
         int expectedDelta = 0
         sorted.each { Map<String, Object> rep ->
-            int start  = (rep.startLine as int) - 1   // convert to 0-indexed
-            int end    = (rep.endLine   as int) - 1
-            String newText = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
-            List<String> replacement = newText ? newText.split('\n', -1).toList() : []
-            int removed = end - start + 1
-            int added   = replacement.size()
-            lines[start..end] = replacement
+            int start     = (rep.startLine as int) - 1   // convert to 0-indexed
+            int end       = (rep.endLine   as int) - 1
+            // Strip \r from incoming newText before splitting — prevents mixed endings
+            String newText        = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+            List<String> newLines = newText ? newText.split('\n', -1).toList() : [] as List<String>
+            int removed   = end - start + 1
+            int added     = newLines.size()
+            lines[start..end] = newLines
             expectedDelta += (added - removed)
             applied++
             log.debug("patch: applied [{}..{}] -> {} lines (net delta {})", start + 1, end + 1, added, added - removed)
         }
 
+        // expectedResultLines counts real content lines, same basis as originalLineCount
         int expectedResultLines = originalLineCount + expectedDelta
 
         // ---- Phase 3: Atomic write via temp file + rename ----
+        // Reassemble: join content lines, then restore trailing newline if file had one
         String lineEnding = hasCrLf ? '\r\n' : '\n'
-        String assembled  = lines.join(lineEnding)
+        String assembled  = lines.join(lineEnding) + (hadTrailingNewline ? lineEnding : '')
         Path targetPath   = Paths.get(normalized)
         Path tempPath     = Paths.get("${normalized}.patch_tmp")
 
         try {
             if (backup) makeBackup(targetPath)
-            new File(tempPath.toString()).setText(assembled, encoding)
+            // Fix Bug 3: use Files.write (bytes) instead of File.setText for consistency
+            Files.write(tempPath, assembled.getBytes(encoding))
             Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING)
             log.debug("patch: atomic rename succeeded for '{}'", normalized)
         } catch (Exception e) {
@@ -357,17 +379,20 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         }
 
         // ---- Phase 4: Post-write verification ----
+        // Verify using same trailing-newline-aware line count
         String verifyError = null
         int verifiedLines  = -1
         try {
-            String written     = new File(normalized).getText(encoding)
+            String written     = new String(Files.readAllBytes(targetPath), encoding)
             String normWritten = written.replace('\r\n', '\n').replace('\r', '\n')
-            verifiedLines      = normWritten.split('\n', -1).length
+            boolean writtenHasTrailing = normWritten.endsWith('\n')
+            String writtenToCount      = writtenHasTrailing ? normWritten[0..-2] : normWritten
+            verifiedLines              = writtenToCount ? writtenToCount.split('\n', -1).length : 0
             if (verifiedLines != expectedResultLines) {
                 verifyError = "line count mismatch: expected ${expectedResultLines}, file has ${verifiedLines}"
                 log.error("patch: post-write verification FAILED on '{}': {}", normalized, verifyError)
             } else {
-                log.info("patch: verified OK - {} lines written as expected in '{}'", verifiedLines, normalized)
+                log.info("patch: verified OK - {} content lines in '{}'", verifiedLines, normalized)
             }
         } catch (Exception e) {
             verifyError = "could not verify: ${sanitize(e.message)}"
@@ -390,6 +415,7 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         }
         return textResponse(requestId, result)
     }
+
 
     // -----------------------------------------------------------------------
     // Chunked write
