@@ -220,8 +220,10 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
     // -----------------------------------------------------------------------
 
     private static void deleteRecursive(Path dir) {
-        Files.walk(dir)
-            .sorted(Comparator.reverseOrder())
-            .each { Path p -> Files.delete(p) }
+        // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        (Files.walk(dir) as java.util.stream.Stream<Path>)
+            .withCloseable { java.util.stream.Stream<Path> stream ->
+                stream.sorted(Comparator.reverseOrder()).each { Path p -> Files.delete(p) }
+            }
     }
 }

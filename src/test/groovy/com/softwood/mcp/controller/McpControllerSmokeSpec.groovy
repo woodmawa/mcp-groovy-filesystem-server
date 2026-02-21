@@ -58,7 +58,7 @@ class McpControllerSmokeSpec extends Specification {
         response.result != null
         response.error == null
         response.result.protocolVersion == '2024-11-05'
-        (response.result.serverInfo as Map).version == '0.7.2'
+        (response.result.serverInfo as Map).version == '0.7.3'
     }
 
     def "ping returns empty success result"() {
