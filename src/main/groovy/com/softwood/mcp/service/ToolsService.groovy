@@ -246,7 +246,7 @@ Developer toolchain integration. Actions:
 
         return textResponse(requestId, [
             action        : 'stats',
-            serverVersion : com.softwood.mcp.ServerVersion.VERSION,
+            serverVersion : com.softwood.mcp.McpGroovyFileSystemServerApplication.package?.implementationVersion ?: 'dev',
             jvm: [
                 usedMemoryMb : used.intdiv(1024 * 1024),
                 totalMemoryMb: total.intdiv(1024 * 1024),
