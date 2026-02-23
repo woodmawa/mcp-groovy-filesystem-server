@@ -1,41 +1,30 @@
-# McpGroovyFileSystemServer v0.7.3
+# mcp-groovy-filesystem-server v0.7.5
 
-A Spring Boot MCP (Model Context Protocol) server providing filesystem and developer toolchain operations to Claude Desktop via stdio transport.
+A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop via STDIO, plus HTTP transport for local LLM agentic loops.
 
-## What's New in v0.7.3 — Hardening Release
+## What's New in v0.7.5
 
-Based on a full Opus-4 deep assessment of the v0.7.2 codebase, this release addresses all P1 and P2 findings plus selected P3 items:
+**HTTP dual-transport + Server lifecycle management:**
 
-**P1 — Critical fixes:**
-- **`doFinaliseWrite` atomic write** — chunked write assembly now uses temp-file + atomic rename, matching `doPatch`. Previously a JVM crash mid-write would zero the target file after chunks were already discarded from the buffer.
-- **`CommandWhitelistConfig` wired up** — `doBash` and `doPowershell` in `ExecuteService` now actually consult the YAML allow/block pattern lists. Previously the config was loaded but never consulted (dead code).
-- **Version string fixed** — `tools stats` now returns the correct `serverVersion` from a single `ServerVersion.VERSION` constant shared between `McpController` and `ToolsService`.
+- `ServerLifecycleService` — new `server_lifecycle` tool that manages all HTTP MCP server processes. Reads config from `claude-sync/mcp-http-servers.json`, tracks PIDs, starts/stops servers on demand. Supports `start_eager` (eager servers at session begin), `ensure` (lazy on-demand start), `stop`, `status`, `reload`.
+- HTTP endpoint on port 8081 (`spring-boot-starter-web` added). `HttpMcpController` is a thin `@RestController` wrapper delegating to the existing `@Component McpController`. STDIO safety guaranteed by `web-application-type=none` in the stdio Spring profile.
+- Both STDIO (Claude Desktop) and HTTP (agentic loop) transports coexist. Claude Desktop launches via `stdio` profile; HTTP mode is the default for standalone use.
 
-**P2 — Robustness:**
-- **`git commit` message enforcement** — missing `options.message` on a commit now returns a clear error immediately instead of hanging the process waiting for an editor.
-- **`.execute()` and `Runtime.exec` blocked** — added to `SecurityService.DANGEROUS_SCRIPT_PATTERNS` to prevent Groovy scripts using the `String.execute()` shell bypass.
-- **`abort_write` schema clarified** — tool description now notes that `path` is ignored for `abort_write`.
+**Previously in v0.7.4:**
+- `UsageTracker` SQLite persistence: daily flush to `best_practices.db`, survive restarts, period stats via `tools stats options.period`
 
-**P3 — Efficiency:**
-- **`doTail` ring buffer** — `file_read tail` now streams using an `ArrayDeque` ring buffer instead of loading the entire file into memory.
-
-**Previously in v0.7.2:**
-- `doPatch` hardened: overlap detection, atomic temp-file write, post-write verification, CRLF preservation
-
-**Previously in v0.7.1:**
-- 22 tools → 7 parameterised tools (~1,190 token saving per conversation init)
-- Chunked read & write (overcomes ~700 KB stdio limit via `ChunkBufferService`)
-- Self-contained Promise module on `CompletableFuture` + virtual threads (Java 25)
-- Consolidated security (`SecurityService`), `UsageTracker`, `AbstractFileService` base class
+**Previously in v0.7.3:**
+- Atomic `finalise_write`, `CommandWhitelistConfig` wired, `git commit` message enforced, `.execute()` blocked, `doTail` ring buffer, version constant unified
 
 ## Architecture
 
 ```
 controller/
-  McpController.groovy           thin JSON-RPC dispatcher, auto-discovers ToolHandlers
+  McpController.groovy           @Component - thin JSON-RPC dispatcher, auto-discovers ToolHandlers
+  HttpMcpController.groovy       @RestController - HTTP wrapper, delegates to McpController
 service/
   ToolHandler.groovy             interface: getToolDefinitions(), canHandle(), handleToolCall()
-  AbstractFileService.groovy     shared base: sanitize(), safeCompilePattern(), path validation
+  AbstractFileService.groovy     shared base: sanitize(), path validation
   FileLifecycleService.groovy    create, delete, copy, move, rename, touch
   FileListService.groovy         children, list, tree, sizes
   FileSearchService.groovy       content, name, project search
@@ -43,26 +32,14 @@ service/
   FileWriteService.groovy        write, append, replace, multi_replace, patch, chunked write
   ExecuteService.groovy          bash, powershell, groovy, cmd execution
   ToolsService.groovy            git, gradle, mvn, npm, project_scan, stats
-  ChunkBufferService.groovy      chunked transfer session management (read + write)
-  SecurityService.groovy         script validation, redaction, bounded execution, resource monitoring
-  UsageTracker.groovy            per-action call counts, response sizes, bounded/full read ratio
-  PathService.groovy             cross-platform path normalisation, WSL ↔ Windows conversion
-promise/
-  Promise.groovy                 lightweight async interface
-  PromiseImpl.groovy             CompletableFuture + virtual thread implementation
-  Promises.groovy                static factory (newPromise, async, all, any)
-script/
-  SecureMcpScript.groovy         Groovy script base class with DSL (powershell, bash, git helpers)
-config/
-  CommandWhitelistConfig.groovy  YAML-driven allow/block lists per shell type (now wired in ExecuteService)
-support/
-  JsonRpcWriter.groovy           safe JSON-RPC output to stdout
-  Sanitizer.groovy               control character removal for clean JSON
-  LogCleaner.groovy              session log hygiene
-ServerVersion.groovy             single source of truth for server version constant
+  ServerLifecycleService.groovy  NEW: start/stop/status HTTP MCP server processes
+  ChunkBufferService.groovy      chunked transfer session management
+  SecurityService.groovy         script validation, bounded execution, resource monitoring
+  UsageTracker.groovy            per-action call counts, SQLite persistence
+  PathService.groovy             cross-platform path normalisation
 ```
 
-## The 7 Tools
+## The 8 Tools
 
 | Tool | Actions |
 |------|---------|
@@ -73,105 +50,59 @@ ServerVersion.groovy             single source of truth for server version const
 | `file_write` | write, append, replace, multi_replace, patch, chunk_write, finalise_write, abort_write |
 | `execute` | bash, powershell, groovy, cmd |
 | `tools` | git, gradle, mvn, npm, project_scan, stats |
+| `server_lifecycle` | start_eager, ensure, stop, status, reload |
 
-## Chunked Transfer (Large Files)
+## HTTP Server Lifecycle
 
-Files larger than 300 KB are automatically chunked into 400 KB segments to stay within the ~700 KB stdio transport limit.
-
-**Reading large files:**
-```
-file_read action=read path=<large-file>
-  → returns sessionId + totalChunks (when file exceeds threshold)
-
-file_read action=chunk_read options={sessionId, chunkIndex: 0}
-file_read action=chunk_read options={sessionId, chunkIndex: 1}
-...
-file_read action=finalise_read options={sessionId}
-```
-
-**Writing large files (atomic assembly since v0.7.3):**
-```
-file_write action=chunk_write content=<chunk0> options={sessionId, chunkIndex: 0}
-file_write action=chunk_write content=<chunk1> options={sessionId, chunkIndex: 1}
-...
-file_write action=finalise_write path=<target> options={sessionId, totalChunks: N}
-```
-The finalise step assembles chunks and writes via temp-file + atomic rename. Sessions auto-expire after 30 minutes.
-
-## Security Model
-
-This is a **developer tool** running with process-level permissions. Security is defence-in-depth, not a sandbox:
-
-- **Script validation** — length limits, dangerous pattern detection (`System.exit`, `ProcessBuilder`, `.execute()` shell bypass, `Runtime.exec`, etc.), restricted system path checks
-- **Command whitelists** — YAML-configured allow/block regex lists per shell (powershell, bash), now enforced at execution time
-- **Bounded execution** — configurable timeouts via virtual threads
-- **Path security** — all operations validated against allowed-directories; symlink access controlled; path traversal blocked
-- **Sanitisation** — control characters stripped from all output; recursive sanitisation for nested Maps/Lists
-- **Sensitive data redaction** — passwords, tokens, API keys scrubbed from logs
-- **Windows reserved names** — NUL, CON, PRN etc. detected and handled (Java NIO used throughout, not Groovy GDK)
-- **SecureMcpScript** — Groovy scripts run with controlled base class; note file helpers in SecureMcpScript bypass path validation by design (they run with process-level access)
-
-## Usage Tracking
-
-The `tools stats` action returns live session metrics:
+The `server_lifecycle` tool manages the other HTTP MCP servers. Config lives in `claude-sync/mcp-http-servers.json`:
 
 ```json
 {
-  "serverVersion": "0.7.3",
-  "jvm": { "usedMemoryMb": 124, "availableProc": 32 },
-  "chunkBuffer": { "activeWriteSessions": 0, "activeReadSessions": 0 },
-  "usage": {
-    "totalCalls": 15,
-    "boundedReads": 12,
-    "fullReads": 1,
-    "boundedRatio": 92,
-    "perAction": [
-      { "key": "file_read:head", "calls": 5, "responseKB": 2 },
-      { "key": "file_search:content", "calls": 3, "responseKB": 4 }
-    ]
-  }
+  "jarsDir": "C:/Users/willw/claude-sync/jars",
+  "javaCmd": "C:/Program Files/Java/jdk-25/bin/java.exe",
+  "servers": [
+    { "name": "filesystem",  "jar": "mcp-groovy-filesystem-server-0.7.5.jar", "port": 8081, "startupPolicy": "eager" },
+    { "name": "context",     "jar": "mcp-groovy-context-server-0.11.0.jar",   "port": 8082, "startupPolicy": "eager" },
+    { "name": "orchestrator","jar": "mcp-llm-orchestrator-0.4.0.jar",         "port": 8083, "startupPolicy": "lazy" },
+    { "name": "agentic-workflow","jar": "mcp-agentic-workflow-0.6.0.jar",     "port": 8084, "startupPolicy": "lazy" }
+  ]
 }
 ```
 
-## Tech Stack
-
-- Spring Boot 4.0.2
-- Groovy 5.0.4
-- Java 25 (virtual threads)
-- Spock 2.4 for testing
-
-## Configuration
-
-Key settings in `application.yml`:
-
-```yaml
-mcp:
-  filesystem:
-    allowed-directories: C:/Users/willw/IdeaProjects,C:/Users/willw/claude
-    active-project-root: C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
-    claude-workspace-root: C:/Users/willw/claude
-    enable-write: true
-    read-chunk-threshold-kb: 300
-    max-file-size-mb: 10
-    max-list-results: 100
-    max-search-results: 50
-    max-tree-depth: 5
-    max-tree-files: 200
-    max-line-length: 1000
-    max-response-size-kb: 100
-
-  script:
-    max-execution-time-seconds: 60
-    enable-bash: true
-    enable-powershell: true
-    enable-groovy: true
-    enable-cmd: true
-    whitelist:
-      powershell-allowed: ['.*']
-      powershell-blocked: ['.*Remove-Item.*', '.*Stop-Computer.*', '.*Format-Volume.*']
-      bash-allowed: ['.*']
-      bash-blocked: ['.*rm .*', '.*sudo.*', '.*shutdown.*']
+**Session pattern:**
 ```
+# Session start - bring up eager servers
+server_lifecycle action=start_eager
+
+# On demand - bring up lazy server
+server_lifecycle action=ensure name=orchestrator
+
+# Session end - stop everything we started
+server_lifecycle action=stop
+
+# After deploying new jar versions
+server_lifecycle action=reload
+```
+
+Servers already listening are skipped (no double-start). PIDs tracked in `mcp-http-servers-runtime.json`. All managed servers stopped via `@PreDestroy` on JVM shutdown.
+
+## Dual Transport Pattern
+
+```
+Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
+        |                                      |
+   stdio profile                         default profile
+  web-type=none                         web-type=servlet
+  port=0 (disabled)                     port=8081
+        |                                      |
+        +-----------> McpController <----------+
+                      (@Component)
+                           |
+                    ToolHandler beans
+                    (auto-discovered)
+```
+
+Key rule: `McpController` is always `@Component`, never `@RestController`. `HttpMcpController` is the thin `@RestController` wrapper — only registered when Tomcat is active. `web-application-type=none` in the stdio profile is the gate — Tomcat never starts so the HTTP endpoint is unreachable regardless.
 
 ## Claude Desktop Config
 
@@ -179,12 +110,14 @@ mcp:
 {
   "mcpServers": {
     "groovy-filesystem": {
-      "command": "java",
+      "command": "C:/Program Files/Java/jdk-25/bin/java.exe",
       "args": [
         "--enable-native-access=ALL-UNNAMED",
+        "-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects,C:/Users/willw/claude-sync",
+        "-Dspring.profiles.active=stdio",
+        "-Dmcp.mode=stdio",
         "-jar",
-        "C:/path/to/mcp-groovy-filesystem-server-0.7.3.jar",
-        "--spring.profiles.active=stdio"
+        "C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-0.7.5.jar"
       ]
     }
   }
@@ -194,20 +127,17 @@ mcp:
 ## Build
 
 ```bash
-./gradlew compileGroovy        # compile check
-./gradlew test                 # run Spock tests
-./gradlew bootJar              # build deployable jar
+./gradlew bootJar
+# Output: build/libs/mcp-groovy-filesystem-server-0.7.5.jar
+# Deploy: copy to claude-sync/jars/, update mcp-http-servers.json version
 ```
-
-The bootJar output goes to `build/libs/mcp-groovy-filesystem-server-0.7.3.jar`.
 
 ## Version History
 
 | Version | Highlights |
 |---------|-----------|
-| 0.7.4 | UsageTracker SQLite persistence: daily flush to shared best_practices.db, survive restarts, period stats (today/week/month/all) via tools stats options.period |
-| 0.7.3 | Hardening: atomic finalise_write, CommandWhitelistConfig wired, git commit message enforced, .execute() blocked, doTail ring buffer, version constant unified |
-| 0.7.2 | doPatch hardened: overlap detection, atomic write, post-write verification, CRLF preservation |
-| 0.7.1 | 7 consolidated tools, chunked I/O, Promise module, SecurityService, UsageTracker, gradle absolutePath fix |
-| 0.0.6 | 22 individual tools, token efficiency tracker |
-| 0.0.3 | ToolHandler refactoring, 85 tests, McpController auto-discovery |
+| 0.7.5 | HTTP dual-transport (port 8081), HttpMcpController, ServerLifecycleService managing all 4 HTTP servers via mcp-http-servers.json |
+| 0.7.4 | UsageTracker SQLite persistence, period stats |
+| 0.7.3 | Atomic finalise_write, CommandWhitelistConfig wired, doTail ring buffer |
+| 0.7.2 | doPatch hardened: overlap detection, atomic write, CRLF preservation |
+| 0.7.1 | 7 consolidated tools, chunked I/O, Promise module, SecurityService |

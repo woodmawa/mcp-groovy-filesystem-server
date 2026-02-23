@@ -3,6 +3,9 @@ spring:
     name: mcp-groovy-filesystem-server
   main:
     web-application-type: ${MCP_WEB_TYPE:servlet}
+
+server:
+  port: ${MCP_HTTP_PORT:8081}
   jackson:
     default-property-inclusion: non_null
 

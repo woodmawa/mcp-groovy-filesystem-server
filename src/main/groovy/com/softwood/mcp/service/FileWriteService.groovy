@@ -53,7 +53,8 @@ Write, append, or modify file content. Actions:
 - append(path, content): append to end of file
 - replace(path, options.oldText, options.newText): replace ONE unique string
 - patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed.
-  CRITICAL: ALL line numbers from current file state; ranges validated atomically before any write;
+  CRITICAL: ALWAYS use file_read range/read to verify exact line numbers and content BEFORE issuing patch.
+  Never guess line numbers - read first, then patch. Ranges validated atomically before any write;
   send all patches for one file in a SINGLE call ordered top-to-bottom. Preserves CRLF/LF.
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] string replacements
 - chunk_write(path, content, options.sessionId, options.chunkIndex): buffer one large-content chunk
