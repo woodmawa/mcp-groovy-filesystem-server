@@ -8,12 +8,12 @@ Eight parameterised tools replace what would otherwise be 30+ individual tools, 
 
 ## What's New in v0.7.7
 
-**Token optimisation — reduced per-session context cost:**
+**Token optimisation - reduced per-session context cost:**
 
-- **Tighter tool descriptions** — all 7 service descriptions rewritten in telegraphic style. ~40–50% reduction on the tool schema payload injected every session.
-- **Slim `pathToMap`** — `readable`, `writable`, `executable` fields removed from every `file_list` / `file_read info` response. Always `true/true/true` on Windows; never used by Claude.
-- **Relative paths in `file_list tree`** — tree nodes now use paths relative to the tree root (e.g. `"groovy/com/softwood"`) instead of repeating the full Windows absolute path on every node. Root is reported once as `rootPath` in the top-level response. Saves ~3 500 tokens on a 200-node tree.
-- **Compact response mode** — pass `options.compact=true` to `file_read read`, `file_list children`, `file_write write/replace` to strip the action/path echo from responses. Useful in bulk or agentic loops where the caller already knows the context.
+- **Tighter tool descriptions** - all 7 service descriptions rewritten in telegraphic style. ~40-50% reduction on the tool schema payload injected every session.
+- **Slim `pathToMap`** - `readable`, `writable`, `executable` fields removed from every `file_list` / `file_read info` response. Always `true/true/true` on Windows; never used by Claude.
+- **Relative paths in `file_list tree`** - tree nodes now use paths relative to the tree root (e.g. `"src/main/groovy"`) instead of repeating the full Windows absolute path on every node. Root reported once as `rootPath` at the top level. Saves ~3,500 tokens on a 200-node tree.
+- **Compact response mode** - pass `options.compact=true` to `file_read read`, `file_list children`, `file_write write/replace` to strip the action/path echo from responses. Useful in bulk or agentic loops where the caller already knows the context.
 
 **Previously in v0.7.6:**
 - Security hardening: cancel-on-timeout, cmd whitelist, env passthrough, `toRealPath`, join budget
@@ -30,8 +30,8 @@ Eight parameterised tools replace what would otherwise be 30+ individual tools, 
 
 ```
 controller/
-  McpController.groovy           @Component — thin JSON-RPC dispatcher, auto-discovers ToolHandlers
-  HttpMcpController.groovy       @RestController — HTTP wrapper, delegates to McpController
+  McpController.groovy           @Component - thin JSON-RPC dispatcher, auto-discovers ToolHandlers
+  HttpMcpController.groovy       @RestController - HTTP wrapper, delegates to McpController
 service/
   ToolHandler.groovy             interface: getToolDefinitions(), canHandle(), handleToolCall()
   AbstractFileService.groovy     shared base: sanitize(), path validation, compact mode helpers
@@ -39,7 +39,8 @@ service/
   FileListService.groovy         children, list, tree (relative paths), sizes
   FileSearchService.groovy       content, name, project search
   FileReadService.groovy         read, head, tail, range, grep, multi, info, summary, exists,
-                                 diff, checksum, structure, get_method, chunk_read, finalise_read
+                                 project_root, allowed_dirs, normalize, diff, checksum,
+                                 structure, get_method, chunk_read, finalise_read
   FileWriteService.groovy        write, append, replace, multi_replace, patch,
                                  chunk_write, finalise_write, abort_write
   ExecuteService.groovy          bash, powershell, groovy, cmd execution
@@ -49,6 +50,8 @@ service/
   SecurityService.groovy         script validation, bounded execution, resource monitoring
   UsageTracker.groovy            per-action call counts, SQLite persistence
   PathService.groovy             cross-platform path normalisation
+support/
+  LogCleaner.groovy              control-character sanitisation
 ```
 
 ---
@@ -73,15 +76,15 @@ service/
 ### Compact mode
 Skip the action/path echo on responses you don't need:
 ```
-file_read   action=read  path=... options.compact=true   → {content, lines, file_content_hash}
-file_list   action=children path=... options.compact=true → {count, entries:[{name,type,size}]}
-file_write  action=write path=... options.compact=true   → {success, content_hash}
+file_read   action=read     path=...  options.compact=true  -> {content, lines, file_content_hash}
+file_list   action=children path=...  options.compact=true  -> {count, entries:[{name,type,size}]}
+file_write  action=write    path=...  options.compact=true  -> {success, content_hash}
 ```
 
 ### Tree with relative paths
 ```
 file_list action=tree path=C:/Users/willw/IdeaProjects/myproject options.maxDepth=3
-→ rootPath: "C:/Users/willw/IdeaProjects/myproject"
+  rootPath: "C:/Users/willw/IdeaProjects/myproject"
   tree.path: "."
   tree.children[0].path: "src"
   tree.children[0].children[0].path: "src/main/groovy"
@@ -89,8 +92,8 @@ file_list action=tree path=C:/Users/willw/IdeaProjects/myproject options.maxDept
 
 ### Cheap existence / size check before reading
 ```
-file_read action=summary path=...   → {lines, size}  (no content)
-file_read action=exists  path=...   → {exists, type}
+file_read action=summary path=...  -> {lines, size}  (no content loaded)
+file_read action=exists  path=...  -> {exists, type}
 ```
 
 ### Single method read (cheaper than structure + range)
@@ -98,9 +101,17 @@ file_read action=exists  path=...   → {exists, type}
 file_read action=get_method path=MyService.groovy options.method=doRead
 ```
 
-### Bulk parallel read
+### Bulk parallel read (up to 10 files)
 ```
-file_read action=multi options.paths=[path1, path2, path3]   (up to 10 in parallel)
+file_read action=multi options.paths=[path1, path2, path3]
+```
+
+### Hash-guarded edits (prevents silent corruption)
+```
+# Read first - captures file_content_hash
+file_read action=get_method path=... options.method=myMethod
+# Edit with hash guard
+file_write action=replace path=... options.oldText=... options.newText=... options.expectedHash=<hash>
 ```
 
 ---
@@ -124,10 +135,10 @@ file_read action=multi options.paths=[path1, path2, path3]   (up to 10 in parall
 
 Session pattern:
 ```
-server_lifecycle action=start_eager          # bring up eager servers at session start
-server_lifecycle action=ensure name=orchestrator   # on-demand lazy start
-server_lifecycle action=stop                 # stop all at session end
-server_lifecycle action=reload               # re-read config after deploying new jars
+server_lifecycle action=start_eager                  # bring up eager servers at session start
+server_lifecycle action=ensure name=orchestrator     # on-demand lazy start
+server_lifecycle action=stop                         # stop all at session end
+server_lifecycle action=reload                       # re-read config after deploying new jars
 ```
 
 Servers already listening are skipped. PIDs tracked in `mcp-http-servers-runtime.json`. All managed servers stopped via `@PreDestroy` on JVM shutdown.
@@ -150,7 +161,7 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
                      (auto-discovered)
 ```
 
-`McpController` is always `@Component`, never `@RestController`. `HttpMcpController` is the thin `@RestController` wrapper — only active when Tomcat is running. `web-application-type=none` in the stdio Spring profile ensures Tomcat never starts, making the HTTP endpoint unreachable in STDIO mode regardless.
+`McpController` is always `@Component`, never `@RestController`. `HttpMcpController` is the thin `@RestController` wrapper - only active when Tomcat is running. `web-application-type=none` in the stdio Spring profile ensures Tomcat never starts for Claude Desktop.
 
 ---
 
@@ -163,7 +174,7 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
       "command": "C:/Program Files/Java/jdk-25/bin/java.exe",
       "args": [
         "--enable-native-access=ALL-UNNAMED",
-        "-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects,C:/Users/willw/claude-sync",
+        "-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects, C:/Users/willw/claude, C:/Users/willw/AppData/Roaming/Claude, C:/Users/willw/claude-sync",
         "-Dspring.profiles.active=stdio",
         "-Dmcp.mode=stdio",
         "-jar",
@@ -181,9 +192,21 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
 ```bash
 ./gradlew clean bootJar
 # Output: build/libs/mcp-groovy-filesystem-server-0.7.7.jar
-# Deploy: copy to claude-sync/jars/, update mcp-http-servers.json jar name
+# Deploy: copy to claude-sync/jars/, update mcp-http-servers.json jar name if version changed
 # Restart Claude Desktop to pick up the new STDIO process
 ```
+
+---
+
+## Security
+
+- **Command whitelisting** - only approved executables allowed in `bash`, `powershell`, `cmd` actions
+- **Allowed directories** - all file operations restricted to configured paths (set via `-Dmcp.filesystem.allowed-directories`)
+- **Atomic writes** - `finalise_write` and `replace` use temp-file-then-rename for crash safety
+- **Hash-guarded edits** - `options.expectedHash` on `patch`/`replace`/`multi_replace` rejects stale edits
+- **JSON sanitisation** - multi-layer control-character stripping on all responses (file content, command output, exception messages)
+- **Bounded execution** - configurable timeouts on all `execute` and `tools` actions; cancel-on-timeout enforced
+- **Windows reserved name guard** - filters `NUL`, `CON`, `PRN`, `AUX`, `COM1-9`, `LPT1-9` from directory listings
 
 ---
 
@@ -191,10 +214,11 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
 
 | Version | Highlights |
 |---------|-----------|
-| 0.7.7 | Token optimisation: tighter descriptions, slim pathToMap, relative tree paths, compact response mode |
+| **0.7.7** | Token optimisation: tighter descriptions (~40-50% schema reduction), slim pathToMap, relative tree paths, compact response mode |
 | 0.7.6 | Security hardening: cancel-on-timeout, cmd whitelist, env passthrough, toRealPath, join budget |
-| 0.7.5 | HTTP dual-transport (port 8081), HttpMcpController, ServerLifecycleService |
-| 0.7.4 | UsageTracker SQLite persistence, period stats |
-| 0.7.3 | Atomic finalise_write, CommandWhitelistConfig wired, doTail ring buffer |
-| 0.7.2 | doPatch hardened: overlap detection, atomic write, CRLF preservation |
-| 0.7.1 | 7 consolidated tools, chunked I/O, Promise module, SecurityService |
+| 0.7.5 | HTTP dual-transport (port 8081), HttpMcpController, ServerLifecycleService managing all 4 HTTP servers |
+| 0.7.4 | UsageTracker SQLite persistence, period stats (today/week/month/all) |
+| 0.7.3 | Atomic finalise_write, CommandWhitelistConfig, doTail ring buffer, ServerVersion constant |
+| 0.7.2 | doPatch hardened: overlap detection, atomic write, post-write line-count verification, CRLF preservation |
+| 0.7.1 | 7 consolidated tools, chunked I/O, Promise module (virtual threads), SecurityService |
+| 0.7.0 | ToolHandler architecture, 7 parameterised tools replacing 22 individual tools |
