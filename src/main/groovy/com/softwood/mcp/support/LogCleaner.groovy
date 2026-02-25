@@ -27,10 +27,7 @@ class LogCleaner {
         int clearedCount = 0
         String userHome = System.getProperty("user.home")
 
-        // 1. Clear ~/.mcp-logs/filesystem-server.log
-        clearedCount += clearFile(Paths.get(userHome, ".mcp-logs", "filesystem-server.log"), sessionHeader)
-
-        // 2. Clear Claude AppData logs
+        // Clear Claude AppData logs (canonical log location - ~/.mcp-logs is abolished)
         Path claudeLogsDir = Paths.get(userHome, "AppData", "Roaming", "Claude", "logs")
         if (Files.exists(claudeLogsDir)) {
             clearedCount += clearFile(claudeLogsDir.resolve("mcp-server-groovy-filesystem.log"), sessionHeader)

@@ -55,15 +55,8 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
         return [[
             name       : TOOL_NAME,
             description: '''\
-Manage HTTP MCP server processes (filesystem, context, orchestrator, agentic-workflow).
-Config read from claude-sync/mcp-http-servers.json. Runtime state in mcp-http-servers-runtime.json.
-
-actions:
-  start_eager - start all servers with startupPolicy=eager. Call at session begin.
-  ensure      - start a named lazy server if not already listening on its port. Use before ollama_agent tasks.
-  stop        - stop a named server (name required) or all managed servers (name omitted).
-  status      - report port/process state of all configured servers.
-  reload      - re-read config from disk (use after deploying new jar versions).''',
+Manage HTTP MCP server processes. Config from claude-sync/mcp-http-servers.json.
+Actions: start_eager (all eager servers) | ensure (start named lazy server) | stop (named or all) | status | reload (re-read config).''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -262,7 +255,15 @@ actions:
             ProcessBuilder pb = new ProcessBuilder(cmd)
             pb.redirectErrorStream(false)
             pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            pb.redirectError(ProcessBuilder.Redirect.DISCARD)
+            // Redirect stderr to AppData/Roaming/Claude/logs - consistent with STDIO server log location.
+            // HTTP-only instances aren't captured by Claude Desktop automatically so we redirect manually
+            // to the same directory, using the same mcp-server-{name}.log naming convention.
+            String appData = System.getenv('APPDATA') ?: (System.getProperty('user.home') + '/AppData/Roaming')
+            File logsDir = new File(appData, 'Claude/logs')
+            logsDir.mkdirs()
+            File stderrLog = new File(logsDir, "mcp-server-${name}.log")
+            pb.redirectError(stderrLog)
+
 
             // Server-specific env vars
             Map envVars = server.env as Map ?: [:]

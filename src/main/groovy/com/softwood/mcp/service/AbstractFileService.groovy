@@ -161,17 +161,33 @@ abstract class AbstractFileService {
     boolean isPathAllowed(String path) {
         try {
             String normalized = pathService.normalizePath(path)
-            Path resolvedPath = Paths.get(normalized).toAbsolutePath().normalize()
+            Path absPath = Paths.get(normalized).toAbsolutePath()
 
-            if (Files.isSymbolicLink(resolvedPath) && !allowSymlinks) {
+            if (Files.isSymbolicLink(absPath) && !allowSymlinks) {
                 log.warn("Symbolic link access denied: ${sanitize(normalized)}")
                 return false
             }
 
+            // Use toRealPath() to resolve symlinks and get the true filesystem path.
+            // Falls back to normalize() for paths that don't exist yet (e.g. new file being created).
+            Path resolvedPath
+            try {
+                resolvedPath = absPath.toRealPath()
+            } catch (IOException ignored) {
+                // Path doesn't exist yet - use normalize() as safe fallback
+                resolvedPath = absPath.normalize()
+            }
+
             return allowedDirectories.any { allowedDir ->
                 String normalizedAllowed = pathService.normalizePath(allowedDir)
-                Path allowedPath = Paths.get(normalizedAllowed).toAbsolutePath().normalize()
-                resolvedPath.startsWith(allowedPath)
+                Path allowedAbs = Paths.get(normalizedAllowed).toAbsolutePath()
+                Path allowedReal
+                try {
+                    allowedReal = allowedAbs.toRealPath()
+                } catch (IOException ignored) {
+                    allowedReal = allowedAbs.normalize()
+                }
+                resolvedPath.startsWith(allowedReal)
             }
         } catch (Exception e) {
             log.error("Error checking path allowed: ${sanitize(e.message)}")
@@ -281,34 +297,43 @@ abstract class AbstractFileService {
     }
 
     /**
+     * Compact mode helpers - return minimal responses when options.compact=true
+     */
+    protected boolean isCompact(Map<String, Object> options) {
+        return options?.compact as boolean ?: false
+    }
+
+    protected Map<String, Object> compactPathEntry(Map<String, Object> full) {
+        return createMap([
+            name: full.name,
+            type: full.type,
+            size: full.size
+        ])
+    }
+
+    /**
      * Convert Path to Map using Java NIO attributes with sanitized strings
      */
     protected Map<String, Object> pathToMap(Path path) {
         try {
             BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class)
             return createMap([
-                    path: sanitize(path.toAbsolutePath().toString().replace('\\', '/')),
-                    name: sanitize(path.fileName.toString()),
-                    type: attrs.isDirectory() ? 'directory' : 'file',
-                    size: attrs.size(),
-                    lastModified: attrs.lastModifiedTime().toMillis(),
-                    readable: Files.isReadable(path),
-                    writable: Files.isWritable(path),
-                    executable: Files.isExecutable(path)
+                    path        : sanitize(path.toAbsolutePath().toString().replace('\\', '/')),
+                    name        : sanitize(path.fileName.toString()),
+                    type        : attrs.isDirectory() ? 'directory' : 'file',
+                    size        : attrs.size(),
+                    lastModified: attrs.lastModifiedTime().toMillis()
             ])
         } catch (Exception e) {
             log.warn("Error reading attributes for ${sanitize(path.toString())}: ${sanitize(e.message)}")
             try {
                 return createMap([
-                        path: sanitize(path.toAbsolutePath().toString().replace('\\', '/')),
-                        name: sanitize(path.fileName.toString()),
-                        type: 'unknown',
-                        size: 0L,
+                        path        : sanitize(path.toAbsolutePath().toString().replace('\\', '/')),
+                        name        : sanitize(path.fileName.toString()),
+                        type        : 'unknown',
+                        size        : 0L,
                         lastModified: 0L,
-                        readable: false,
-                        writable: false,
-                        executable: false,
-                        error: sanitize("Could not read attributes: ${e.message}")
+                        error       : sanitize("Could not read attributes: ${e.message}")
                 ])
             } catch (Exception e2) {
                 log.error("Critical error creating error entry: ${sanitize(e2.message)}")

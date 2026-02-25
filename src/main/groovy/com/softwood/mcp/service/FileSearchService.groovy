@@ -40,7 +40,7 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'file_search',
-            description: 'Search file contents or find files by name. Actions: content (grep-style content search)|name (filename pattern search)|project (search within active project root using default code file filter). ALL actions require a directory path.',
+            description: 'Search file contents or filenames. Actions:\n- content(path, options.contentPattern): grep-style regex search in file contents\n- name(path, options.filePattern): filename regex search\n- project(path): search within project root using default code file filter\nAll require a directory path.',
             inputSchema: [
                 type      : 'object',
                 properties: [

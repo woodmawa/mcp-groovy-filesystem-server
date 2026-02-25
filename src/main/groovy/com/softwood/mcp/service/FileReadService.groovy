@@ -59,7 +59,7 @@ Read files and query filesystem metadata. Actions:
 - head(path, options.lines=50): first N lines
 - tail(path, options.lines=50): last N lines
 - range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
-- grep(path, options.pattern, options.maxMatches=10): regex matches in ONE file
+- grep(path, options.pattern, options.maxMatches=10, options.contextLines=0): regex matches; set contextLines>0 for before/after context on each match
 - multi(options.paths[]): read up to 10 files in parallel - cheapest multi-file read
 - info(path): file/dir metadata
 - summary(path): line count + size only - NO content, cheapest existence check
@@ -69,31 +69,39 @@ Read files and query filesystem metadata. Actions:
 - normalize(path): Windows/WSL path conversion
 - diff(path, options.compareTo): line-by-line diff of two files
 - checksum(path, options.algorithm=SHA-256): file hash
-- structure(path): code/markdown outline - FILE path only, NOT directory (use file_list tree for dirs)
+- structure(path): code/markdown outline with line AND endLine per entry - FILE path only, NOT directory
+- get_method(path, options.method): returns complete named method body in ONE call - preferred over structure+range for editing
 - chunk_read(options.sessionId, options.chunkIndex): retrieve one chunk from a paged read
 - finalise_read(options.sessionId): free chunk session when all chunks consumed
-NOTE: Use summary before read on unknown files to check size. Batch reads with multi.''',
+NOTE: Use summary before read on unknown files to check size. Batch reads with multi.
+NOTE: Use get_method to read a single method before editing it - cheaper than structure+range.
+NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char SHA-256 of whole file).
+      Pass this as options.expectedHash on the next patch/replace/multi_replace to guard against drift.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
                     action : [type: 'string',
                               enum: ['read','head','tail','range','grep','multi','info','summary',
                                      'exists','project_root','allowed_dirs','normalize',
-                                     'diff','checksum','structure','chunk_read','finalise_read']],
+                                     'diff','checksum','structure','get_method','chunk_read','finalise_read']],
                     path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
-                                  lines     : [type: 'integer', description: 'Lines for head/tail (default 50)'],
-                                  startLine : [type: 'integer', description: 'Start line for range, 1-indexed (required for range)'],
-                                  maxLines  : [type: 'integer', description: 'Max lines for range (default 100)'],
-                                  pattern   : [type: 'string',  description: 'Regex for grep (required for grep)'],
-                                  maxMatches: [type: 'integer', description: 'Max grep matches (default 10)'],
-                                  encoding  : [type: 'string',  description: 'File encoding (default UTF-8)'],
-                                  paths     : [type: 'array', items: [type: 'string'], description: 'File paths for multi (required for multi, max 10)'],
-                                  compareTo : [type: 'string',  description: 'Second file for diff (required for diff)'],
-                                  algorithm : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
-                                  sessionId : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
-                                  chunkIndex: [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)']
+                                  lines       : [type: 'integer', description: 'Lines for head/tail (default 50)'],
+                                  startLine   : [type: 'integer', description: 'Start line for range, 1-indexed (required for range)'],
+                                  maxLines    : [type: 'integer', description: 'Max lines for range (default 100)'],
+                                  pattern     : [type: 'string',  description: 'Regex for grep (required for grep)'],
+                                  maxMatches  : [type: 'integer', description: 'Max grep matches (default 10)'],
+                                  contextLines: [type: 'integer', description: 'Lines of context before/after each grep match (default 0)'],
+                                  method      : [type: 'string',  description: 'Method name for get_method (required for get_method)'],
+                                  fuzzy       : [type: 'boolean', description: 'If true, match method name as substring (for get_method)'],
+                                  encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
+                                  paths       : [type: 'array', items: [type: 'string'], description: 'File paths for multi (required for multi, max 10)'],
+                                  compareTo   : [type: 'string',  description: 'Second file for diff (required for diff)'],
+                                  algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
+                                  sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
+                                  chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
+                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo (read action only)']
                               ]]
                 ],
                 required  : ['action']
@@ -127,6 +135,7 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
                 case 'diff'        : return doDiff(path, options, requestId)
                 case 'checksum'    : return doChecksum(path, options, requestId)
                 case 'structure'   : return doStructure(path, requestId)
+                case 'get_method'  : return doGetMethod(path, options, requestId)
                 case 'chunk_read'  : return doChunkRead(options, requestId)
                 case 'finalise_read': return doFinaliseRead(options, requestId)
                 default:
@@ -142,32 +151,64 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         }
     }
 
+
     // -----------------------------------------------------------------------
     // Read actions
     // -----------------------------------------------------------------------
 
-    private McpResponse doRead(String path, Map<String, Object> options, Object requestId) {
-        String normalized = validateFilePath(path)
-        String encoding   = options.encoding as String ?: 'UTF-8'
-        String content    = new File(normalized).getText(encoding)
+    /** Compute a 12-char SHA-256 prefix of the whole file — cheap drift token for callers.
+     *  Returned as file_content_hash in all read responses so callers can use expectedHash
+     *  on the next patch/replace without a separate checksum call. */
+    private static String fileHash(String normalized) {
+        try {
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            new File(normalized).withInputStream { InputStream is ->
+                byte[] buf = new byte[8192]
+                int read
+                while ((read = is.read(buf)) != -1) md.update(buf, 0, read)
+            }
+            return (md.digest().encodeHex().toString() as String)[0..11]
+        } catch (Exception ignored) { return null }
+    }
 
-        // Auto-chunk if large
-        if (ChunkBufferService.needsChunking(content)) {
+
+    private McpResponse doRead(String path, Map<String, Object> options, Object requestId) {
+        String normalized   = validateFilePath(path)
+        String encoding     = options.encoding as String ?: 'UTF-8'
+        long fileSize       = Files.size(Paths.get(normalized))
+        long threshBytes    = (long) readChunkThresholdKb * 1024
+
+        // FIX 2: size-check BEFORE loading - never pull large files into memory
+        if (fileSize > threshBytes) {
             String sessionId = ChunkBufferService.newSessionId()
+            String content   = new File(normalized).getText(encoding)
             Map<String, Object> sessionInfo = chunkBufferService.createReadSession(sessionId, content)
-            log.info("file_read auto-chunked '{}'  {} chunks", normalized, sessionInfo.totalChunks)
+            log.info("file_read auto-chunked '{}' ({} bytes) -> {} chunks", normalized, fileSize, sessionInfo.totalChunks)
             return textResponse(requestId, [
-                action    : 'read',
-                path      : normalized,
-                chunked   : true,
-                sessionId : sessionInfo.sessionId,
+                action     : 'read',
+                path       : normalized,
+                chunked    : true,
+                sessionId  : sessionInfo.sessionId,
                 totalChunks: sessionInfo.totalChunks,
-                chunkSize : sessionInfo.chunkSize,
-                message   : ("File is large - use action=chunk_read with sessionId and chunkIndex 0..${(sessionInfo.totalChunks as int) - 1}, then action=finalise_read when done" as String)
+                chunkSize  : sessionInfo.chunkSize,
+                message    : ("File is large - use action=chunk_read with sessionId and chunkIndex 0..${(sessionInfo.totalChunks as int) - 1}, then action=finalise_read when done" as String)
             ])
         }
 
-        return textResponse(requestId, [action: 'read', path: normalized, content: sanitize(content), size: content.length()])
+        String content = new File(normalized).getText(encoding)
+        String hash = fileHash(normalized)
+        if (isCompact(options)) {
+            return textResponse(requestId, [
+                content: sanitize(content),
+                lines  : content.count('\n') + 1,
+                file_content_hash: hash
+            ])
+        }
+        return textResponse(requestId, [
+            action: 'read', path: normalized,
+            content: sanitize(content), size: content.length(),
+            file_content_hash: hash
+        ])
     }
 
     private McpResponse doHead(String path, Map<String, Object> options, Object requestId) {
@@ -184,7 +225,11 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
             }
         }
 
-        return textResponse(requestId, [action: 'head', path: normalized, lines: result.size(), content: result.join('\n')])
+        return textResponse(requestId, [
+            action: 'head', path: normalized,
+            lines: result.size(), content: result.join('\n'),
+            file_content_hash: fileHash(normalized)
+        ])
     }
 
     private McpResponse doTail(String path, Map<String, Object> options, Object requestId) {
@@ -192,8 +237,6 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         int lines         = (options.lines as Integer) ?: 50
         String encoding   = options.encoding as String ?: 'UTF-8'
 
-        // Ring-buffer: stream the file without loading it all into memory
-        // ArrayDeque acts as a fixed-size ring buffer holding the last N lines
         ArrayDeque<String> ring = new ArrayDeque<String>(lines + 1)
         new File(normalized).withReader(encoding) { Reader r ->
             BufferedReader br = new BufferedReader(r)
@@ -205,8 +248,13 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         }
         List<String> result = ring.collect { truncateAndSanitize(it) }
 
-        return textResponse(requestId, [action: 'tail', path: normalized, lines: result.size(), content: result.join('\n')])
+        return textResponse(requestId, [
+            action: 'tail', path: normalized,
+            lines: result.size(), content: result.join('\n'),
+            file_content_hash: fileHash(normalized)
+        ])
     }
+
 
 
     private McpResponse doRange(String path, Map<String, Object> options, Object requestId) {
@@ -227,11 +275,11 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
                 result << truncateAndSanitize(line)
             }
         }
-
         return textResponse(requestId, [
             action: 'range', path: normalized,
             startLine: startLine, endLine: startLine + result.size() - 1,
-            lines: result.size(), content: result.join('\n')
+            lines: result.size(), content: result.join('\n'),
+            file_content_hash: fileHash(normalized)
         ])
     }
 
@@ -240,9 +288,31 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         String patternStr  = options.pattern as String
         if (!patternStr) return McpResponse.error(requestId, -32602, "options.pattern required for grep")
 
-        int maxMatches = (options.maxMatches as Integer) ?: maxSearchMatchesPerFile
-        String encoding = options.encoding as String ?: 'UTF-8'
+        int maxMatches   = (options.maxMatches as Integer) ?: maxSearchMatchesPerFile
+        int contextLines = (options.contextLines as Integer) ?: 0
+        String encoding  = options.encoding as String ?: 'UTF-8'
         Pattern compiled = safeCompilePattern(patternStr)
+
+        if (contextLines > 0) {
+            List<String> allLines = new File(normalized).readLines(encoding)
+            List<Map<String, Object>> matches = []
+            allLines.eachWithIndex { String line, int idx ->
+                if (matches.size() >= maxMatches) return
+                if (compiled.matcher(line).find()) {
+                    int from = Math.max(0, idx - contextLines)
+                    int to   = Math.min(allLines.size() - 1, idx + contextLines)
+                    List<String> before = allLines[from..<idx].collect { truncateAndSanitize(it) }
+                    List<String> after  = allLines[(idx+1)..to].collect { truncateAndSanitize(it) }
+                    matches << ([line: idx + 1, content: truncateAndSanitize(line),
+                                 before: before, after: after] as Map<String, Object>)
+                }
+            }
+            return textResponse(requestId, [
+                action: 'grep', path: normalized, pattern: sanitize(patternStr),
+                contextLines: contextLines, matchCount: matches.size(), matches: matches,
+                file_content_hash: fileHash(normalized)
+            ])
+        }
 
         List<Map<String, Object>> matches = []
         int lineNum = 0
@@ -256,8 +326,11 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
                 }
             }
         }
-
-        return textResponse(requestId, [action: 'grep', path: normalized, pattern: sanitize(patternStr), matchCount: matches.size(), matches: matches])
+        return textResponse(requestId, [
+            action: 'grep', path: normalized,
+            pattern: sanitize(patternStr), matchCount: matches.size(), matches: matches,
+            file_content_hash: fileHash(normalized)
+        ])
     }
 
     private McpResponse doMulti(Map<String, Object> options, Object requestId) {
@@ -402,8 +475,62 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
         return textResponse(requestId, [action: 'checksum', path: normalized, algorithm: algorithm, checksum: hex])
     }
 
+    /**
+     * Core structure scanner — shared by doStructure and doGetMethod.
+     * Returns map with keys: ext (String), structure (List<Map>) each entry having line, endLine, type, content.
+     */
+    private Map<String, Object> computeStructure(String normalized) {
+        String ext = normalized.contains('.') ? normalized.tokenize('.').last().toLowerCase() : ''
+        List<Map<String, Object>> structure = []
+        int lineNum = 0
+        int braceDepth = 0
+        Deque<int[]> openStack = new ArrayDeque<>()
+
+        new File(normalized).eachLine('UTF-8') { String line ->
+            lineNum++
+            String trimmed = line.trim()
+            String stripped = trimmed.replaceAll(/"[^"]*"|'[^']*'|\/\/.*/, '')
+            int open  = stripped.count('{')
+            int close = stripped.count('}')
+
+            if (close > 0) {
+                braceDepth -= close
+                while (!openStack.isEmpty() && openStack.peek()[1] > braceDepth) {
+                    int[] top = openStack.pop()
+                    structure[top[0]].endLine = lineNum
+                }
+            }
+
+            if (ext in ['groovy', 'java', 'kt', 'kts']) {
+                if (trimmed =~ /^(public\s+|protected\s+|private\s+|static\s+|abstract\s+|final\s+)*(class|interface|enum|record|trait|@interface)\s+\w+/) {
+                    int idx = structure.size()
+                    structure << ([line: lineNum, type: 'class', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
+                    if (open > 0) openStack.push([idx, braceDepth + open] as int[])
+                } else if (trimmed =~ /^(public\s+|protected\s+|private\s+|static\s+|final\s+|synchronized\s+|override\s+)*[\w<\[\]>]+\s+\w+\s*\(/ &&
+                           trimmed =~ /\)/ &&
+                           !(trimmed =~ /^(if|else|for|while|switch|catch|try|return|throw|new|import|package|def\s+\w+\s*=|assert)\b/)) {
+                    int idx = structure.size()
+                    structure << ([line: lineNum, type: 'method', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
+                    if (open > 0) openStack.push([idx, braceDepth + open] as int[])
+                }
+            } else if (ext == 'md') {
+                java.util.regex.Matcher m = trimmed =~ /^(#{1,6})\s+(.+)/
+                if (m.find()) {
+                    structure << ([line: lineNum, type: "h${m.group(1).length()}", content: sanitize(m.group(2))] as Map<String, Object>)
+                }
+            } else {
+                if (trimmed =~ /^\/\/ ={4,}/ || trimmed =~ /^# ={4,}/) {
+                    structure << ([line: lineNum, type: 'section', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
+                }
+            }
+
+            if (open > 0) braceDepth += open
+        }
+
+        return [ext: ext, structure: structure] as Map<String, Object>
+    }
+
     private McpResponse doStructure(String path, Object requestId) {
-        // P2 fix: single normalise - reuse preCheck, no second call to validateFilePath
         String normalized = pathService.normalizePath(path)
         if (!isPathAllowed(normalized)) {
             return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(normalized)}")
@@ -421,41 +548,62 @@ NOTE: Use summary before read on unknown files to check size. Batch reads with m
             return McpResponse.error(requestId, -32602, "Path is not a regular file: ${sanitize(normalized)}")
         }
 
-        String ext = normalized.contains('.') ? normalized.tokenize('.').last().toLowerCase() : ''
+        Map<String, Object> result = computeStructure(normalized)
+        List entries = result.structure as List
+        return textResponse(requestId, [action: 'structure', path: normalized, ext: result.ext, count: entries.size(), structure: entries])
+    }
 
-        List<Map<String, Object>> structure = []
-        int lineNum = 0
+    // -----------------------------------------------------------------------
+    // Get-method action — single call returns one named method's content
+    // -----------------------------------------------------------------------
 
-        new File(normalized).eachLine('UTF-8') { String line ->
-            lineNum++
-            String trimmed = line.trim()
+    private McpResponse doGetMethod(String path, Map<String, Object> options, Object requestId) {
+        String normalized = pathService.normalizePath(path)
+        if (!isPathAllowed(normalized)) {
+            return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(normalized)}")
+        }
+        if (!new File(normalized).exists()) {
+            return McpResponse.error(requestId, -32602, "File not found: ${sanitize(normalized)}")
+        }
 
-            if (ext in ['groovy', 'java', 'kt', 'kts']) {
-                // Class-level: class, interface, enum, record, trait, annotation
-                if (trimmed =~ /^(public\s+|protected\s+|private\s+|static\s+|abstract\s+|final\s+)*(class|interface|enum|record|trait|@interface)\s+\w+/) {
-                    structure << ([line: lineNum, type: 'class', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
-                // Method: any access modifier or return type (including custom types) followed by methodName(
-                // Excludes control flow keywords and variable declarations
-                } else if (trimmed =~ /^(public\s+|protected\s+|private\s+|static\s+|final\s+|synchronized\s+|override\s+)*[\w<\[\]>]+\s+\w+\s*\(/ &&
-                           trimmed =~ /\)/ &&
-                           !(trimmed =~ /^(if|else|for|while|switch|catch|try|return|throw|new|import|package|def\s+\w+\s*=|assert)\b/)) {
-                    structure << ([line: lineNum, type: 'method', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
-                }
-            } else if (ext == 'md') {
-                java.util.regex.Matcher m = trimmed =~ /^(#{1,6})\s+(.+)/
-                if (m.find()) {
-                    String hashes  = m.group(1)
-                    String heading = m.group(2)
-                    structure << ([line: lineNum, type: "h${hashes.length()}", content: sanitize(heading)] as Map<String, Object>)
-                }
-            } else {
-                if (trimmed =~ /^\/\/ ={4,}/ || trimmed =~ /^# ={4,}/) {
-                    structure << ([line: lineNum, type: 'section', content: truncateAndSanitize(trimmed)] as Map<String, Object>)
-                }
+        String methodName = options.method as String
+        boolean fuzzy     = options.fuzzy as Boolean ?: false
+        if (!methodName) return McpResponse.error(requestId, -32602, "options.method is required for get_method")
+
+        // Direct call — no JSON serialise/deserialise round-trip
+        List<Map> entries = computeStructure(normalized).structure as List<Map>
+
+        Map found = fuzzy
+            ? entries.find { it.type == 'method' && (it.content as String).contains(methodName) }
+            : entries.find { it.type == 'method' && (it.content as String) =~ /\b${java.util.regex.Pattern.quote(methodName)}\s*\(/ }
+
+        if (!found) return McpResponse.error(requestId, -32602,
+            "Method '${sanitize(methodName)}' not found in ${sanitize(normalized)}")
+
+        int startLine   = found.line as int
+        Integer endLine = found.endLine as Integer
+        int maxLines    = endLine ? (endLine - startLine + 1) : 150
+
+        List<String> lines = []
+        int current = 0
+        new File(normalized).withReader('UTF-8') { Reader r ->
+            BufferedReader br = new BufferedReader(r)
+            String ln
+            while ((ln = br.readLine()) != null) {
+                current++
+                if (current < startLine) continue
+                if (current > startLine + maxLines - 1) break
+                lines << truncateAndSanitize(ln)
             }
         }
 
-        return textResponse(requestId, [action: 'structure', path: normalized, ext: ext, count: structure.size(), structure: structure])
+        return textResponse(requestId, [
+            action: 'get_method', path: normalized,
+            method: methodName,
+            startLine: startLine, endLine: startLine + lines.size() - 1,
+            lines: lines.size(), content: lines.join('\n'),
+            file_content_hash: fileHash(normalized)
+        ])
     }
 
     // -----------------------------------------------------------------------

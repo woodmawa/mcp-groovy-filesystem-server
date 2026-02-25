@@ -50,17 +50,12 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
             description: '''\
 Write, append, or modify file content. Actions:
 - write(path, content): overwrite entire file
-- append(path, content): append to end of file
-- replace(path, options.oldText, options.newText): replace ONE unique string
-- patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed.
-  CRITICAL: ALWAYS use file_read range/read to verify exact line numbers and content BEFORE issuing patch.
-  Never guess line numbers - read first, then patch. Ranges validated atomically before any write;
-  send all patches for one file in a SINGLE call ordered top-to-bottom. Preserves CRLF/LF.
-- multi_replace(path, options.replacements[]): ordered [{oldText,newText}] string replacements
-- chunk_write(path, content, options.sessionId, options.chunkIndex): buffer one large-content chunk
-- finalise_write(path, options.sessionId, options.totalChunks): assemble chunks and write to disk
-- abort_write(options.sessionId): discard buffered chunks without writing. NOTE: path is ignored for this action - pass any dummy value.
-USE write for full-file replacement, patch for targeted line edits, replace for unique-string swaps.''',
+- append(path, content): append to end
+- replace(path, options.oldText, options.newText): replace ONE unique string. Fails with nearest_match hint if not found.
+- patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed. ALWAYS read exact lines first.
+- multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
+- chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
+All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -73,6 +68,8 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
                               properties: [
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
+                                  expectedHash: [type: 'string',  description: 'Optional 12-char SHA-256 prefix from a prior read/write content_hash. Supported by patch, replace, and multi_replace. Rejects the edit if the file has changed since last read - prevents silent corruption in multi-step flows.'],
+
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
                                   sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
@@ -86,7 +83,8 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
                                                      newText  : [type: 'string'],
                                                      startLine: [type: 'integer'],
                                                      endLine  : [type: 'integer']
-                                                 ]]]
+                                                 ]]],
+                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns only success+content_hash']
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -128,126 +126,216 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         }
     }
 
+
     // -----------------------------------------------------------------------
     // Write actions
     // -----------------------------------------------------------------------
+
+    /** Compute a 12-char SHA-256 of the file at path after writing — mirrors FileReadService.fileHash(). */
+    private static String fileHash(Path p) {
+        try {
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            p.toFile().withInputStream { InputStream is ->
+                byte[] buf = new byte[8192]; int read
+                while ((read = is.read(buf)) != -1) md.update(buf, 0, read)
+            }
+            return (md.digest().encodeHex().toString() as String)[0..11]
+        } catch (Exception ignored) { return null }
+    }
 
     private McpResponse doWrite(String path, String content, Map<String, Object> options, Object requestId) {
         String normalized = normalizAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean backup    = options.backup as boolean ?: false
         boolean mkdirs    = options.mkdirs as boolean ?: true
+        String body       = content ?: ''
 
         Path target = Paths.get(normalized)
         if (mkdirs && target.parent) Files.createDirectories(target.parent)
         if (backup && Files.exists(target)) makeBackup(target)
 
-        new File(normalized).setText(content ?: '', encoding)
-        log.info("Wrote {} bytes to {}", content?.length() ?: 0, normalized)
+        atomicWrite(target, body.getBytes(encoding))
+        log.info("write: {} bytes -> {} (atomic)", body.length(), normalized)
 
-        return textResponse(requestId, [action: 'write', path: normalized, size: content?.length() ?: 0, success: true])
+        String hash = fileHash(target)
+        if (isCompact(options)) {
+            return textResponse(requestId, [success: true, content_hash: hash])
+        }
+        return textResponse(requestId, [
+            action: 'write', path: normalized,
+            size: body.length(), success: true,
+            content_hash: hash
+        ])
     }
 
     private McpResponse doAppend(String path, String content, Map<String, Object> options, Object requestId) {
         String normalized = normalizAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean mkdirs    = options.mkdirs as boolean ?: true
+        byte[] bytes      = (content ?: '').getBytes(encoding)
 
         Path target = Paths.get(normalized)
         if (mkdirs && target.parent) Files.createDirectories(target.parent)
 
-        new File(normalized).append(content ?: '', encoding)
-        log.debug("Appended {} bytes to {}", content?.length() ?: 0, normalized)
+        // Hardened: FileChannel + FileLock so concurrent agents writing to a shared
+        // log/output file never interleave or corrupt each other's output.
+        new java.io.RandomAccessFile(normalized, 'rw').withCloseable { java.io.RandomAccessFile raf ->
+            raf.channel.lock().withCloseable {
+                raf.seek(raf.length())
+                raf.write(bytes)
+            }
+        }
+        log.debug("append: {} bytes -> {} (locked)", bytes.length, normalized)
 
-        return textResponse(requestId, [action: 'append', path: normalized, appended: content?.length() ?: 0, success: true])
+        return textResponse(requestId, [
+            action: 'append', path: normalized,
+            appended: bytes.length, success: true,
+            content_hash: fileHash(target)
+        ])
     }
 
     private McpResponse doReplace(String path, Map<String, Object> options, Object requestId) {
-        String oldText = options.oldText as String
-        // Fix: strip incoming \r so newText doesn't introduce mixed endings into the LF-normalised content
-        String newText = (options.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+        String oldText      = options.oldText as String
+        String newText      = (options.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+        String expectedHash = options.expectedHash as String
         if (!oldText) return McpResponse.error(requestId, -32602, "options.oldText required for replace")
 
         String normalized = normalizAndCheckPath(path)
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
 
-        // Read raw bytes to detect line-ending style, then decode to String
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
         String rawContent = new String(rawBytes, encoding)
         boolean hasCrLf   = rawContent.contains('\r\n')
-        // Normalise file content to LF for matching
         String current    = rawContent.replace('\r\n', '\n').replace('\r', '\n')
+
+        // Drift guard
+        if (expectedHash) {
+            String actualHash = computeHash(rawBytes)
+            if (actualHash != expectedHash) {
+                return McpResponse.error(requestId, -32602,
+                    ("replace rejected: file has changed since last read (expected ${expectedHash}, got ${actualHash}). Re-read before retrying." as String))
+            }
+        }
 
         int count = countOccurrences(current, oldText)
         if (count == 0) {
-            return McpResponse.error(requestId, -32602,
-                "replace: oldText not found in file. Check exact whitespace/newlines.")
+            String firstLine = oldText.trim().tokenize('\n').first()?.trim() ?: ''
+            String nearestContent = null
+            int nearestLine = -1
+            if (firstLine) {
+                int bestScore = Integer.MAX_VALUE
+                List<String> fileLines = current.split('\n', -1).toList()
+                fileLines.eachWithIndex { String fl, int idx ->
+                    String trimFl = fl.trim()
+                    if (trimFl.contains(firstLine) || firstLine.contains(trimFl)) {
+                        int score = Math.abs(trimFl.length() - firstLine.length())
+                        if (score < bestScore) { bestScore = score; nearestContent = fl; nearestLine = idx + 1 }
+                    }
+                }
+                if (nearestLine < 0 && firstLine.length() <= 80) {
+                    fileLines.eachWithIndex { String fl, int idx ->
+                        int common = fl.trim().toSet().intersect(firstLine.toSet()).size()
+                        int score  = firstLine.length() - common
+                        if (score < bestScore) { bestScore = score; nearestContent = fl; nearestLine = idx + 1 }
+                    }
+                }
+            }
+            Map<String, Object> err = [
+                action: 'replace', success: false,
+                error: 'oldText not found in file. Check exact whitespace/newlines.',
+                line_endings: hasCrLf ? 'CRLF' : 'LF',
+                oldText_first_line: firstLine.take(120)
+            ] as Map<String, Object>
+            if (nearestLine > 0) err.nearest_match = [line: nearestLine, content: nearestContent?.take(120)]
+            return McpResponse.error(requestId, -32602, new groovy.json.JsonBuilder(err).toString())
         }
         if (count > 1) {
             return McpResponse.error(requestId, -32602,
                 "replace: oldText appears ${count} times (must be unique). Provide more context.")
         }
 
-        if (backup) makeBackup(Paths.get(normalized))
         String updated = current.replace(oldText, newText)
-        // Restore original line endings before writing
         if (hasCrLf) updated = updated.replace('\n', '\r\n')
-        Files.write(Paths.get(normalized), updated.getBytes(encoding))
+
+        Path target = Paths.get(normalized)
+        if (backup) makeBackup(target)
+        atomicWrite(target, updated.getBytes(encoding))
 
         log.debug("replace: 1 occurrence in {} (line endings: {})", normalized, hasCrLf ? 'CRLF' : 'LF')
-        return textResponse(requestId, [action: 'replace', path: normalized, replacements: 1, success: true])
+        String hash = fileHash(target)
+        if (isCompact(options)) {
+            return textResponse(requestId, [success: true, content_hash: hash])
+        }
+        return textResponse(requestId, [
+            action: 'replace', path: normalized,
+            replacements: 1, success: true,
+            content_hash: hash
+        ])
     }
 
     private McpResponse doMultiReplace(String path, Map<String, Object> options, Object requestId) {
         List<Map<String, Object>> replacements = (options.replacements as List<Map<String, Object>>) ?: []
         if (!replacements) return McpResponse.error(requestId, -32602, "options.replacements required for multi_replace")
 
-        String normalized = normalizAndCheckPath(path)
-        boolean backup    = options.backup as boolean ?: false
-        String encoding   = options.encoding as String ?: 'UTF-8'
+        String normalized   = normalizAndCheckPath(path)
+        boolean backup      = options.backup as boolean ?: false
+        String encoding     = options.encoding as String ?: 'UTF-8'
+        String expectedHash = options.expectedHash as String
 
-        if (backup) makeBackup(Paths.get(normalized))
-
-        // Read raw bytes to detect line-ending style, then decode to String
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
         String rawContent = new String(rawBytes, encoding)
         boolean hasCrLf   = rawContent.contains('\r\n')
-        // Normalise file content to LF for matching
-        String current    = rawContent.replace('\r\n', '\n').replace('\r', '\n')
+        String snapshot   = rawContent.replace('\r\n', '\n').replace('\r', '\n')
 
+        // Drift guard
+        if (expectedHash) {
+            String actualHash = computeHash(rawBytes)
+            if (actualHash != expectedHash) {
+                return McpResponse.error(requestId, -32602,
+                    ("multi_replace rejected: file has changed since last read (expected ${expectedHash}, got ${actualHash}). Re-read before retrying." as String))
+            }
+        }
+
+        // Phase 1: pre-validate ALL replacements before touching the file
+        List<String> validationErrors = []
+        replacements.eachWithIndex { Map<String, Object> rep, int i ->
+            String oldText = rep.oldText as String
+            if (!oldText) { validationErrors << ("Entry ${i}: missing oldText" as String); return }
+            int count = countOccurrences(snapshot, oldText)
+            if (count == 0) validationErrors << ("Entry ${i}: oldText not found: '${sanitize(oldText.take(60))}'" as String)
+            if (count > 1)  validationErrors << ("Entry ${i}: oldText not unique (${count} occurrences): '${sanitize(oldText.take(60))}'" as String)
+        }
+        if (validationErrors) {
+            return McpResponse.error(requestId, -32602,
+                ("multi_replace validation failed (file NOT modified): ${validationErrors.join('; ')}" as String))
+        }
+
+        // Phase 2: apply in order
+        String current = snapshot
         int applied = 0
-        List<String> errors = []
-
         replacements.each { Map<String, Object> rep ->
             String oldText = rep.oldText as String
-            // Fix: strip incoming \r so newText doesn't introduce mixed endings into LF-normalised content
             String newText = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
-            if (!oldText) { errors << "Skipped entry with missing oldText".toString(); return }
-
-            int count = countOccurrences(current, oldText)
-            if (count == 0) { errors << "oldText not found: '${sanitize(oldText.take(50))}'".toString(); return }
-            if (count > 1)  { errors << "oldText not unique (${count} occurrences): '${sanitize(oldText.take(50))}'".toString(); return }
-
             current = current.replace(oldText, newText)
             applied++
         }
 
-        // Restore original line endings before writing
+        Path target = Paths.get(normalized)
+        if (backup) makeBackup(target)
         if (hasCrLf) current = current.replace('\n', '\r\n')
-        Files.write(Paths.get(normalized), current.getBytes(encoding))
-        log.info("multi_replace: {} applied, {} errors in {} (line endings: {})",
-            applied, errors.size(), normalized, hasCrLf ? 'CRLF' : 'LF')
+        atomicWrite(target, current.getBytes(encoding))
+        log.info("multi_replace: {} applied in {} (line endings: {})", applied, normalized, hasCrLf ? 'CRLF' : 'LF')
 
         return textResponse(requestId, [
-            action : 'multi_replace', path: normalized,
-            applied: applied, errors: errors,
-            success: errors.isEmpty()
+            action: 'multi_replace', path: normalized,
+            applied: applied, success: true,
+            content_hash: fileHash(target)
         ])
     }
 
     private McpResponse doPatch(String path, String content, Map<String, Object> options, Object requestId) {
-        // HARDENED patch (v0.7.2q):
+        // HARDENED patch (v0.7.5+):
         //   Phase 1  : validate all ranges (bounds + newText present)
         //              Line count is the count of REAL content lines (trailing newline stripped
         //              before split so a 10-line file with trailing \n gives 10, not 11).
@@ -261,9 +349,11 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         //              same trailing-newline-aware counting)
         //              -> logs ERROR + sets success=false + adds verify_warning in response
         //   CRLF/LF detected on read and restored on write
-        String normalized = normalizAndCheckPath(path)
-        String encoding   = options.encoding as String ?: 'UTF-8'
-        boolean backup    = options.backup as boolean ?: false
+        //   expectedHash: optional 12-char SHA-256 prefix; rejects if file has drifted since last read
+        String normalized   = normalizAndCheckPath(path)
+        String encoding     = options.encoding as String ?: 'UTF-8'
+        boolean backup      = options.backup as boolean ?: false
+        String expectedHash = options.expectedHash as String  // optional drift guard
 
         List<Map<String, Object>> replacements = (options.replacements instanceof List)
             ? options.replacements as List<Map<String, Object>>
@@ -286,9 +376,22 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
             return McpResponse.error(requestId, -32603, "patch: could not read file: ${sanitize(e.message)}")
         }
 
+        // ---- Optional drift guard: reject if file has changed since caller last read it ----
+        if (expectedHash) {
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            String actualHash = md.digest(rawBytes).encodeHex().toString()[0..11]
+            if (actualHash != expectedHash) {
+                log.warn("patch: drift guard rejected '{}': expected hash {} but file is now {}", normalized, expectedHash, actualHash)
+                return McpResponse.error(requestId, -32602,
+                    "patch rejected: file has changed since last read (expected hash ${expectedHash}, got ${actualHash}). Re-read the file before patching.")
+            }
+            log.debug("patch: drift guard OK for '{}' (hash {})", normalized, actualHash)
+        }
+
         String rawContent    = new String(rawBytes, encoding)
         boolean hasCrLf      = rawContent.contains('\r\n')
         // Normalise to LF; also strip lone \r (old Mac)
+
         String normalised    = rawContent.replace('\r\n', '\n').replace('\r', '\n')
 
         // Fix Bug 1: track whether file had a trailing newline and strip the phantom empty
@@ -364,18 +467,13 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         // Reassemble: join content lines, then restore trailing newline if file had one
         String lineEnding = hasCrLf ? '\r\n' : '\n'
         String assembled  = lines.join(lineEnding) + (hadTrailingNewline ? lineEnding : '')
-        Path targetPath   = Paths.get(normalized)
-        Path tempPath     = Paths.get("${normalized}.patch_tmp")
-
+        Path targetPath = Paths.get(normalized)
         try {
             if (backup) makeBackup(targetPath)
-            // Fix Bug 3: use Files.write (bytes) instead of File.setText for consistency
-            Files.write(tempPath, assembled.getBytes(encoding))
-            Files.move(tempPath, targetPath, StandardCopyOption.REPLACE_EXISTING)
-            log.debug("patch: atomic rename succeeded for '{}'", normalized)
+            atomicWrite(targetPath, assembled.getBytes(encoding))
+            log.debug("patch: atomic write succeeded for '{}'", normalized)
         } catch (Exception e) {
-            try { Files.deleteIfExists(tempPath) } catch (Exception ignored) {}
-            log.error("patch: write/rename failed for '{}': {}", normalized, sanitize(e.message))
+            log.error("patch: write failed for '{}': {}", normalized, sanitize(e.message))
             return McpResponse.error(requestId, -32603,
                 "patch: write failed (original file untouched): ${sanitize(e.message)}")
         }
@@ -404,18 +502,26 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         log.info("patch: {} replacement(s) on '{}' ({} -> {} lines, endings: {})",
             applied, normalized, originalLineCount, expectedResultLines, hasCrLf ? 'CRLF' : 'LF')
 
+        // Include content hash of result so callers can detect file drift before a subsequent patch
+        String resultHash = null
+        try {
+            def md = java.security.MessageDigest.getInstance('SHA-256')
+            resultHash = md.digest(Files.readAllBytes(targetPath)).encodeHex().toString()[0..11]
+        } catch (Exception ignored) {}
+
         Map<String, Object> result = [
             action        : 'patch',
             path          : normalized,
             success       : (verifyError == null),
             applied       : applied,
             original_lines: originalLineCount,
-            result_lines  : expectedResultLines
+            result_lines  : expectedResultLines,
+            content_hash  : resultHash
         ] as Map<String, Object>
-        if (verifyError) {
-            result.put('verify_warning', verifyError)
-        }
+        if (verifyError) result.put('verify_warning', verifyError)
+
         return textResponse(requestId, result)
+
     }
 
 
@@ -458,15 +564,7 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
         if (mkdirs && target.parent) Files.createDirectories(target.parent)
         if (backup && Files.exists(target)) makeBackup(target)
 
-        // Atomic write: temp file + rename so partial failures never zero the target
-        Path tempPath = Paths.get("${normalized}.finalize_tmp")
-        try {
-            Files.write(tempPath, assembled.getBytes(encoding))
-            Files.move(tempPath, target, StandardCopyOption.REPLACE_EXISTING)
-        } catch (Exception e) {
-            try { Files.deleteIfExists(tempPath) } catch (Exception ignored) {}
-            throw e
-        }
+        atomicWrite(target, assembled.getBytes(encoding))
         log.info("finalise_write: wrote {}B to {} from {} chunks (atomic)", assembled.length(), normalized, totalChunks)
 
         return textResponse(requestId, [
@@ -500,6 +598,38 @@ USE write for full-file replacement, patch for targeted line edits, replace for 
             Path backup = Paths.get("${path}.backup")
             Files.copy(path, backup, StandardCopyOption.REPLACE_EXISTING)
         }
+    }
+
+    /**
+     * Atomic write helper - single source of truth for all write operations.
+     * Writes bytes to a sibling temp file then renames atomically over the target.
+     * Tries ATOMIC_MOVE first (guaranteed atomic on same filesystem); falls back to
+     * REPLACE_EXISTING on cross-filesystem or unsupported cases.
+     * Cleans up the temp file if anything goes wrong so we never leave stray .tmp files.
+     */
+    private static void atomicWrite(Path target, byte[] bytes) {
+        Path tmp = target.resolveSibling(target.fileName.toString() + '.tmp')
+        try {
+            Files.write(tmp, bytes)
+            try {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING,
+                                        StandardCopyOption.ATOMIC_MOVE)
+            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+            }
+        } catch (Exception e) {
+            try { Files.deleteIfExists(tmp) } catch (Exception ignored) {}
+            throw e
+        }
+    }
+
+    /**
+     * Compute a 12-char SHA-256 prefix of the given raw bytes.
+     * Used for drift-guard validation - single implementation used by all write actions.
+     */
+    private static String computeHash(byte[] bytes) {
+        (java.security.MessageDigest.getInstance('SHA-256')
+            .digest(bytes).encodeHex().toString() as String)[0..11]
     }
 
     private static int countOccurrences(String text, String target) {

@@ -151,8 +151,19 @@ class SecurityService {
         if (workingDir.length() > maxWorkingDirLength) {
             throw new IllegalArgumentException("Working directory path too long (max ${maxWorkingDirLength} chars)")
         }
-        if (workingDir.contains('..')) {
-            throw new SecurityException("Path traversal not allowed in working directory")
+        // Resolve to canonical path and check for traversal, rather than substring-matching '..'
+        // (substring check false-positives on legitimate folder names like '...-utils')
+        try {
+            String canonical = new File(workingDir).canonicalPath
+            String normalized = new File(workingDir).absolutePath
+            // If canonical diverges from absolute path, there is either a symlink or traversal
+            if (!canonical.replace('\\', '/').equals(normalized.replace('\\', '/'))) {
+                // Allow it - actual boundary enforcement is in isPathAllowed()
+                // Just note it for debug visibility
+                log.debug("Working dir canonical path differs from absolute - possible symlink: {}", workingDir)
+            }
+        } catch (IOException e) {
+            throw new SecurityException("Cannot resolve working directory: ${workingDir}")
         }
     }
 
@@ -203,11 +214,13 @@ class SecurityService {
      */
     <T> T executeWithTimeout(String taskId, Callable<T> task, int timeoutSeconds = maxExecutionTimeSeconds) {
         activeTasks.put(taskId, System.currentTimeMillis())
+        Future<T> future = null
         try {
-            Future<T> future = virtualExecutor.submit(task)
+            future = virtualExecutor.submit(task)
             return future.get(timeoutSeconds, TimeUnit.SECONDS)
         } catch (TimeoutException e) {
-            log.error("Task '{}' timed out after {}s", taskId, timeoutSeconds)
+            log.error("Task '{}' timed out after {}s - cancelling", taskId, timeoutSeconds)
+            future?.cancel(true)  // interrupt the task thread; won't stop tight loops but releases I/O waits
             throw new RuntimeException("Execution timed out after ${timeoutSeconds} seconds", e)
         } catch (ExecutionException e) {
             Throwable cause = e.getCause() ?: e

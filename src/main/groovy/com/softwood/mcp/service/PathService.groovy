@@ -146,7 +146,16 @@ class PathService {
         // Join workspace root with relative path
         Path result = Paths.get(workspaceRoot, relativePath)
             .toAbsolutePath().normalize()
-        
+
+        // Guard: ensure result doesn't escape workspaceRoot (protection against ../ in input)
+        Path workspaceRootPath = Paths.get(workspaceRoot).toAbsolutePath().normalize()
+        if (!result.startsWith(workspaceRootPath)) {
+            log.warn("Linux path mapping escape attempt: '${linuxPath}' resolved outside workspace root")
+            throw new SecurityException(
+                "Linux path '${linuxPath}' resolves outside workspace root - possible traversal attack"
+            )
+        }
+
         return result.toString().replace('\\', '/')
     }
 

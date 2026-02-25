@@ -21,12 +21,16 @@ class CommandWhitelistConfig {
     List<String> powershellBlocked = []
     List<String> bashAllowed = []
     List<String> bashBlocked = []
+    List<String> cmdAllowed = []
+    List<String> cmdBlocked = []
     
     // Compiled patterns for better performance
     private List<Pattern> powershellAllowedPatterns = null
     private List<Pattern> powershellBlockedPatterns = null
     private List<Pattern> bashAllowedPatterns = null
     private List<Pattern> bashBlockedPatterns = null
+    private List<Pattern> cmdAllowedPatterns = null
+    private List<Pattern> cmdBlockedPatterns = null
     
     /**
      * Get compiled PowerShell allowed patterns (lazy initialization)
@@ -108,6 +112,48 @@ class CommandWhitelistConfig {
         boolean allowed = getBashAllowedPatterns().any { pattern -> normalized ==~ pattern }
         if (!allowed) {
             log.debug("Bash command not in whitelist: {}", normalized.take(50))
+        }
+        return allowed
+    }
+
+    List<Pattern> getCmdAllowedPatterns() {
+        if (cmdAllowedPatterns == null) {
+            cmdAllowedPatterns = cmdAllowed.collect { Pattern.compile(it) }
+            log.info("Loaded ${cmdAllowedPatterns.size()} CMD allowed patterns")
+        }
+        return cmdAllowedPatterns
+    }
+
+    List<Pattern> getCmdBlockedPatterns() {
+        if (cmdBlockedPatterns == null) {
+            cmdBlockedPatterns = cmdBlocked.collect { Pattern.compile(it) }
+            log.info("Loaded ${cmdBlockedPatterns.size()} CMD blocked patterns")
+        }
+        return cmdBlockedPatterns
+    }
+
+    /**
+     * Check if a CMD command is allowed.
+     * If cmdAllowed list is empty, defaults to ALLOW (open by default - same risk profile as enableCmd=true).
+     * If cmdAllowed has patterns, command must match at least one.
+     */
+    boolean isCmdAllowed(String command) {
+        String normalized = command.trim()
+
+        // Check blocklist first
+        if (getCmdBlockedPatterns().any { pattern -> normalized ==~ pattern }) {
+            log.debug("CMD command blocked by blocklist: {}", normalized.take(50))
+            return false
+        }
+
+        // If no allow patterns configured, default to allow (open policy)
+        if (getCmdAllowedPatterns().isEmpty()) {
+            return true
+        }
+
+        boolean allowed = getCmdAllowedPatterns().any { pattern -> normalized ==~ pattern }
+        if (!allowed) {
+            log.debug("CMD command not in allowlist: {}", normalized.take(50))
         }
         return allowed
     }

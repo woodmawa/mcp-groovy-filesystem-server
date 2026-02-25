@@ -49,14 +49,13 @@ class ToolsService extends AbstractFileService implements ToolHandler {
         return [[
             name       : 'tools',
             description: '''\
-Developer toolchain integration. Actions:
-- git(subcommand, args[], options.workingDir, options.message): subcommands: status|log|diff|add|commit|push|pull|branch|stash|clone|fetch|checkout|merge|show|tag|remote|reset|revert.
-  IMPORTANT: git commit requires options.message. Omitting it will HANG the process waiting for an editor.
-- gradle(subcommand, args[], options.workingDir, options.timeout): tasks: build|test|clean|compileGroovy|compileJava|bootRun|bootJar|jar|dependencies|tasks|check|assemble|publish|wrapper
-- mvn(subcommand, args[], options.workingDir): goals: package|test|clean|install|verify|compile|dependency:tree
-- npm(subcommand, args[], options.workingDir): commands: install|build|test|run|start|lint|audit
-- project_scan(options.workingDir): structure + git status + build system in one call - use before diving into a project
-- stats: server JVM memory, chunk buffer state, allowed dirs. options.period: today|week|month|all (default: today) for persistent usage history''',
+Developer toolchain. Actions:
+- git(subcommand, args[], options.workingDir, options.message): status|log|diff|add|commit|push|pull|branch|stash|clone|fetch|checkout|merge|show|tag|remote|reset|revert. IMPORTANT: commit requires options.message or process hangs.
+- gradle(subcommand, args[], options.workingDir, options.timeout): build|test|clean|compileGroovy|compileJava|bootRun|bootJar|jar|dependencies|tasks|check|assemble|publish|wrapper
+- mvn(subcommand, args[]): package|test|clean|install|verify|compile|dependency:tree
+- npm(subcommand, args[]): install|build|test|run|start|lint|audit
+- project_scan(options.workingDir): structure + git + build system in one call
+- stats: JVM memory, chunk buffer, allowed dirs. options.period: today|week|month|all''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -278,13 +277,15 @@ Developer toolchain integration. Actions:
         ])
     }
 
-    private Map<String, Object> runToolRaw(List<String> cmd, String workingDir, int timeout) {
+    private Map<String, Object> runToolRaw(List<String> cmd, String workingDir, int timeout,
+                                            Map<String, String> envOverrides = null) {
         long start = System.currentTimeMillis()
         Process process = null
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd)
             pb.directory(new File(workingDir))
             pb.redirectErrorStream(false)
+            if (envOverrides) pb.environment().putAll(envOverrides)
             process = pb.start()
 
             StringBuilder stdout = new StringBuilder()
@@ -298,8 +299,11 @@ Developer toolchain integration. Actions:
             })
 
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
-            stdoutThread.join(2000)
-            stderrThread.join(2000)
+            // Join with remaining budget rather than hardcoded 2s to avoid truncating large output
+            long elapsedMs = System.currentTimeMillis() - start
+            long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
+            stdoutThread.join(remainingMs)
+            stderrThread.join(remainingMs)
 
             long durationMs = System.currentTimeMillis() - start
 

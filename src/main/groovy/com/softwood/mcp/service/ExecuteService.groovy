@@ -60,7 +60,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'execute',
-            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd. Scripts are validated for dangerous patterns before execution. Working directory must be within allowed directories.',
+            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -102,11 +102,14 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             // Security validation
             securityService.validateScript(script, workingDir)
 
+            // Extract env overrides from options (was previously silently ignored)
+            Map<String, String> envOverrides = options.env ? (options.env as Map<String, String>) : null
+
             switch (action) {
-                case 'bash'      : return doBash(script, workingDir, timeout, requestId)
-                case 'powershell': return doPowershell(script, workingDir, timeout, requestId)
+                case 'bash'      : return doBash(script, workingDir, timeout, envOverrides, requestId)
+                case 'powershell': return doPowershell(script, workingDir, timeout, envOverrides, requestId)
                 case 'groovy'    : return doGroovy(script, workingDir, timeout, options, requestId)
-                case 'cmd'       : return doCmd(script, workingDir, timeout, requestId)
+                case 'cmd'       : return doCmd(script, workingDir, timeout, envOverrides, requestId)
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown execute action: ${action}")
             }
@@ -123,30 +126,37 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     // Actions
     // -----------------------------------------------------------------------
 
-    private McpResponse doBash(String script, String workingDir, int timeout, Object requestId) {
+    private McpResponse doBash(String script, String workingDir, int timeout,
+                               Map<String, String> envOverrides, Object requestId) {
         if (!enableBash) return McpResponse.error(requestId, -32603, "Bash execution is disabled")
         if (!whitelistConfig.isBashAllowed(script)) {
             log.warn("Bash script rejected by whitelist/blacklist config")
             return McpResponse.error(requestId, -32603, "Bash command not permitted by whitelist configuration")
         }
         List<String> cmd = ['bash', '-c', script]
-        return runProcess(cmd, workingDir, timeout, 'bash', requestId)
+        return runProcess(cmd, workingDir, timeout, 'bash', requestId, envOverrides)
     }
 
-    private McpResponse doPowershell(String script, String workingDir, int timeout, Object requestId) {
+    private McpResponse doPowershell(String script, String workingDir, int timeout,
+                                    Map<String, String> envOverrides, Object requestId) {
         if (!enablePowershell) return McpResponse.error(requestId, -32603, "PowerShell execution is disabled")
         if (!whitelistConfig.isPowershellAllowed(script)) {
             log.warn("PowerShell script rejected by whitelist/blacklist config")
             return McpResponse.error(requestId, -32603, "PowerShell command not permitted by whitelist configuration")
         }
         List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command', script]
-        return runProcess(cmd, workingDir, timeout, 'powershell', requestId)
+        return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides)
     }
 
-    private McpResponse doCmd(String script, String workingDir, int timeout, Object requestId) {
+    private McpResponse doCmd(String script, String workingDir, int timeout,
+                             Map<String, String> envOverrides, Object requestId) {
         if (!enableCmd) return McpResponse.error(requestId, -32603, "CMD execution is disabled")
+        if (!whitelistConfig.isCmdAllowed(script)) {
+            log.warn("CMD script rejected by whitelist/blacklist config")
+            return McpResponse.error(requestId, -32603, "CMD command not permitted by whitelist configuration")
+        }
         List<String> cmd = ['cmd', '/c', script]
-        return runProcess(cmd, workingDir, timeout, 'cmd', requestId)
+        return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides)
     }
 
     private McpResponse doGroovy(String script, String workingDir, int timeout,
@@ -192,13 +202,16 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     // -----------------------------------------------------------------------
 
     private McpResponse runProcess(List<String> cmd, String workingDir, int timeout,
-                                   String action, Object requestId) {
+                                   String action, Object requestId,
+                                   Map<String, String> envOverrides = null) {
         long start = System.currentTimeMillis()
         Process process = null
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd)
             pb.directory(new File(workingDir))
             pb.redirectErrorStream(false)
+            // Apply env overrides if provided
+            if (envOverrides) pb.environment().putAll(envOverrides)
 
             process = pb.start()
 
@@ -214,8 +227,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             })
 
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
-            stdoutThread.join(2000)
-            stderrThread.join(2000)
+            // Join with remaining budget (not a hardcoded 2s) to avoid truncating large output
+            long elapsedMs = System.currentTimeMillis() - start
+            long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
+            stdoutThread.join(remainingMs)
+            stderrThread.join(remainingMs)
 
             long durationMs = System.currentTimeMillis() - start
 

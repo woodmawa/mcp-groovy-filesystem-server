@@ -79,8 +79,24 @@ abstract class SecureMcpScript extends Script {
     boolean fileExists(String path) { file(path).exists() }
 
     List<String> listDir(String path) {
+        // Use Java NIO to avoid Groovy GDK phantom Windows reserved names (NUL, CON, etc.)
         File d = file(path)
-        d.isDirectory() ? d.list().toList().sort() : []
+        if (!d.isDirectory()) return []
+        List<String> names = []
+        java.nio.file.Files.newDirectoryStream(d.toPath()).withCloseable { stream ->
+            stream.each { java.nio.file.Path entry ->
+                String name = entry.fileName.toString()
+                // Filter Windows reserved device names
+                String upper = name.toUpperCase(Locale.ROOT)
+                boolean reserved = ['CON','PRN','AUX','NUL','COM1','COM2','COM3','COM4','COM5',
+                                    'COM6','COM7','COM8','COM9','LPT1','LPT2','LPT3','LPT4',
+                                    'LPT5','LPT6','LPT7','LPT8','LPT9'].any {
+                    upper == it || upper.startsWith("${it}.")
+                }
+                if (!reserved) names << name
+            }
+        }
+        return names.sort()
     }
 
     // -----------------------------------------------------------------------

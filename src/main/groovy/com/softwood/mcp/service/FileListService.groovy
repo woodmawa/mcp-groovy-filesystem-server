@@ -37,12 +37,12 @@ class FileListService extends AbstractFileService implements ToolHandler {
         return [[
             name       : 'file_list',
             description: '''\
-List directory contents or generate a directory tree. Actions:
-- children(path): immediate children only - cheapest listing
-- list(path, options): filtered listing; options.recursive=true for full walk
-- tree(path, options.maxDepth=5, options.maxResults=200): recursive JSON tree - best for project overview
-- sizes(path): immediate children sorted by size desc
-ALL actions require a directory path. options.maxDepth default 5.''',
+List directory contents. Actions:
+- children(path): immediate children only - cheapest
+- list(path, options): filtered listing; options.recursive for full walk
+- tree(path, options.maxDepth=5, options.maxResults=200): recursive JSON tree
+- sizes(path): children sorted by size desc
+All require a directory path.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -56,7 +56,8 @@ ALL actions require a directory path. options.maxDepth default 5.''',
                                   maxResults     : [type: 'integer'],
                                   maxDepth       : [type: 'integer'],
                                   sortBy         : [type: 'string', enum: ['name', 'size']],
-                                  excludePatterns: [type: 'array', items: [type: 'string']]
+                                  excludePatterns: [type: 'array', items: [type: 'string']],
+                                  compact        : [type: 'boolean', description: 'Minimal response - omits action/path echo, trims metadata (children action only)']
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -115,6 +116,10 @@ ALL actions require a directory path. options.maxDepth default 5.''',
         }
 
         log.debug("file_list children: {} entries from {}", results.size(), path)
+        if (isCompact(options)) {
+            List<Map<String, Object>> slim = results.collect { compactPathEntry(it) }
+            return textResponse(requestId, [count: slim.size(), entries: slim])
+        }
         return textResponse(requestId, [action: 'children', path: path, count: results.size(), entries: results])
     }
 
@@ -160,10 +165,11 @@ ALL actions require a directory path. options.maxDepth default 5.''',
         List<Pattern> excludeCompiled = excludePatterns.collect { safeCompilePattern(it) }.findAll { it } as List<Pattern>
 
         int[] count = [0]
-        Map<String, Object> tree = buildTree(Paths.get(path), 0, maxDepth, maxFiles, excludeCompiled, count)
+        Path rootPath = Paths.get(path)
+        Map<String, Object> tree = buildTree(rootPath, rootPath, 0, maxDepth, maxFiles, excludeCompiled, count)
 
         log.debug("file_list tree: {} nodes from {}", count[0], path)
-        return textResponse(requestId, [action: 'tree', path: path, nodeCount: count[0], tree: tree])
+        return textResponse(requestId, [action: 'tree', rootPath: path, nodeCount: count[0], tree: tree])
     }
 
     private McpResponse doSizes(String path, Map<String, Object> options, Object requestId) {
@@ -192,13 +198,15 @@ ALL actions require a directory path. options.maxDepth default 5.''',
     // Tree builder
     // -----------------------------------------------------------------------
 
-    private Map<String, Object> buildTree(Path dir, int depth, int maxDepth, int maxFiles,
+    private Map<String, Object> buildTree(Path dir, Path rootPath, int depth, int maxDepth, int maxFiles,
                                           List<Pattern> excludePatterns, int[] count) {
         String name = dir.fileName?.toString() ?: dir.toString()
+        String relPath = rootPath.relativize(dir.toAbsolutePath()).toString().replace('\\', '/')
+        if (relPath.isEmpty()) relPath = '.'
         Map<String, Object> node = [
             name: sanitize(name),
             type: 'directory',
-            path: sanitize(dir.toAbsolutePath().toString().replace('\\', '/'))
+            path: sanitize(relPath)
         ] as Map<String, Object>
 
         if (depth >= maxDepth || count[0] >= maxFiles) {
@@ -219,14 +227,15 @@ ALL actions require a directory path. options.maxDepth default 5.''',
 
                     count[0]++
                     if (Files.isDirectory(child)) {
-                        children << buildTree(child, depth + 1, maxDepth, maxFiles, excludePatterns, count)
+                        children << buildTree(child, rootPath, depth + 1, maxDepth, maxFiles, excludePatterns, count)
                     } else {
                         try {
                             BasicFileAttributes attrs = Files.readAttributes(child, BasicFileAttributes.class)
+                            String childRel = rootPath.relativize(child.toAbsolutePath()).toString().replace('\\', '/')
                             children << ([
                                 name: sanitize(childName),
                                 type: 'file',
-                                path: sanitize(child.toAbsolutePath().toString().replace('\\', '/')),
+                                path: sanitize(childRel),
                                 size: attrs.size()
                             ] as Map<String, Object>)
                         } catch (Exception e) {
