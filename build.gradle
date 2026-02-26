@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.9'
+version = '0.7.16'
 
 java {
     toolchain {
