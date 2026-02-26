@@ -89,7 +89,8 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
                                                      startLine: [type: 'integer'],
                                                      endLine  : [type: 'integer']
                                                  ]]],
-                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns only success+content_hash']
+                                  compact     : [type: 'boolean', description: 'Minimal response - returns only success+content_hash (default: true for all write actions)'],
+                                  verbose     : [type: 'boolean', description: 'Set verbose:true to get full response with action/path/size/diagnostics (overrides compact default)']
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -172,7 +173,7 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         log.info("write: {} bytes -> {} (atomic)", body.length(), normalized)
 
         String hash = fileHash(target)
-        if (isCompact(options)) {
+        if (isWriteCompact(options)) {
             return textResponse(requestId, [success: true, content_hash: hash])
         }
         return textResponse(requestId, [
@@ -201,10 +202,14 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         }
         log.debug("append: {} bytes -> {} (locked)", bytes.length, normalized)
 
+        String hash = fileHash(target)
+        if (isWriteCompact(options)) {
+            return textResponse(requestId, [success: true, content_hash: hash])
+        }
         return textResponse(requestId, [
             action: 'append', path: normalized,
             appended: bytes.length, success: true,
-            content_hash: fileHash(target)
+            content_hash: hash
         ])
     }
 
@@ -278,7 +283,7 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
 
         log.debug("replace: 1 occurrence in {} (line endings: {})", normalized, hasCrLf ? 'CRLF' : 'LF')
         String hash = fileHash(target)
-        if (isCompact(options)) {
+        if (isWriteCompact(options)) {
             return textResponse(requestId, [success: true, content_hash: hash])
         }
         return textResponse(requestId, [
@@ -341,10 +346,14 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         atomicWrite(target, current.getBytes(encoding))
         log.info("multi_replace: {} applied in {} (line endings: {})", applied, normalized, hasCrLf ? 'CRLF' : 'LF')
 
+        String hash = fileHash(target)
+        if (isWriteCompact(options)) {
+            return textResponse(requestId, [success: true, applied: applied, content_hash: hash])
+        }
         return textResponse(requestId, [
             action: 'multi_replace', path: normalized,
             applied: applied, success: true,
-            content_hash: fileHash(target)
+            content_hash: hash
         ])
     }
 
@@ -534,6 +543,11 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         ] as Map<String, Object>
         if (verifyError) result.put('verify_warning', verifyError)
 
+        if (isWriteCompact(options)) {
+            Map<String, Object> compact = [success: result.success, applied: applied, content_hash: resultHash] as Map<String, Object>
+            if (verifyError) compact.put('verify_warning', verifyError)  // always surface safety warnings
+            return textResponse(requestId, compact)
+        }
         return textResponse(requestId, result)
 
     }
@@ -552,6 +566,9 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         int received = chunkBufferService.receiveWriteChunk(sessionId, chunkIndex, content)
         log.debug("chunk_write: session={}, index={}, received={}", sessionId, chunkIndex, received)
 
+        if (isWriteCompact(options)) {
+            return textResponse(requestId, [success: true, chunkIndex: chunkIndex, received: received])
+        }
         return textResponse(requestId, [
             action    : 'chunk_write',
             sessionId : sessionId,
@@ -581,12 +598,16 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         atomicWrite(target, assembled.getBytes(encoding))
         log.info("finalise_write: wrote {}B to {} from {} chunks (atomic)", assembled.length(), normalized, totalChunks)
 
+        String hash = fileHash(Paths.get(normalized))
+        if (isWriteCompact(options)) {
+            return textResponse(requestId, [success: true, content_hash: hash])
+        }
         return textResponse(requestId, [
             action     : 'finalise_write',
             path       : normalized,
             totalChunks: totalChunks,
             size       : assembled.length(),
-            success    : true
+            success    : true, content_hash: hash
         ])
     }
 

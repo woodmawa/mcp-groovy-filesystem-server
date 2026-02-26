@@ -303,6 +303,17 @@ abstract class AbstractFileService {
         return options?.compact as boolean ?: false
     }
 
+    /**
+     * Verbose mode helper for file_write actions - compact IS the default for writes.
+     * Returns true only when options.compact=true OR options.verbose is absent/false.
+     * FileWriteService uses this: return full response only when verbose:true is set.
+     */
+    protected boolean isWriteCompact(Map<String, Object> options) {
+        if (options?.verbose as boolean) return false   // explicit verbose=true -> full response
+        if (options?.containsKey('compact')) return options.compact as boolean  // explicit compact flag honoured
+        return true  // default for writes: compact
+    }
+
     protected Map<String, Object> compactPathEntry(Map<String, Object> full) {
         return createMap([
             name: full.name,
