@@ -38,6 +38,9 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Autowired
     ChunkBufferService chunkBufferService
 
+    @Autowired
+    StructureCache structureCache
+
     @Value('${mcp.filesystem.read-chunk-threshold-kb:300}')
     int readChunkThresholdKb
 
@@ -101,7 +104,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                                   algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
-                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo (read action only)']
+                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep']
                               ]]
                 ],
                 required  : ['action']
@@ -159,17 +162,8 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
     /** Compute a 12-char SHA-256 prefix of the whole file — cheap drift token for callers.
      *  Returned as file_content_hash in all read responses so callers can use expectedHash
      *  on the next patch/replace without a separate checksum call. */
-    private static String fileHash(String normalized) {
-        try {
-            def md = java.security.MessageDigest.getInstance('SHA-256')
-            new File(normalized).withInputStream { InputStream is ->
-                byte[] buf = new byte[8192]
-                int read
-                while ((read = is.read(buf)) != -1) md.update(buf, 0, read)
-            }
-            return (md.digest().encodeHex().toString() as String)[0..11]
-        } catch (Exception ignored) { return null }
-    }
+    // fileHash() removed v0.7.9 - delegated to structureCache.getHash()
+    // which caches the 12-char SHA-256 keyed on (path, lastModified), invalidated on write.
 
 
     private McpResponse doRead(String path, Map<String, Object> options, Object requestId) {
@@ -196,7 +190,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         }
 
         String content = new File(normalized).getText(encoding)
-        String hash = fileHash(normalized)
+        String hash = structureCache.getHash(normalized)
         if (isCompact(options)) {
             return textResponse(requestId, [
                 content: sanitize(content),
@@ -225,10 +219,14 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             }
         }
 
+        if (isCompact(options)) {
+            return textResponse(requestId, [content: result.join('\n'), lines: result.size(),
+                file_content_hash: structureCache.getHash(normalized)])
+        }
         return textResponse(requestId, [
             action: 'head', path: normalized,
             lines: result.size(), content: result.join('\n'),
-            file_content_hash: fileHash(normalized)
+            file_content_hash: structureCache.getHash(normalized)
         ])
     }
 
@@ -248,10 +246,14 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         }
         List<String> result = ring.collect { truncateAndSanitize(it) }
 
+        if (isCompact(options)) {
+            return textResponse(requestId, [content: result.join('\n'), lines: result.size(),
+                file_content_hash: structureCache.getHash(normalized)])
+        }
         return textResponse(requestId, [
             action: 'tail', path: normalized,
             lines: result.size(), content: result.join('\n'),
-            file_content_hash: fileHash(normalized)
+            file_content_hash: structureCache.getHash(normalized)
         ])
     }
 
@@ -275,11 +277,16 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 result << truncateAndSanitize(line)
             }
         }
+        if (isCompact(options)) {
+            return textResponse(requestId, [content: result.join('\n'), lines: result.size(),
+                startLine: startLine, endLine: startLine + result.size() - 1,
+                file_content_hash: structureCache.getHash(normalized)])
+        }
         return textResponse(requestId, [
             action: 'range', path: normalized,
             startLine: startLine, endLine: startLine + result.size() - 1,
             lines: result.size(), content: result.join('\n'),
-            file_content_hash: fileHash(normalized)
+            file_content_hash: structureCache.getHash(normalized)
         ])
     }
 
@@ -307,10 +314,14 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                                  before: before, after: after] as Map<String, Object>)
                 }
             }
+            if (isCompact(options)) {
+                return textResponse(requestId, [matchCount: matches.size(), matches: matches,
+                    file_content_hash: structureCache.getHash(normalized)])
+            }
             return textResponse(requestId, [
                 action: 'grep', path: normalized, pattern: sanitize(patternStr),
                 contextLines: contextLines, matchCount: matches.size(), matches: matches,
-                file_content_hash: fileHash(normalized)
+                file_content_hash: structureCache.getHash(normalized)
             ])
         }
 
@@ -326,10 +337,14 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 }
             }
         }
+        if (isCompact(options)) {
+            return textResponse(requestId, [matchCount: matches.size(), matches: matches,
+                file_content_hash: structureCache.getHash(normalized)])
+        }
         return textResponse(requestId, [
             action: 'grep', path: normalized,
             pattern: sanitize(patternStr), matchCount: matches.size(), matches: matches,
-            file_content_hash: fileHash(normalized)
+            file_content_hash: structureCache.getHash(normalized)
         ])
     }
 
@@ -548,9 +563,10 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             return McpResponse.error(requestId, -32602, "Path is not a regular file: ${sanitize(normalized)}")
         }
 
-        Map<String, Object> result = computeStructure(normalized)
+        Map<String, Object> result = structureCache.getStructure(normalized)
         List entries = result.structure as List
-        return textResponse(requestId, [action: 'structure', path: normalized, ext: result.ext, count: entries.size(), structure: entries])
+        return textResponse(requestId, [action: 'structure', path: normalized, ext: result.ext, count: entries.size(),
+                                        structure: entries, scanner: result.scanner, cached: result.cached])
     }
 
     // -----------------------------------------------------------------------
@@ -571,7 +587,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         if (!methodName) return McpResponse.error(requestId, -32602, "options.method is required for get_method")
 
         // Direct call — no JSON serialise/deserialise round-trip
-        List<Map> entries = computeStructure(normalized).structure as List<Map>
+        List<Map> entries = structureCache.getStructure(normalized).structure as List<Map>
 
         Map found = fuzzy
             ? entries.find { it.type == 'method' && (it.content as String).contains(methodName) }
@@ -602,7 +618,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             method: methodName,
             startLine: startLine, endLine: startLine + lines.size() - 1,
             lines: lines.size(), content: lines.join('\n'),
-            file_content_hash: fileHash(normalized)
+            file_content_hash: structureCache.getHash(normalized)
         ])
     }
 

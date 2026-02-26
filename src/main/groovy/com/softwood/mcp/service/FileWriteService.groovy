@@ -35,6 +35,11 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     @Autowired
     ChunkBufferService chunkBufferService
 
+    @Autowired
+    StructureCache structureCache
+
+    private static final Set<String> MUTATING_ACTIONS = ['write','append','replace','patch','multi_replace','finalise_write'] as Set
+
     FileWriteService(PathService pathService) {
         super(pathService)
     }
@@ -105,18 +110,27 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
             String content = arguments.content as String
             Map<String, Object> options = (arguments.options as Map<String, Object>) ?: [:] as Map<String, Object>
 
+            McpResponse response
             switch (action) {
-                case 'write'         : return doWrite(path, content, options, requestId)
-                case 'append'        : return doAppend(path, content, options, requestId)
-                case 'replace'       : return doReplace(path, options, requestId)
-                case 'patch'         : return doPatch(path, content, options, requestId)
-                case 'multi_replace' : return doMultiReplace(path, options, requestId)
-                case 'chunk_write'   : return doChunkWrite(path, content, options, requestId)
-                case 'finalise_write': return doFinaliseWrite(path, options, requestId)
+                case 'write'         : response = doWrite(path, content, options, requestId); break
+                case 'append'        : response = doAppend(path, content, options, requestId); break
+                case 'replace'       : response = doReplace(path, options, requestId); break
+                case 'patch'         : response = doPatch(path, content, options, requestId); break
+                case 'multi_replace' : response = doMultiReplace(path, options, requestId); break
+                case 'chunk_write'   : response = doChunkWrite(path, content, options, requestId); break
+                case 'finalise_write': response = doFinaliseWrite(path, options, requestId); break
                 case 'abort_write'   : return doAbortWrite(options, requestId)
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown file_write action: ${action}")
             }
+            // Invalidate structure cache for any mutating action that succeeded on a specific path
+            if (path && MUTATING_ACTIONS.contains(action) && response.error == null) {
+                try {
+                    structureCache.invalidate(pathService.normalizePath(path))
+                } catch (Exception ignored) {}
+            }
+            return response
+
         } catch (SecurityException e) {
             log.warn("Security violation in file_write: {}", sanitize(e.message))
             return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")

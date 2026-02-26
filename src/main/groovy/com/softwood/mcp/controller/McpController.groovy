@@ -24,7 +24,16 @@ import org.springframework.web.bind.annotation.RestController
 class McpController {
 
     static final String SERVER_VERSION = com.softwood.mcp.McpGroovyFileSystemServerApplication.package?.implementationVersion ?: 'dev'
-    static final String PROTOCOL_VERSION = '2024-11-05'
+
+    // Supported MCP protocol versions (newest first).
+    // 2025-11-25: added in Claude Desktop post-Nov-2025 reinstall - includes ui extension capability.
+    // 2025-06-18: previous stable version.
+    // 2024-11-05: legacy fallback.
+    static final List<String> SUPPORTED_PROTOCOL_VERSIONS = [
+        '2025-11-25',
+        '2025-06-18',
+        '2024-11-05'
+    ].asImmutable()
     private final List<ToolHandler> toolHandlers
     private final Map<String, ToolHandler> handlerMap = new LinkedHashMap<String, ToolHandler>()
     private List<Map<String, Object>> cachedToolDefinitions = []
@@ -85,13 +94,30 @@ class McpController {
     // -----------------------------------------------------------------------
 
     private McpResponse handleInitialize(McpRequest request) {
-        String clientVersion = request.params?.protocolVersion as String ?: PROTOCOL_VERSION
-        log.info("Client initializing with protocolVersion={}", clientVersion)
+        String clientVersion = request.params?.protocolVersion as String
+        String negotiated = negotiateProtocolVersion(clientVersion)
+
+        // Log client identity if provided (Claude Desktop sends clientInfo from 2025-11-25 onwards)
+        def clientInfo = request.params?.clientInfo
+        if (clientInfo instanceof Map) {
+            log.info("MCP Initialize: client='{}' v='{}', requested='{}', negotiated='{}'",
+                clientInfo.name, clientInfo.version, clientVersion, negotiated)
+        } else {
+            log.info("MCP Initialize: client requested '{}', negotiated '{}'", clientVersion, negotiated)
+        }
+
         return McpResponse.success(request.id, [
-            protocolVersion: PROTOCOL_VERSION,
+            protocolVersion: negotiated,
             capabilities   : [tools: [:]] as Map<String, Object>,
             serverInfo     : [name: 'mcp-groovy-filesystem-server', version: SERVER_VERSION] as Map<String, Object>
         ] as Map<String, Object>)
+    }
+
+    private String negotiateProtocolVersion(String clientVersion) {
+        if (clientVersion && SUPPORTED_PROTOCOL_VERSIONS.contains(clientVersion)) {
+            return clientVersion
+        }
+        return SUPPORTED_PROTOCOL_VERSIONS.first()
     }
 
     private McpResponse handleToolsList(McpRequest request) {
