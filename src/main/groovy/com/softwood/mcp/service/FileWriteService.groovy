@@ -239,7 +239,7 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
             int nearestLine = -1
             if (firstLine) {
                 int bestScore = Integer.MAX_VALUE
-                List<String> fileLines = current.split('\n', -1).toList()
+                List<String> fileLines = new ArrayList<String>(Arrays.asList(current.split('\n', -1)))
                 fileLines.eachWithIndex { String fl, int idx ->
                     String trimFl = fl.trim()
                     if (trimFl.contains(firstLine) || firstLine.contains(trimFl)) {
@@ -413,7 +413,7 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         // real content lines only.
         boolean hadTrailingNewline = normalised.endsWith('\n')
         String toSplit             = hadTrailingNewline ? normalised[0..-2] : normalised
-        List<String> lines         = toSplit ? toSplit.split('\n', -1).toList() : [] as List<String>
+        List<String> lines         = toSplit ? new ArrayList<String>(Arrays.asList(toSplit.split('\n', -1))) : [] as List<String>
         int originalLineCount      = lines.size()
 
         log.debug("patch: read {} content lines from '{}' (endings: {}, trailingNewline: {})",
@@ -465,7 +465,7 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
             int end       = (rep.endLine   as int) - 1
             // Strip \r from incoming newText before splitting — prevents mixed endings
             String newText        = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
-            List<String> newLines = newText ? newText.split('\n', -1).toList() : [] as List<String>
+            List<String> newLines = newText ? new ArrayList<String>(Arrays.asList(newText.split('\n', -1))) : [] as List<String>
             int removed   = end - start + 1
             int added     = newLines.size()
             lines[start..end] = newLines
