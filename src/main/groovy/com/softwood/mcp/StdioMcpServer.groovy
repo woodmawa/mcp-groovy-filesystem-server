@@ -13,7 +13,10 @@ import com.softwood.mcp.support.Sanitizer
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.boot.CommandLineRunner
+import org.springframework.boot.ExitCodeGenerator
+import org.springframework.boot.SpringApplication
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
+import org.springframework.context.ApplicationContext
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
 
@@ -28,6 +31,10 @@ import org.springframework.stereotype.Component
  *
  * v0.0.5: Refactored from 357 lines to ~150. Support classes extracted.
  *         Added request lifecycle events for stall diagnosis.
+ * v0.7.17: On EOF/stdin-close, call SpringApplication.exit() then System.exit() to ensure
+ *          all @PreDestroy hooks fire (UsageTracker flush, ServerLifecycleService child
+ *          process teardown) before JVM exits. Prevents stray java processes after
+ *          Claude Desktop closes.
  */
 @Component
 @ConditionalOnProperty(name = "mcp.mode", havingValue = "stdio")
@@ -39,13 +46,16 @@ class StdioMcpServer implements CommandLineRunner {
 
     private final McpController mcpController
     private final ApplicationEventPublisher eventPublisher
+    private final ApplicationContext applicationContext
     private final ObjectMapper objectMapper = new ObjectMapper()
         .setSerializationInclusion(JsonInclude.Include.NON_NULL)
     private final JsonRpcWriter writer = new JsonRpcWriter()
 
-    StdioMcpServer(McpController mcpController, ApplicationEventPublisher eventPublisher) {
+    StdioMcpServer(McpController mcpController, ApplicationEventPublisher eventPublisher,
+                   ApplicationContext applicationContext) {
         this.mcpController = mcpController
         this.eventPublisher = eventPublisher
+        this.applicationContext = applicationContext
     }
 
     @Override
@@ -146,6 +156,32 @@ class StdioMcpServer implements CommandLineRunner {
             t.printStackTrace(System.err)
         } finally {
             debugLog("Stdio server stopped after ${requestCount} requests")
+            triggerCleanShutdown()
+        }
+    }
+
+    /**
+     * Trigger a clean Spring shutdown so all @PreDestroy hooks fire:
+     *   - UsageTracker.shutdown()  -> flush stats to SQLite
+     *   - ServerLifecycleService.stopAllOnShutdown() -> kill child processes
+     *
+     * SpringApplication.exit() runs the Spring shutdown sequence.
+     * System.exit() then ensures the JVM actually terminates even if
+     * non-daemon threads (virtual thread pools, etc.) are still alive.
+     *
+     * Without this, returning from CommandLineRunner.run() leaves the
+     * Spring context alive, child processes orphaned, and the JVM hanging
+     * until Claude Desktop force-kills it.
+     */
+    private void triggerCleanShutdown() {
+        log.info('STDIO server EOF - triggering clean Spring shutdown')
+        try {
+            int exitCode = SpringApplication.exit(applicationContext, [] as ExitCodeGenerator[])
+            log.info('Spring context closed cleanly (exitCode={})', exitCode)
+            System.exit(exitCode)
+        } catch (Exception e) {
+            log.warn('Clean shutdown failed, forcing exit: {}', e.message)
+            System.exit(1)
         }
     }
 

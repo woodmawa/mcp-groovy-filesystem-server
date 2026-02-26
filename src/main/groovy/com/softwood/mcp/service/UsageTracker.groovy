@@ -7,6 +7,7 @@ import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.event.EventListener
+import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 
 import java.sql.Connection
@@ -28,13 +29,15 @@ import java.util.concurrent.atomic.AtomicLong
  * Persistence strategy:
  * - In-memory counters accumulate during the day (fast, no DB writes per call)
  * - Flushed to shared SQLite DB (context server's best_practices.db) on:
- *     (a) daily date rollover  (b) server shutdown (@PreDestroy)
+ *     (a) every 10 minutes via @Scheduled periodic flush (mid-session visibility)
+ *     (b) daily date rollover
+ *     (c) server shutdown (@PreDestroy) - crash resilience
  * - Startup loads today's existing rows so counts survive restarts
  * - Uses context_layer = 'filesystem' to partition from context server rows
  *
  * Stats periods: today | week | month  (matches context server token-report)
  *
- * v0.7.4
+ * v0.7.4 / v0.7.17 periodic flush
  */
 @Service
 @Slf4j
@@ -50,6 +53,9 @@ class UsageTracker {
 
     @Value('${mcp.usage.flush-on-shutdown:true}')
     boolean flushOnShutdown
+
+    @Value('${mcp.usage.periodic-flush-interval-ms:600000}')
+    long periodicFlushIntervalMs
 
     // -----------------------------------------------------------------------
     // Classification sets
@@ -113,6 +119,23 @@ class UsageTracker {
             } catch (Exception e) {
                 log.warn('UsageTracker: flush on shutdown failed: {}', e.message)
             }
+        }
+    }
+
+    /**
+     * Periodic flush - every 10 minutes by default (configurable via
+     * mcp.usage.periodic-flush-interval-ms). Ensures mid-session data is
+     * visible in the shared SQLite DB without waiting for shutdown.
+     * No-op if DB not configured or no calls recorded yet.
+     */
+    @Scheduled(fixedRateString = '${mcp.usage.periodic-flush-interval-ms:600000}')
+    void periodicFlush() {
+        if (!dbPath || callCounts.isEmpty()) return
+        try {
+            flushToDb(currentDate)
+            log.debug('UsageTracker: periodic flush complete ({} keys)', callCounts.size())
+        } catch (Exception e) {
+            log.warn('UsageTracker: periodic flush failed: {}', e.message)
         }
     }
 
