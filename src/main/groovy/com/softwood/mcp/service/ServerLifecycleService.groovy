@@ -237,6 +237,9 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         result.put('port', port)
         result.put('jar', jar)
 
+        // Kill any stale process from a previous session recorded in runtime state
+        killStalePidIfPresent(name)
+
         // Check if already listening - don't double-start
         if (isPortListening(port)) {
             log.info("server_lifecycle: {} already listening on port {}, skipping", name, port)
@@ -358,6 +361,27 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
 
     private void invalidateConfigCache() {
         synchronized (configLock) { configCache = null }
+    }
+
+    private void killStalePidIfPresent(String name) {
+        try {
+            File runtimeFile = new File("${claudeSyncPath}/${RUNTIME_FILENAME}")
+            if (!runtimeFile.exists()) return
+            Map<String, Object> state = mapper.readValue(runtimeFile, Map)
+            List<Map> servers = state.managedServers as List<Map> ?: []
+            Map entry = servers.find { it.name == name }
+            if (!entry) return
+            long pid = entry.pid as long
+            Optional<ProcessHandle> ph = ProcessHandle.of(pid)
+            if (ph.isPresent() && ph.get().isAlive()) {
+                log.info("server_lifecycle: killing stale {} process PID {} from previous session", name, pid)
+                ph.get().destroyForcibly()
+                // brief pause to let OS reclaim port
+                Thread.sleep(500)
+            }
+        } catch (Exception e) {
+            log.warn("server_lifecycle: error checking stale pid for {}: {}", name, e.message)
+        }
     }
 
     private void writeRuntimeState() {

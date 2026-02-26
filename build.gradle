@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.17'
+version = '0.7.18'  // fix: kill stale HTTP server PIDs from previous sessions on start
 
 java {
     toolchain {
