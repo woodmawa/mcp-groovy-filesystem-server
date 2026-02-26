@@ -67,12 +67,15 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                     action : [type: 'string', enum: ['bash', 'powershell', 'groovy', 'cmd'],
                               description: 'Execution environment'],
                     script : [type: 'string', description: 'Script or command to execute'],
-                    options: [type: 'object', description: 'workingDir (string), timeout (int seconds), args (list), env (map)',
+                    options: [type: 'object', description: 'workingDir (string), timeout (int seconds), args (list), env (map), verbose (bool), maxStdout (int chars, default 50000), maxStderr (int chars, default 5000)',
                               properties: [
                                   workingDir: [type: 'string'],
                                   timeout   : [type: 'integer'],
                                   args      : [type: 'array', items: [type: 'string']],
-                                  env       : [type: 'object']
+                                  env       : [type: 'object'],
+                                  verbose   : [type: 'boolean', description: 'Set true for full response with action/durationMs. Default: compact (success/exitCode/stdout/stderr only)'],
+                                  maxStdout : [type: 'integer', description: 'Max chars of stdout to return (default 50000)'],
+                                  maxStderr : [type: 'integer', description: 'Max chars of stderr to return (default 5000)']
                               ]]
                 ],
                 required  : ['action', 'script']
@@ -106,10 +109,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             Map<String, String> envOverrides = options.env ? (options.env as Map<String, String>) : null
 
             switch (action) {
-                case 'bash'      : return doBash(script, workingDir, timeout, envOverrides, requestId)
-                case 'powershell': return doPowershell(script, workingDir, timeout, envOverrides, requestId)
+                case 'bash'      : return doBash(script, workingDir, timeout, envOverrides, options, requestId)
+                case 'powershell': return doPowershell(script, workingDir, timeout, envOverrides, options, requestId)
                 case 'groovy'    : return doGroovy(script, workingDir, timeout, options, requestId)
-                case 'cmd'       : return doCmd(script, workingDir, timeout, envOverrides, requestId)
+                case 'cmd'       : return doCmd(script, workingDir, timeout, envOverrides, options, requestId)
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown execute action: ${action}")
             }
@@ -127,36 +130,36 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     // -----------------------------------------------------------------------
 
     private McpResponse doBash(String script, String workingDir, int timeout,
-                               Map<String, String> envOverrides, Object requestId) {
+                               Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
         if (!enableBash) return McpResponse.error(requestId, -32603, "Bash execution is disabled")
         if (!whitelistConfig.isBashAllowed(script)) {
             log.warn("Bash script rejected by whitelist/blacklist config")
             return McpResponse.error(requestId, -32603, "Bash command not permitted by whitelist configuration")
         }
         List<String> cmd = ['bash', '-c', script]
-        return runProcess(cmd, workingDir, timeout, 'bash', requestId, envOverrides)
+        return runProcess(cmd, workingDir, timeout, 'bash', requestId, envOverrides, options)
     }
 
     private McpResponse doPowershell(String script, String workingDir, int timeout,
-                                    Map<String, String> envOverrides, Object requestId) {
+                                    Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
         if (!enablePowershell) return McpResponse.error(requestId, -32603, "PowerShell execution is disabled")
         if (!whitelistConfig.isPowershellAllowed(script)) {
             log.warn("PowerShell script rejected by whitelist/blacklist config")
             return McpResponse.error(requestId, -32603, "PowerShell command not permitted by whitelist configuration")
         }
         List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command', script]
-        return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides)
+        return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides, options)
     }
 
     private McpResponse doCmd(String script, String workingDir, int timeout,
-                             Map<String, String> envOverrides, Object requestId) {
+                             Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
         if (!enableCmd) return McpResponse.error(requestId, -32603, "CMD execution is disabled")
         if (!whitelistConfig.isCmdAllowed(script)) {
             log.warn("CMD script rejected by whitelist/blacklist config")
             return McpResponse.error(requestId, -32603, "CMD command not permitted by whitelist configuration")
         }
         List<String> cmd = ['cmd', '/c', script]
-        return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides)
+        return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides, options)
     }
 
     private McpResponse doGroovy(String script, String workingDir, int timeout,
@@ -179,6 +182,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             String output   = result != null ? sanitize(result.toString()) : ''
 
             log.info("Groovy script executed in {}ms, workingDir={}", durationMs, workingDir)
+            if (isWriteCompact(options)) {
+                return textResponse(requestId, [success: true, output: output])
+            }
             return textResponse(requestId, [
                 action    : 'groovy',
                 success   : true,
@@ -188,6 +194,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         } catch (Exception e) {
             long durationMs = System.currentTimeMillis() - start
             log.warn("Groovy script failed: {}", sanitize(e.message))
+            if (isWriteCompact(options)) {
+                return textResponse(requestId, [success: false, error: sanitize(e.message)])
+            }
             return textResponse(requestId, [
                 action    : 'groovy',
                 success   : false,
@@ -203,19 +212,22 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
     private McpResponse runProcess(List<String> cmd, String workingDir, int timeout,
                                    String action, Object requestId,
-                                   Map<String, String> envOverrides = null) {
+                                   Map<String, String> envOverrides = null,
+                                   Map<String, Object> options = null) {
+        int maxStdout = (options?.maxStdout as Integer) ?: 50000
+        int maxStderr = (options?.maxStderr as Integer) ?: 5000
+        boolean compact = isWriteCompact(options ?: ([:] as Map<String, Object>))
+
         long start = System.currentTimeMillis()
         Process process = null
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd)
             pb.directory(new File(workingDir))
             pb.redirectErrorStream(false)
-            // Apply env overrides if provided
             if (envOverrides) pb.environment().putAll(envOverrides)
 
             process = pb.start()
 
-            // Capture stdout + stderr concurrently to avoid blocking
             StringBuilder stdout = new StringBuilder()
             StringBuilder stderr = new StringBuilder()
 
@@ -227,7 +239,6 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             })
 
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
-            // Join with remaining budget (not a hardcoded 2s) to avoid truncating large output
             long elapsedMs = System.currentTimeMillis() - start
             long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
             stdoutThread.join(remainingMs)
@@ -238,22 +249,30 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             if (!finished) {
                 process.destroyForcibly()
                 return textResponse(requestId, [
-                    action    : action,
-                    success   : false,
-                    error     : "Process timed out after ${timeout}s",
-                    durationMs: durationMs
+                    success: false,
+                    error  : "Process timed out after ${timeout}s"
                 ])
             }
 
             int exitCode = process.exitValue()
             log.info("execute {}: exitCode={}, duration={}ms, workingDir={}", action, exitCode, durationMs, workingDir)
+            String stdoutStr = stdout.toString().take(maxStdout)
+            String stderrStr = stderr.toString().take(maxStderr)
 
+            if (compact) {
+                return textResponse(requestId, [
+                    success : exitCode == 0,
+                    exitCode: exitCode,
+                    stdout  : stdoutStr,
+                    stderr  : stderrStr
+                ])
+            }
             return textResponse(requestId, [
                 action    : action,
                 success   : exitCode == 0,
                 exitCode  : exitCode,
-                stdout    : stdout.toString().take(50000),
-                stderr    : stderr.toString().take(10000),
+                stdout    : stdoutStr,
+                stderr    : stderrStr,
                 durationMs: durationMs
             ])
         } catch (Exception e) {
@@ -261,9 +280,8 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             long durationMs = System.currentTimeMillis() - start
             log.error("execute {} failed: {}", action, sanitize(e.message))
             return textResponse(requestId, [
-                action    : action,
-                success   : false,
-                error     : sanitize(e.message),
+                success: false,
+                error  : sanitize(e.message),
                 durationMs: durationMs
             ])
         }
