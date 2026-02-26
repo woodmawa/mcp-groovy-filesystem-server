@@ -300,20 +300,55 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         String encoding  = options.encoding as String ?: 'UTF-8'
         Pattern compiled = safeCompilePattern(patternStr)
 
+        List<Map<String, Object>> matches = []
+        int lineNum = 0
+
         if (contextLines > 0) {
-            List<String> allLines = new File(normalized).readLines(encoding)
-            List<Map<String, Object>> matches = []
-            allLines.eachWithIndex { String line, int idx ->
-                if (matches.size() >= maxMatches) return
-                if (compiled.matcher(line).find()) {
-                    int from = Math.max(0, idx - contextLines)
-                    int to   = Math.min(allLines.size() - 1, idx + contextLines)
-                    List<String> before = allLines[from..<idx].collect { truncateAndSanitize(it) }
-                    List<String> after  = allLines[(idx+1)..to].collect { truncateAndSanitize(it) }
-                    matches << ([line: idx + 1, content: truncateAndSanitize(line),
-                                 before: before, after: after] as Map<String, Object>)
+            // Streaming grep with context - avoids loading whole file into memory.
+            // beforeBuf: sliding window of last contextLines lines (before-context).
+            // pendingAfter: matches still collecting their after-context lines.
+            ArrayDeque<String> beforeBuf = new ArrayDeque<>(contextLines + 1)
+            // Each pending entry: [matchEntry: Map, remaining: int, afterList: List]
+            List<Map<String, Object>> pendingAfter = []
+
+            new File(normalized).withReader(encoding) { Reader r ->
+                BufferedReader br = new BufferedReader(r)
+                String line
+                while ((line = br.readLine()) != null) {
+                    lineNum++
+                    String sanitized = truncateAndSanitize(line)
+
+                    // Feed this line as after-context to any pending matches
+                    Iterator<Map<String, Object>> pit = pendingAfter.iterator()
+                    while (pit.hasNext()) {
+                        Map<String, Object> p = pit.next()
+                        (p.afterList as List<String>) << sanitized
+                        p.remaining = (p.remaining as int) - 1
+                        if ((p.remaining as int) <= 0) pit.remove()
+                    }
+
+                    // Check for match
+                    if (matches.size() < maxMatches && compiled.matcher(line).find()) {
+                        List<String> before = new ArrayList<>(beforeBuf as Collection<String>)
+                        List<String> afterList = []
+                        Map<String, Object> entry = [
+                            line   : lineNum,
+                            content: sanitized,
+                            before : before,
+                            after  : afterList
+                        ] as Map<String, Object>
+                        matches << entry
+                        if (contextLines > 0) {
+                            pendingAfter << ([matchEntry: entry, remaining: contextLines, afterList: afterList] as Map<String, Object>)
+                        }
+                    }
+
+                    // Maintain sliding before-window
+                    beforeBuf.addLast(sanitized)
+                    if (beforeBuf.size() > contextLines) beforeBuf.pollFirst()
                 }
             }
+
             if (isCompact(options)) {
                 return textResponse(requestId, [matchCount: matches.size(), matches: matches,
                     file_content_hash: structureCache.getHash(normalized)])
@@ -325,8 +360,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             ])
         }
 
-        List<Map<String, Object>> matches = []
-        int lineNum = 0
+        // No context - simple streaming path
         new File(normalized).withReader(encoding) { Reader r ->
             BufferedReader br = new BufferedReader(r)
             String line
