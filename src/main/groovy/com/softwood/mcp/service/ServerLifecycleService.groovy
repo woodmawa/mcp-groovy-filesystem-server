@@ -39,6 +39,10 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
 
     private final ObjectMapper mapper = new ObjectMapper()
 
+    // Config cache - loaded once, invalidated only by reload action
+    private Map<String, Object> configCache = null
+    private final Object configLock = new Object()
+
     // name -> Process (only processes WE started this session)
     private final Map<String, Process> managedProcesses = new ConcurrentHashMap<>()
 
@@ -60,10 +64,12 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             inputSchema: [
                 type      : 'object',
                 properties: [
-                    action: [type: 'string', enum: ['start_eager', 'ensure', 'stop', 'status', 'reload'],
-                             description: 'Lifecycle action'],
-                    name  : [type: 'string',
-                             description: 'Server name (filesystem|context|orchestrator|agentic-workflow). Required for ensure/stop a specific server.']
+                    action : [type: 'string', enum: ['start_eager', 'ensure', 'stop', 'status', 'reload'],
+                              description: 'Lifecycle action'],
+                    name   : [type: 'string',
+                              description: 'Server name (filesystem|context|orchestrator|agentic-workflow). Required for ensure/stop a specific server.'],
+                    verbose: [type: 'boolean',
+                              description: 'Set verbose:true for full status response including jar/startupPolicy/managedBySession/processAlive. Default: compact (name/port/state only).']
                 ],
                 required  : ['action']
             ]
@@ -83,7 +89,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
                 case 'start_eager': return doStartEager(requestId)
                 case 'ensure'     : return doEnsure(name, requestId)
                 case 'stop'       : return doStop(name, requestId)
-                case 'status'     : return doStatus(requestId)
+                case 'status'     : return doStatus(arguments, requestId)
                 case 'reload'     : return doReload(requestId)
                 default:
                     return McpResponse.error(requestId, -32602,
@@ -168,7 +174,8 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         return textResponse(requestId, [action: 'stop', results: results])
     }
 
-    private McpResponse doStatus(Object requestId) {
+    private McpResponse doStatus(Map<String, Object> arguments, Object requestId) {
+        boolean verbose  = arguments.verbose as boolean ?: false
         Map<String, Object> config = loadConfig()
         List<Map> servers = config.servers as List<Map>
         List<Map<String, Object>> statuses = []
@@ -177,26 +184,36 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             String serverName = server.name as String
             int port = server.port as int
             boolean portOpen = isPortListening(port)
-            boolean managed  = managedProcesses.containsKey(serverName)
-            boolean alive    = managed && (managedProcesses[serverName]?.alive ?: false)
 
-            Map<String, Object> status = new LinkedHashMap<String, Object>()
-            status.put('name', serverName)
-            status.put('port', port)
-            status.put('jar', server.jar)
-            status.put('startupPolicy', server.startupPolicy ?: 'eager')
-            status.put('portListening', portOpen)
-            status.put('managedBySession', managed)
-            status.put('processAlive', alive)
-            status.put('state', portOpen ? 'UP' : 'DOWN')
-            statuses << status
+            if (verbose) {
+                boolean managed = managedProcesses.containsKey(serverName)
+                boolean alive   = managed && (managedProcesses[serverName]?.alive ?: false)
+                Map<String, Object> status = new LinkedHashMap<String, Object>()
+                status.put('name', serverName)
+                status.put('port', port)
+                status.put('state', portOpen ? 'UP' : 'DOWN')
+                status.put('jar', server.jar)
+                status.put('startupPolicy', server.startupPolicy ?: 'eager')
+                status.put('portListening', portOpen)
+                status.put('managedBySession', managed)
+                status.put('processAlive', alive)
+                statuses << status
+            } else {
+                // Compact: only what's needed to act on - name, port, UP/DOWN
+                Map<String, Object> status = new LinkedHashMap<String, Object>()
+                status.put('name', serverName)
+                status.put('port', port)
+                status.put('state', portOpen ? 'UP' : 'DOWN')
+                statuses << status
+            }
         }
 
-        return textResponse(requestId, [action: 'status', servers: statuses])
+        return textResponse(requestId, [servers: statuses])
     }
 
     private McpResponse doReload(Object requestId) {
-        // Just verify config is readable and return its contents
+        // Invalidate cache then re-read from disk
+        invalidateConfigCache()
         Map<String, Object> config = loadConfig()
         List<Map> servers = config.servers as List<Map>
         return textResponse(requestId, [
@@ -322,12 +339,25 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
     // -----------------------------------------------------------------------
 
     private Map<String, Object> loadConfig() {
+        synchronized (configLock) {
+            if (configCache != null) return configCache
+            configCache = readConfigFromDisk()
+            return configCache
+        }
+    }
+
+    private Map<String, Object> readConfigFromDisk() {
         File configFile = new File("${claudeSyncPath}/${CONFIG_FILENAME}")
         if (!configFile.exists()) {
             throw new FileNotFoundException(
                 "Server config not found: ${configFile.absolutePath}. Create mcp-http-servers.json in claude-sync.")
         }
+        log.debug("server_lifecycle: reading config from disk")
         return mapper.readValue(configFile, Map) as Map<String, Object>
+    }
+
+    private void invalidateConfigCache() {
+        synchronized (configLock) { configCache = null }
     }
 
     private void writeRuntimeState() {
