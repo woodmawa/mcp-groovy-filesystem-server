@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'com.softwood'
-version = '0.7.8'  // Token optimisation: tighter tool descriptions, slim pathToMap, relative tree paths, compact response mode
+version = '0.7.9'  // Token optimisation: tighter tool descriptions, slim pathToMap, relative tree paths, compact response mode, 
 
 java {
     toolchain {

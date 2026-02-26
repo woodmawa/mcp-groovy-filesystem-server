@@ -43,12 +43,13 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
                               description: 'Operation to perform'],
                     path   : [type: 'string', description: 'Source path (or target for create/touch)'],
                     dst    : [type: 'string', description: 'Destination path (required for copy/move/rename)'],
-                    options: [type: 'object', description: 'Optional flags: recursive (bool), overwrite (bool), mkdirs (bool), type (file|directory)',
+                    options: [type: 'object', description: 'Optional flags: recursive (bool), overwrite (bool), mkdirs (bool), type (file|directory), verbose (bool)',
                               properties: [
                                   recursive: [type: 'boolean'],
                                   overwrite: [type: 'boolean'],
                                   mkdirs   : [type: 'boolean'],
-                                  type     : [type: 'string', enum: ['file', 'directory']]
+                                  type     : [type: 'string', enum: ['file', 'directory']],
+                                  verbose  : [type: 'boolean', description: 'Set true for full response with action/path echo. Default: compact (success only).']
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -108,11 +109,13 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
         if (type == 'directory') {
             Files.createDirectories(target)
             log.info("Created directory: {}", normalized)
+            if (isWriteCompact(options)) return textResponse(requestId, [success: true, type: 'directory'])
             return textResponse(requestId, [action: 'create', type: 'directory', path: normalized, success: true])
         } else {
             if (target.parent) Files.createDirectories(target.parent)
             if (!Files.exists(target)) Files.createFile(target)
             log.info("Created file: {}", normalized)
+            if (isWriteCompact(options)) return textResponse(requestId, [success: true, type: 'file'])
             return textResponse(requestId, [action: 'create', type: 'file', path: normalized, success: true])
         }
     }
@@ -126,7 +129,7 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
         boolean recursive = options.recursive as boolean ?: false
 
         if (!Files.exists(target)) {
-            return textResponse(requestId, [action: 'delete', path: normalized, success: false, reason: 'Path does not exist'])
+            return textResponse(requestId, [success: false, reason: 'Path does not exist'])
         }
 
         if (Files.isDirectory(target)) {
@@ -137,6 +140,7 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
         }
 
         log.info("Deleted: {}", normalized)
+        if (isWriteCompact(options)) return textResponse(requestId, [success: true])
         return textResponse(requestId, [action: 'delete', path: normalized, success: true])
     }
 
@@ -164,6 +168,7 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
         }
 
         log.info("Copied {} -> {}", normSrc, normDst)
+        if (isWriteCompact(options)) return textResponse(requestId, [success: true])
         return textResponse(requestId, [action: 'copy', src: normSrc, dst: normDst, success: true])
     }
 
@@ -191,6 +196,7 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
         }
 
         log.info("Moved {} -> {}", normSrc, normDst)
+        if (isWriteCompact(options)) return textResponse(requestId, [success: true])
         return textResponse(requestId, [action: 'move', src: normSrc, dst: normDst, success: true])
     }
 
@@ -212,6 +218,7 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
         }
 
         log.debug("Touched: {}", normalized)
+        if (isWriteCompact(options)) return textResponse(requestId, [success: true])
         return textResponse(requestId, [action: 'touch', path: normalized, success: true])
     }
 
