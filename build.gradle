@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.18'  // fix: kill stale HTTP server PIDs from previous sessions on start
+version = '0.7.19'  // v0.7.19: filesystem telemetry hook - writes tool call sizes to shared SQLite
 
 java {
     toolchain {

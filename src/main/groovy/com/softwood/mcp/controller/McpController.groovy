@@ -1,7 +1,9 @@
 package com.softwood.mcp.controller
 
 import com.softwood.mcp.model.McpRequest
+import com.softwood.mcp.model.McpRequest
 import com.softwood.mcp.model.McpResponse
+import com.softwood.mcp.service.FilesystemTelemetryService
 import com.softwood.mcp.service.ToolHandler
 import com.softwood.mcp.support.Sanitizer
 import groovy.transform.CompileStatic
@@ -37,6 +39,10 @@ class McpController {
     private final List<ToolHandler> toolHandlers
     private final Map<String, ToolHandler> handlerMap = new LinkedHashMap<String, ToolHandler>()
     private List<Map<String, Object>> cachedToolDefinitions = []
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    FilesystemTelemetryService telemetryService
+
 
     McpController(List<ToolHandler> toolHandlers) {
         this.toolHandlers = toolHandlers
@@ -141,7 +147,27 @@ class McpController {
                 "Unknown tool: '${toolName}'. Available: ${handlerMap.keySet().join(', ')}" as String)
         }
 
-        log.debug("Dispatching tool: {}", toolName)
-        return handler.handleToolCall(toolName, arguments, request.id)
+        log.debug('Dispatching tool: {}', toolName)
+        McpResponse response = handler.handleToolCall(toolName, arguments, request.id)
+
+        // v0.7.19: telemetry — fire-and-forget, never blocks response
+        try {
+            if (telemetryService != null) {
+                int charCount = estimateResponseSize(response)
+                telemetryService.recordToolCall('unknown', toolName, charCount, arguments)
+            }
+        } catch (Exception e) {
+            log.debug('Telemetry hook failed (non-fatal): {}', e.message)
+        }
+
+        return response
+    }
+
+    private static int estimateResponseSize(McpResponse response) {
+        try {
+            return response?.result?.toString()?.length() ?: 0
+        } catch (Exception e) {
+            return 0
+        }
     }
 }
