@@ -174,12 +174,12 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
 
         String hash = fileHash(target)
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, content_hash: hash])
+            return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
         }
         return textResponse(requestId, [
             action: 'write', path: normalized,
             size: body.length(), success: true,
-            content_hash: hash
+            content_hash: hash, file_content_hash: hash
         ])
     }
 
@@ -204,12 +204,12 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
 
         String hash = fileHash(target)
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, content_hash: hash])
+            return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
         }
         return textResponse(requestId, [
             action: 'append', path: normalized,
             appended: bytes.length, success: true,
-            content_hash: hash
+            content_hash: hash, file_content_hash: hash
         ])
     }
 
@@ -284,12 +284,12 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
         log.debug("replace: 1 occurrence in {} (line endings: {})", normalized, hasCrLf ? 'CRLF' : 'LF')
         String hash = fileHash(target)
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, content_hash: hash])
+            return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
         }
         return textResponse(requestId, [
             action: 'replace', path: normalized,
             replacements: 1, success: true,
-            content_hash: hash
+            content_hash: hash, file_content_hash: hash
         ])
     }
 
@@ -348,12 +348,12 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
 
         String hash = fileHash(target)
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, applied: applied, content_hash: hash])
+            return textResponse(requestId, [success: true, applied: applied, content_hash: hash, file_content_hash: hash])
         }
         return textResponse(requestId, [
             action: 'multi_replace', path: normalized,
             applied: applied, success: true,
-            content_hash: hash
+            content_hash: hash, file_content_hash: hash
         ])
     }
 
@@ -539,12 +539,13 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
             applied       : applied,
             original_lines: originalLineCount,
             result_lines  : expectedResultLines,
-            content_hash  : resultHash
+            content_hash  : resultHash,
+            file_content_hash: resultHash
         ] as Map<String, Object>
         if (verifyError) result.put('verify_warning', verifyError)
 
         if (isWriteCompact(options)) {
-            Map<String, Object> compact = [success: result.success, applied: applied, content_hash: resultHash] as Map<String, Object>
+            Map<String, Object> compact = [success: result.success, applied: applied, content_hash: resultHash, file_content_hash: resultHash] as Map<String, Object>
             if (verifyError) compact.put('verify_warning', verifyError)  // always surface safety warnings
             return textResponse(requestId, compact)
         }
@@ -600,14 +601,14 @@ All mutating actions return content_hash. Pass options.expectedHash to reject ed
 
         String hash = fileHash(Paths.get(normalized))
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, content_hash: hash])
+            return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
         }
         return textResponse(requestId, [
             action     : 'finalise_write',
             path       : normalized,
             totalChunks: totalChunks,
             size       : assembled.length(),
-            success    : true, content_hash: hash
+            success    : true, content_hash: hash, file_content_hash: hash
         ])
     }
 

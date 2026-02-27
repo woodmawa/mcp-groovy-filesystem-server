@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.19'  // v0.7.19: filesystem telemetry hook - writes tool call sizes to shared SQLite
+version = '0.7.20'  // v0.7.20: 5d write responses now return file_content_hash alias alongside content_hash
 
 java {
     toolchain {
