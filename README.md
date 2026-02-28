@@ -1,8 +1,27 @@
-# mcp-groovy-filesystem-server v0.7.21
+# mcp-groovy-filesystem-server v0.7.22
 
-A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop via STDIO, plus HTTP transport for local LLM agentic loops.
+A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.22
+
+### HTTP-first deployment + doStop port-kill fallback (v0.7.22)
+
+The server ecosystem now runs as **persistent HTTP/SSE services** managed by a PowerShell/Groovy launcher script (`start-mcp-services.ps1` / `start-mcp-services.groovy` in `claude-sync/`). Both Claude Desktop and Claude Code connect via `http://localhost:808x/sse` - no STDIO duplication, no cold starts, services survive Claude restarts.
+
+**`doStop` port-kill fallback**: previously `stop` only worked for servers started by the current session's `managedProcesses` map, returning `"not managed by this session"` for externally-launched servers. Now `doStop` has a three-stage fallback:
+1. Managed process map (same session)
+2. PID from `mcp-http-servers-runtime.json` (killed by `ProcessHandle`)
+3. `POST /actuator/shutdown` (graceful self-shutdown)
+
+This means `server_lifecycle action=stop name=context` works correctly whether the server was started by Claude, by the PowerShell launcher, or any other means. Stop-all now also runs in **reverse dependency order** (agentic → orchestrator → context → filesystem).
+
+**Windows startup automation**: `Register-McpStartup.ps1` registers a Task Scheduler job that starts all 4 services at login with a 15s delay. Services are idempotent - already-running ports are skipped, so the script is safe to re-run.
+
+**Claude Code support**: `~/.claude/settings.json` now mirrors Desktop config with HTTP URLs. Both clients can run side-by-side against the same service instances.
 
 ---
 
@@ -236,24 +255,57 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
 
 ---
 
-## Claude Desktop Config
+## Claude Desktop + Claude Code Config
 
+Both clients connect via HTTP/SSE. Services must be started first via the launcher.
+
+**`%APPDATA%\Claude\claude_desktop_config.json`** and **`~\.claude\settings.json`**:
 ```json
 {
   "mcpServers": {
-    "groovy-filesystem": {
-      "command": "C:/Program Files/Java/jdk-25/bin/java.exe",
-      "args": [
-        "--enable-native-access=ALL-UNNAMED",
-        "-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects, C:/Users/willw/claude, C:/Users/willw/AppData/Roaming/Claude, C:/Users/willw/claude-sync",
-        "-Dspring.profiles.active=stdio",
-        "-Dmcp.mode=stdio",
-        "-jar",
-        "C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-0.7.16.jar"
-      ]
-    }
+    "groovy-filesystem": { "url": "http://localhost:8081/sse" },
+    "context-server":    { "url": "http://localhost:8082/sse" },
+    "llm-orchestrator":  { "url": "http://localhost:8083/sse" },
+    "agentic-workflow":  { "url": "http://localhost:8084/sse" }
   }
 }
+```
+
+## Starting Services
+
+```powershell
+# Windows - start all services (idempotent, safe to re-run)
+cd C:\Users\willw\claude-sync
+.\start-mcp-services.ps1           # start
+.\start-mcp-services.ps1 -Status   # health check
+.\start-mcp-services.ps1 -Stop     # graceful stop
+
+# Register auto-start at Windows login (run once)
+.\Register-McpStartup.ps1
+```
+
+```bash
+# Linux
+groovy start-mcp-services.groovy           # start
+groovy start-mcp-services.groovy --status  # health check
+groovy start-mcp-services.groovy --stop    # stop
+```
+
+## Dev Loop (rebuild a server without restarting Claude)
+
+```
+# 1. Stop the target server (works even if started by launcher)
+server_lifecycle action=stop name=filesystem
+
+# 2. Build new jar
+tools action=gradle subcommand=bootJar workingDir=C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
+
+# 3. Copy jar to jars/ and update mcp-http-servers.json if version changed
+server_lifecycle action=reload
+
+# 4. Restart
+server_lifecycle action=ensure name=filesystem
+server_lifecycle action=status
 ```
 
 ---
@@ -262,11 +314,10 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
 
 ```bash
 ./gradlew bootJar -x test
-# Output: build/libs/mcp-groovy-filesystem-server-0.7.16.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.7.22.jar
 # Deploy: copy to claude-sync/jars/
 #         update mcp-http-servers.json jar name
-#         update claude_desktop_config.json jar name
-# Restart Claude Desktop to pick up the new STDIO process
+#         server_lifecycle action=reload then action=ensure name=filesystem
 ```
 
 ---
@@ -287,6 +338,7 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
 
 | Version | Highlights |
 |---------|-----------|
+| **0.7.22** | doStop port-kill fallback (managed→runtime PID→actuator); reverse-order stop-all; HTTP-first config for Desktop+Code |
 | **0.7.21** | Safe editing workflow in tool descriptions; skills/SKILL.md; expectedHash guidance |
 | **0.7.20** | Write responses return file_content_hash alias alongside content_hash |
 | **0.7.19** | FilesystemTelemetryService hook |

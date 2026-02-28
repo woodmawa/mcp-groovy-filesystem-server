@@ -142,36 +142,113 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         List<Map<String, Object>> results = []
 
         if (name) {
-            Process proc = managedProcesses.remove(name)
-            if (proc) {
-                proc.destroy()
-                proc.waitFor(5, TimeUnit.SECONDS)
-                if (proc.alive) proc.destroyForcibly()
-                Map<String, Object> r = new LinkedHashMap<String, Object>()
-                r.put('name', name); r.put('stopped', true)
-                results << r
-                log.info("server_lifecycle: stopped {}", name)
-            } else {
-                Map<String, Object> r = new LinkedHashMap<String, Object>()
-                r.put('name', name); r.put('stopped', false); r.put('reason', 'not managed by this session')
-                results << r
-            }
+            results << stopOneServer(name)
         } else {
-            // stop all managed
-            managedProcesses.each { String n, Process proc ->
-                proc.destroy()
-                proc.waitFor(5, TimeUnit.SECONDS)
-                if (proc.alive) proc.destroyForcibly()
-                Map<String, Object> r = new LinkedHashMap<String, Object>()
-                r.put('name', n); r.put('stopped', true)
-                results << r
-                log.info("server_lifecycle: stopped {}", n)
-            }
-            managedProcesses.clear()
+            // Stop all - managed processes first, then any externally-started ones
+            Map<String, Object> config = loadConfig()
+            List<String> allNames = (config.servers as List<Map>)*.name as List<String>
+            // Reverse order: agentic -> orchestrator -> context -> filesystem
+            allNames.reverse().each { String n -> results << stopOneServer(n) }
         }
 
         writeRuntimeState()
         return textResponse(requestId, [action: 'stop', results: results])
+    }
+
+    /**
+     * Stop a single server by name. Tries managed process map first, then falls back
+     * to killing by port - handles servers started externally (e.g. PowerShell launcher).
+     */
+    private Map<String, Object> stopOneServer(String name) {
+        Map<String, Object> r = new LinkedHashMap<String, Object>()
+        r.put('name', name)
+
+        // 1. Try managed process (started by this session)
+        Process proc = managedProcesses.remove(name)
+        if (proc) {
+            proc.destroy()
+            proc.waitFor(5, TimeUnit.SECONDS)
+            if (proc.alive) proc.destroyForcibly()
+            r.put('stopped', true)
+            r.put('method', 'managed-process')
+            log.info("server_lifecycle: stopped {} via managed process", name)
+            return r
+        }
+
+        // 2. Fall back: find port from config and kill by PID owning that port
+        try {
+            Map<String, Object> config = loadConfig()
+            List<Map> servers = config.servers as List<Map>
+            Map server = servers.find { (it.name as String) == name }
+            if (server) {
+                int port = server.port as int
+                if (isPortListening(port)) {
+                    // Use runtime state PID if available
+                    boolean killed = killByRuntimePid(name)
+                    if (!killed) {
+                        // Last resort: ask the server to shut itself down via actuator
+                        killed = requestActuatorShutdown(port)
+                    }
+                    r.put('stopped', killed)
+                    r.put('method', 'port-kill')
+                    r.put('port', port)
+                    if (!killed) r.put('warning', 'port still listening after kill attempt')
+                    log.info("server_lifecycle: stopped {} via port-kill (port {}), success={}", name, port, killed)
+                } else {
+                    r.put('stopped', false)
+                    r.put('reason', 'not running')
+                }
+            } else {
+                r.put('stopped', false)
+                r.put('reason', 'unknown server name')
+            }
+        } catch (Exception e) {
+            r.put('stopped', false)
+            r.put('error', sanitize(e.message) as String)
+        }
+        return r
+    }
+
+    private boolean killByRuntimePid(String name) {
+        try {
+            File runtimeFile = new File("${claudeSyncPath}/${RUNTIME_FILENAME}")
+            if (!runtimeFile.exists()) return false
+            Map<String, Object> state = mapper.readValue(runtimeFile, Map)
+            List<Map> servers = state.managedServers as List<Map> ?: []
+            Map entry = servers.find { it.name == name }
+            if (!entry) return false
+            long pid = entry.pid as long
+            if (pid <= 0) return false
+            Optional<ProcessHandle> ph = ProcessHandle.of(pid)
+            if (ph.isPresent() && ph.get().isAlive()) {
+                ph.get().destroyForcibly()
+                Thread.sleep(1000)
+                return !ph.get().isAlive()
+            }
+        } catch (Exception e) {
+            log.warn("server_lifecycle: killByRuntimePid failed for {}: {}", name, e.message)
+        }
+        return false
+    }
+
+    private boolean requestActuatorShutdown(int port) {
+        try {
+            URL url = new URL("http://localhost:${port}/actuator/shutdown")
+            HttpURLConnection conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = 'POST'
+            conn.connectTimeout = 3000
+            conn.readTimeout = 3000
+            conn.connect()
+            int code = conn.responseCode
+            conn.disconnect()
+            if (code in [200, 204]) {
+                Thread.sleep(3000) // give it time to shut down
+                return !isPortListening(port)
+            }
+        } catch (Exception e) {
+            log.warn("server_lifecycle: actuator shutdown failed on port {}: {}", port, e.message)
+        }
+        return false
     }
 
     private McpResponse doStatus(Map<String, Object> arguments, Object requestId) {
