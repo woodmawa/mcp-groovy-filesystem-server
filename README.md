@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.7.16
+# mcp-groovy-filesystem-server v0.7.21
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop via STDIO, plus HTTP transport for local LLM agentic loops.
 
@@ -6,7 +6,41 @@ Eight parameterised tools replace what would otherwise be 30+ individual tools, 
 
 ---
 
-## What's New in v0.7.9 – v0.7.16
+## What's New in v0.7.17 - v0.7.21
+
+### Safe editing workflow + SKILL.md (v0.7.21)
+
+**`file_write` tool description** now contains a full **SAFE EDITING WORKFLOW** section:
+- Preferred pattern: `get_method` -> `patch` + `expectedHash` (line-addressed, always unique)
+- Grep-first pattern: confirm uniqueness before any `replace`
+- `multi_replace` rule: never make sequential `replace` calls -- batch all edits in one call
+- CRITICAL RULES block: explicit NEVER/PREFER list preventing the silent corruption patterns
+  that caused 3+ broken builds in mcp-agentic-workflow Phase 6
+
+**`file_read` tool description** now ends with a CRITICAL note: every read returns
+`file_content_hash` -- capture it and pass it as `expectedHash` on every write.
+
+**`skills/SKILL.md`** added to project root -- worked examples of all three safe patterns,
+an anti-patterns table, and a quick reference. Readable by Claude directly via:
+```
+file_read action=read path=C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server/skills/SKILL.md
+```
+
+### v0.7.17 - v0.7.20
+
+**Periodic UsageTracker flush + clean STDIO shutdown (v0.7.17)**
+
+**Kill stale HTTP server PIDs from previous sessions on start (v0.7.18)**
+
+**Filesystem telemetry hook (v0.7.19)**
+
+**Write responses return `file_content_hash` alias (v0.7.20)**
+All 5 mutating write actions now return `file_content_hash` alongside `content_hash`
+so the hash is consistently named whether you last did a read or a write.
+
+---
+
+## What's New in v0.7.9 - v0.7.16
 
 ### Token optimisation round 2 (v0.7.13 – v0.7.16)
 
@@ -253,6 +287,11 @@ Claude Desktop (STDIO)              Local LLM agentic loop (HTTP)
 
 | Version | Highlights |
 |---------|-----------|
+| **0.7.21** | Safe editing workflow in tool descriptions; skills/SKILL.md; expectedHash guidance |
+| **0.7.20** | Write responses return file_content_hash alias alongside content_hash |
+| **0.7.19** | FilesystemTelemetryService hook |
+| **0.7.18** | Kill stale HTTP server PIDs from previous sessions on start |
+| **0.7.17** | Periodic UsageTracker flush; clean STDIO shutdown |
 | **0.7.16** | FileLifecycleService compact-by-default (success/type only) |
 | **0.7.15** | ExecuteService compact-by-default; stderr cap 10k→5k; maxStdout/maxStderr configurable |
 | **0.7.14** | ServerLifecycleService config cache (disk read once per session); status compact-by-default |
