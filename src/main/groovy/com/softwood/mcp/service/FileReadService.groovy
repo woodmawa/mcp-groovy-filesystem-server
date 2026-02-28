@@ -79,7 +79,10 @@ Read files and query filesystem metadata. Actions:
 NOTE: Use summary before read on unknown files to check size. Batch reads with multi.
 NOTE: Use get_method to read a single method before editing it - cheaper than structure+range.
 NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char SHA-256 of whole file).
-      Pass this as options.expectedHash on the next patch/replace/multi_replace to guard against drift.''',
+      Pass this as options.expectedHash on the next patch/replace/multi_replace to guard against drift.
+CRITICAL FOR EDITING: Every read response includes file_content_hash. You MUST capture this hash
+      and pass it as options.expectedHash on every subsequent write to the same file. If you skip
+      this, the write tool cannot detect file drift and corruption may occur silently.''',
             inputSchema: [
                 type      : 'object',
                 properties: [

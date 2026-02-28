@@ -60,7 +60,39 @@ Write, append, or modify file content. Actions:
 - patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed. ALWAYS read exact lines first.
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
 - chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
-All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.''',
+All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.
+
+SAFE EDITING WORKFLOW - follow these rules to avoid corruption:
+
+FOR TARGETED EDITS TO EXISTING CODE (preferred):
+  1. file_read action=get_method  path=<file>  options.method=<methodName>
+     → returns exact line range + file_content_hash
+  2. file_write action=patch  path=<file>
+       options.replacements=[{startLine, endLine, newText}]
+       options.expectedHash=<hash from step 1>  ← MANDATORY
+     → atomic, line-addressed, drift-protected
+
+FOR SMALL UNIQUE INSERTIONS:
+  1. file_read action=grep  options.pattern=<anchor>  options.contextLines=2
+     → confirms uniqueness + gives file_content_hash
+  2. Only proceed if grep found EXACTLY ONE match
+  3. file_write action=replace  options.oldText=<exact text>  options.newText=<...>
+       options.expectedHash=<hash from grep>  ← MANDATORY
+
+FOR MULTIPLE EDITS TO THE SAME FILE:
+  Use multi_replace with ALL replacements in one call (pre-validates all before writing).
+  NEVER make sequential replace calls without re-reading between them.
+
+CRITICAL RULES - NEVER violate these:
+  ✗ NEVER use replace or patch without expectedHash on files > 100 lines
+  ✗ NEVER use replace without confirming uniqueness via grep first
+  ✗ NEVER make sequential replace calls to the same file - use multi_replace
+  ✗ NEVER use a hash from a read if you have made ANY edit since that read
+  ✓ PREFER patch over replace for files > 200 lines (line-addressed = always unique)
+   ALWAYS pass the file_content_hash from your last read as expectedHash
+
+SKILL: For worked examples read:
+  file_read action=read path=C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server/skills/SKILL.md''',
             inputSchema: [
                 type      : 'object',
                 properties: [
