@@ -194,7 +194,7 @@ class FileServicesSmokeSpec extends Specification {
         McpResponse r = fileWriteService.handleToolCall('file_write', [
             action : 'patch',
             path   : tmp.absolutePath,
-            options: [replacements: [
+            options: [verbose: true, replacements: [
                 [startLine: 2, endLine: 3, newText: 'replaced2\nreplaced3']
             ]]
         ], 'test-patch-1')

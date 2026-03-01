@@ -23,12 +23,12 @@ class McpControllerSmokeSpec extends Specification {
     @Autowired McpController controller
     @Autowired List<ToolHandler> toolHandlers
 
-    def "All 7 ToolHandlers are registered"() {
-        expect: "exactly 7 handlers injected"
-        toolHandlers.size() == 7
+    def "All 8 ToolHandlers are registered"() {
+        expect: "exactly 8 handlers injected"
+        toolHandlers.size() == 8
     }
 
-    def "Controller registers exactly 7 tools"() {
+    def "Controller registers exactly 8 tools"() {
         when:
         McpRequest req = new McpRequest(id: 'list-1', method: 'tools/list', params: [:])
         McpResponse response = controller.handleRequest(req)
@@ -37,12 +37,12 @@ class McpControllerSmokeSpec extends Specification {
         response.result != null
         response.error == null
         List tools = response.result.tools as List
-        tools.size() == 7
+        tools.size() == 8
 
-        and: "all 7 expected tool names are present"
+        and: "all 8 expected tool names are present"
         def names = tools.collect { (it as Map).name } as Set
         names == ['file_lifecycle', 'file_list', 'file_search', 'file_read',
-                  'file_write', 'execute', 'tools'] as Set
+                  'file_write', 'execute', 'tools', 'server_lifecycle'] as Set
     }
 
     def "initialize handshake returns correct protocol version and server info"() {
@@ -58,7 +58,7 @@ class McpControllerSmokeSpec extends Specification {
         response.result != null
         response.error == null
         response.result.protocolVersion == '2024-11-05'
-        (response.result.serverInfo as Map).version == '0.7.3'
+        (response.result.serverInfo as Map).version == 'dev'
     }
 
     def "ping returns empty success result"() {

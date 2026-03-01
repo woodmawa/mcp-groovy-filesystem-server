@@ -50,9 +50,11 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 
     @Override
     List<Map<String, Object>> getToolDefinitions() {
+        String root = pathService.activeProjectRoot?.replace('\\', '/') ?: ''
+        String skillPath = root ? (root + '/skills/SKILL.md') : 'skills/SKILL.md'
         return [[
             name       : 'file_write',
-            description: '''\
+            description: ("""\
 Write, append, or modify file content. Actions:
 - write(path, content): overwrite entire file
 - append(path, content): append to end
@@ -62,37 +64,9 @@ Write, append, or modify file content. Actions:
 - chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
 All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.
 
-SAFE EDITING WORKFLOW - follow these rules to avoid corruption:
-
-FOR TARGETED EDITS TO EXISTING CODE (preferred):
-  1. file_read action=get_method  path=<file>  options.method=<methodName>
-     → returns exact line range + file_content_hash
-  2. file_write action=patch  path=<file>
-       options.replacements=[{startLine, endLine, newText}]
-       options.expectedHash=<hash from step 1>  ← MANDATORY
-     → atomic, line-addressed, drift-protected
-
-FOR SMALL UNIQUE INSERTIONS:
-  1. file_read action=grep  options.pattern=<anchor>  options.contextLines=2
-     → confirms uniqueness + gives file_content_hash
-  2. Only proceed if grep found EXACTLY ONE match
-  3. file_write action=replace  options.oldText=<exact text>  options.newText=<...>
-       options.expectedHash=<hash from grep>  ← MANDATORY
-
-FOR MULTIPLE EDITS TO THE SAME FILE:
-  Use multi_replace with ALL replacements in one call (pre-validates all before writing).
-  NEVER make sequential replace calls without re-reading between them.
-
-CRITICAL RULES - NEVER violate these:
-  ✗ NEVER use replace or patch without expectedHash on files > 100 lines
-  ✗ NEVER use replace without confirming uniqueness via grep first
-  ✗ NEVER make sequential replace calls to the same file - use multi_replace
-  ✗ NEVER use a hash from a read if you have made ANY edit since that read
-  ✓ PREFER patch over replace for files > 200 lines (line-addressed = always unique)
-   ALWAYS pass the file_content_hash from your last read as expectedHash
-
+SAFE EDITING: always pass expectedHash (hash from last read). For targeted code edits: get_method -> patch. For unique string replacements: grep to confirm uniqueness -> replace. For multiple changes to same file: multi_replace. NEVER sequential replace calls without re-reading.
 SKILL: For worked examples read:
-  file_read action=read path=C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server/skills/SKILL.md''',
+  file_read action=read path=${skillPath}""").toString(),
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -106,7 +80,6 @@ SKILL: For worked examples read:
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
                                   expectedHash: [type: 'string',  description: 'Optional 12-char SHA-256 prefix from a prior read/write content_hash. Supported by patch, replace, and multi_replace. Rejects the edit if the file has changed since last read - prevents silent corruption in multi-step flows.'],
-
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
                                   sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
@@ -191,7 +164,7 @@ SKILL: For worked examples read:
     }
 
     private McpResponse doWrite(String path, String content, Map<String, Object> options, Object requestId) {
-        String normalized = normalizAndCheckPath(path)
+        String normalized = normalizeAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean backup    = options.backup as boolean ?: false
         boolean mkdirs    = options.mkdirs as boolean ?: true
@@ -216,7 +189,7 @@ SKILL: For worked examples read:
     }
 
     private McpResponse doAppend(String path, String content, Map<String, Object> options, Object requestId) {
-        String normalized = normalizAndCheckPath(path)
+        String normalized = normalizeAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean mkdirs    = options.mkdirs as boolean ?: true
         byte[] bytes      = (content ?: '').getBytes(encoding)
@@ -251,7 +224,7 @@ SKILL: For worked examples read:
         String expectedHash = options.expectedHash as String
         if (!oldText) return McpResponse.error(requestId, -32602, "options.oldText required for replace")
 
-        String normalized = normalizAndCheckPath(path)
+        String normalized = normalizeAndCheckPath(path)
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
 
@@ -302,8 +275,17 @@ SKILL: For worked examples read:
             return McpResponse.error(requestId, -32602, new groovy.json.JsonBuilder(err).toString())
         }
         if (count > 1) {
+            List<Integer> matchLines = new ArrayList<Integer>()
+            int searchFrom = 0
+            while (searchFrom < current.length()) {
+                int idx = current.indexOf(oldText, searchFrom)
+                if (idx < 0) break
+                matchLines.add(current.substring(0, idx).count('\n') + 1)
+                searchFrom = idx + 1
+            }
+            String lineInfo = matchLines.isEmpty() ? '' : (' at lines ' + matchLines.join(', '))
             return McpResponse.error(requestId, -32602,
-                "replace: oldText appears ${count} times (must be unique). Provide more context.")
+                ('replace: oldText appears ' + count + ' times' + lineInfo + ' (must be unique). Provide more context.'))
         }
 
         String updated = current.replace(oldText, newText)
@@ -329,7 +311,7 @@ SKILL: For worked examples read:
         List<Map<String, Object>> replacements = (options.replacements as List<Map<String, Object>>) ?: []
         if (!replacements) return McpResponse.error(requestId, -32602, "options.replacements required for multi_replace")
 
-        String normalized   = normalizAndCheckPath(path)
+        String normalized   = normalizeAndCheckPath(path)
         boolean backup      = options.backup as boolean ?: false
         String encoding     = options.encoding as String ?: 'UTF-8'
         String expectedHash = options.expectedHash as String
@@ -405,7 +387,7 @@ SKILL: For worked examples read:
         //              -> logs ERROR + sets success=false + adds verify_warning in response
         //   CRLF/LF detected on read and restored on write
         //   expectedHash: optional 12-char SHA-256 prefix; rejects if file has drifted since last read
-        String normalized   = normalizAndCheckPath(path)
+        String normalized   = normalizeAndCheckPath(path)
         String encoding     = options.encoding as String ?: 'UTF-8'
         boolean backup      = options.backup as boolean ?: false
         String expectedHash = options.expectedHash as String  // optional drift guard
@@ -520,12 +502,13 @@ SKILL: For worked examples read:
 
         // ---- Phase 3: Atomic write via temp file + rename ----
         // Reassemble: join content lines, then restore trailing newline if file had one
-        String lineEnding = hasCrLf ? '\r\n' : '\n'
-        String assembled  = lines.join(lineEnding) + (hadTrailingNewline ? lineEnding : '')
-        Path targetPath = Paths.get(normalized)
+        String lineEnding  = hasCrLf ? '\r\n' : '\n'
+        String assembled   = lines.join(lineEnding) + (hadTrailingNewline ? lineEnding : '')
+        byte[] resultBytes = assembled.getBytes(encoding)
+        Path targetPath    = Paths.get(normalized)
         try {
             if (backup) makeBackup(targetPath)
-            atomicWrite(targetPath, assembled.getBytes(encoding))
+            atomicWrite(targetPath, resultBytes)
             log.debug("patch: atomic write succeeded for '{}'", normalized)
         } catch (Exception e) {
             log.error("patch: write failed for '{}': {}", normalized, sanitize(e.message))
@@ -534,11 +517,13 @@ SKILL: For worked examples read:
         }
 
         // ---- Phase 4: Post-write verification ----
-        // Verify using same trailing-newline-aware line count
+        // Verify using same trailing-newline-aware line count.
+        // Uses resultBytes (already in memory) - no second disk read needed since atomicWrite
+        // succeeded (any IO error would have thrown above).
         String verifyError = null
         int verifiedLines  = -1
         try {
-            String written     = new String(Files.readAllBytes(targetPath), encoding)
+            String written     = new String(resultBytes, encoding)
             String normWritten = written.replace('\r\n', '\n').replace('\r', '\n')
             boolean writtenHasTrailing = normWritten.endsWith('\n')
             String writtenToCount      = writtenHasTrailing ? normWritten[0..-2] : normWritten
@@ -557,11 +542,11 @@ SKILL: For worked examples read:
         log.info("patch: {} replacement(s) on '{}' ({} -> {} lines, endings: {})",
             applied, normalized, originalLineCount, expectedResultLines, hasCrLf ? 'CRLF' : 'LF')
 
-        // Include content hash of result so callers can detect file drift before a subsequent patch
+        // Include content hash of result so callers can detect file drift before a subsequent patch.
+        // Computed from resultBytes (already in memory) - no third disk read needed.
         String resultHash = null
         try {
-            def md = java.security.MessageDigest.getInstance('SHA-256')
-            resultHash = md.digest(Files.readAllBytes(targetPath)).encodeHex().toString()[0..11]
+            resultHash = computeHash(resultBytes)
         } catch (Exception ignored) {}
 
         Map<String, Object> result = [
@@ -617,7 +602,7 @@ SKILL: For worked examples read:
         if (!sessionId)      return McpResponse.error(requestId, -32602, "options.sessionId required for finalise_write")
         if (totalChunks < 1) return McpResponse.error(requestId, -32602, "options.totalChunks required for finalise_write")
 
-        String normalized = normalizAndCheckPath(path)
+        String normalized = normalizeAndCheckPath(path)
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean mkdirs    = options.mkdirs as boolean ?: true
@@ -655,7 +640,7 @@ SKILL: For worked examples read:
     // Helpers
     // -----------------------------------------------------------------------
 
-    private String normalizAndCheckPath(String path) {
+    private String normalizeAndCheckPath(String path) {
         String normalized = pathService.normalizePath(path)
         if (!isPathAllowed(normalized)) throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
         return normalized

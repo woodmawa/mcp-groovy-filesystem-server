@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.22'  // v0.7.22: doStop port-kill fallback for externally-started servers; HTTP-first config (Desktop+Code via SSE)
+version = '0.7.23'  // v0.7.23: P1+P2 fixes: token tracking, test fixes, description trim, doReplace line numbers, session ID format
 
 java {
     toolchain {

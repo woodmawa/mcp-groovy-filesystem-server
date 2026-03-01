@@ -202,22 +202,23 @@ class UsageTracker {
         List<Map<String, Object>> breakdown = []
         callCounts.each { String key, AtomicInteger count ->
             long bytes = responseBytes[key]?.get() ?: 0L
-            breakdown << ([key: key, calls: count.get(), responseKB: Math.round(bytes / 1024.0d)] as Map<String, Object>)
+            breakdown << ([key: key, calls: count.get(), responseKB: Math.round(bytes / 1024.0d), estTokens: Math.round(bytes / 4.0d)] as Map<String, Object>)
         }
         breakdown.sort { Map a, Map b -> (b.calls as int) <=> (a.calls as int) }
 
         return [
-            period       : 'today',
-            date         : currentDate.toString(),
-            sessionStart : sessionStart.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-            totalCalls   : total,
-            totalBytes   : totalBytes.get(),
-            totalKB      : Math.round(totalBytes.get() / 1024.0d),
-            boundedReads : bounded,
-            fullReads    : fullReads,
-            boundedRatio : readTotal > 0 ? Math.round(bounded * 100.0d / readTotal) : 0,
-            persistent   : dbPath ? true : false,
-            perAction    : breakdown.take(20)
+            period         : 'today',
+            date           : currentDate.toString(),
+            sessionStart   : sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm')),
+            totalCalls     : total,
+            totalBytes     : totalBytes.get(),
+            totalKB        : Math.round(totalBytes.get() / 1024.0d),
+            estimatedTokens: Math.round(totalBytes.get() / 4.0d),
+            boundedReads   : bounded,
+            fullReads      : fullReads,
+            boundedRatio   : readTotal > 0 ? Math.round(bounded * 100.0d / readTotal) : 0,
+            persistent     : dbPath ? true : false,
+            perAction      : breakdown.take(20)
         ] as Map<String, Object>
     }
 
@@ -274,22 +275,23 @@ class UsageTracker {
         List<Map<String, Object>> breakdown = []
         dbCalls.each { String key, Long calls ->
             long bytes = dbBytes[key] ?: 0L
-            breakdown << ([key: key, calls: calls, responseKB: Math.round(bytes / 1024.0d)] as Map<String, Object>)
+            breakdown << ([key: key, calls: calls, responseKB: Math.round(bytes / 1024.0d), estTokens: Math.round(bytes / 4.0d)] as Map<String, Object>)
         }
         breakdown.sort { Map a, Map b -> (b.calls as long) <=> (a.calls as long) }
 
         return [
-            period      : period,
-            from        : fromStr,
-            to          : todayStr,
-            totalCalls  : mergedTotal,
-            totalBytes  : mergedBytes,
-            totalKB     : Math.round(mergedBytes / 1024.0d),
-            boundedReads: mergedBounded,
-            fullReads   : mergedFull,
-            boundedRatio: readTotal > 0 ? Math.round(mergedBounded * 100.0d / readTotal) : 0,
-            persistent  : true,
-            perAction   : breakdown.take(20)
+            period          : period,
+            from            : fromStr,
+            to              : todayStr,
+            totalCalls      : mergedTotal,
+            totalBytes      : mergedBytes,
+            totalKB         : Math.round(mergedBytes / 1024.0d),
+            estimatedTokens : Math.round(mergedBytes / 4.0d),
+            boundedReads    : mergedBounded,
+            fullReads       : mergedFull,
+            boundedRatio    : readTotal > 0 ? Math.round(mergedBounded * 100.0d / readTotal) : 0,
+            persistent      : true,
+            perAction       : breakdown.take(20)
         ] as Map<String, Object>
     }
 
@@ -305,27 +307,23 @@ class UsageTracker {
         withConnection { Connection conn ->
             conn.autoCommit = false
             try {
-                // Delete existing rows for today+filesystem to replace with fresh totals
-                PreparedStatement del = conn.prepareStatement(
-                    "DELETE FROM token_usage WHERE recorded_date = ? AND context_layer = ?")
-                del.setString(1, dateStr)
-                del.setString(2, LAYER)
-                del.executeUpdate()
-                del.close()
-
-                // Insert one row per key with accumulated totals
+                // INSERT OR REPLACE: preserves multiple sessions on the same day (different
+                // session_ids never conflict) while correctly refreshing totals for periodic
+                // flushes within the same session (same session_id -> UNIQUE index triggers replace).
                 PreparedStatement ins = conn.prepareStatement(
-                    "INSERT INTO token_usage (recorded_date, session_id, tool_name, call_count, estimated_tokens, response_bytes, context_layer) " +
-                    "VALUES (?, ?, ?, ?, 0, ?, ?)")
+                    "INSERT OR REPLACE INTO token_usage (recorded_date, session_id, tool_name, call_count, estimated_tokens, response_bytes, context_layer) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)")
 
                 callCounts.each { String key, AtomicInteger count ->
-                    long bytes = responseBytes[key]?.get() ?: 0L
+                    long bytes    = responseBytes[key]?.get() ?: 0L
+                    int estTokens = (int) Math.round(bytes / 4.0d)
                     ins.setString(1, dateStr)
-                    ins.setString(2, sessionStart.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+                    ins.setString(2, sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm')))
                     ins.setString(3, key)
                     ins.setInt(4, count.get())
-                    ins.setLong(5, bytes)
-                    ins.setString(6, LAYER)
+                    ins.setInt(5, estTokens)
+                    ins.setLong(6, bytes)
+                    ins.setString(7, LAYER)
                     ins.addBatch()
                 }
                 ins.executeBatch()
@@ -384,6 +382,16 @@ class UsageTracker {
                     response_bytes   INTEGER DEFAULT 0,
                     context_layer    TEXT DEFAULT 'other'
                 )""")
+            // UNIQUE constraint required for INSERT OR REPLACE: one row per
+            // (date, tool, layer, session). Multiple sessions on the same day
+            // accumulate independently; periodic flushes within a session update in-place.
+            conn.createStatement().execute(
+                'CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_unique ' +
+                'ON token_usage(recorded_date, tool_name, context_layer, session_id)')
+            // Composite index for period stats query (WHERE recorded_date >= ? AND context_layer = ?)
+            conn.createStatement().execute(
+                'CREATE INDEX IF NOT EXISTS idx_token_usage_date_layer ' +
+                'ON token_usage(recorded_date, context_layer)')
         }
     }
 
