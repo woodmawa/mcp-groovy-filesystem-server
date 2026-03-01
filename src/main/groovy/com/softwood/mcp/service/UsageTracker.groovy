@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+
 /**
  * UsageTracker  per-action call count and response size tracking with SQLite persistence.
  *
@@ -86,10 +87,18 @@ class UsageTracker {
     /** "tool:action" -> total response bytes (today, live) */
     private final ConcurrentHashMap<String, AtomicLong> responseBytes = new ConcurrentHashMap<>()
 
-    private final AtomicInteger totalCalls    = new AtomicInteger(0)
-    private final AtomicLong    totalBytes    = new AtomicLong(0)
-    private final AtomicInteger boundedCalls  = new AtomicInteger(0)
-    private final AtomicInteger fullReadCalls = new AtomicInteger(0)
+    /** "tool:action" -> total request payload bytes (today, live) */
+    private final ConcurrentHashMap<String, AtomicLong> inputBytes = new ConcurrentHashMap<>()
+
+    private final AtomicInteger totalCalls      = new AtomicInteger(0)
+    private final AtomicLong    totalBytes      = new AtomicLong(0)
+    private final AtomicLong    totalInputBytes = new AtomicLong(0)
+    private final AtomicInteger boundedCalls    = new AtomicInteger(0)
+    private final AtomicInteger fullReadCalls   = new AtomicInteger(0)
+
+    // Single JDBC connection held for the lifetime of the service (SQLite is embedded)
+    private volatile Connection dbConn = null
+    private final Object dbLock = new Object()
 
     // -----------------------------------------------------------------------
     // Lifecycle
@@ -102,6 +111,8 @@ class UsageTracker {
             return
         }
         try {
+            Class.forName('org.sqlite.JDBC')
+            dbConn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
             ensureSchema()
             loadTodayFromDb()
             log.info('UsageTracker: SQLite persistence active at {}', dbPath)
@@ -120,6 +131,7 @@ class UsageTracker {
                 log.warn('UsageTracker: flush on shutdown failed: {}', e.message)
             }
         }
+        try { dbConn?.close() } catch (Exception ignored) {}
     }
 
     /**
@@ -150,15 +162,18 @@ class UsageTracker {
 
         checkDateRollover()
 
-        String tool   = event.toolName ?: 'unknown'
-        String action = extractAction(event.toolArgs)
-        String key    = action ? "${tool}:${action}" as String : tool
-        int size      = event.responseSizeBytes
+        String tool    = event.toolName ?: 'unknown'
+        String action  = extractAction(event.toolArgs)
+        String key     = action ? "${tool}:${action}" as String : tool
+        int size       = event.responseSizeBytes
+        int inSize     = event.payloadSizeBytes
 
         totalCalls.incrementAndGet()
         totalBytes.addAndGet(size)
+        totalInputBytes.addAndGet(inSize)
         callCounts.computeIfAbsent(key, { k -> new AtomicInteger(0) }).incrementAndGet()
         responseBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(size)
+        inputBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(inSize)
 
         if (action && action in BOUNDED_ACTIONS)       boundedCalls.incrementAndGet()
         else if (action && action in FULL_READ_ACTIONS) fullReadCalls.incrementAndGet()
@@ -201,8 +216,9 @@ class UsageTracker {
 
         List<Map<String, Object>> breakdown = []
         callCounts.each { String key, AtomicInteger count ->
-            long bytes = responseBytes[key]?.get() ?: 0L
-            breakdown << ([key: key, calls: count.get(), responseKB: Math.round(bytes / 1024.0d), estTokens: Math.round(bytes / 4.0d)] as Map<String, Object>)
+            long bytes   = responseBytes[key]?.get() ?: 0L
+            long inBytes = inputBytes[key]?.get() ?: 0L
+            breakdown << ([key: key, calls: count.get(), responseKB: Math.round(bytes / 1024.0d), estTokens: Math.round(bytes / 4.0d), inputKB: Math.round(inBytes / 1024.0d)] as Map<String, Object>)
         }
         breakdown.sort { Map a, Map b -> (b.calls as int) <=> (a.calls as int) }
 
@@ -214,6 +230,7 @@ class UsageTracker {
             totalBytes     : totalBytes.get(),
             totalKB        : Math.round(totalBytes.get() / 1024.0d),
             estimatedTokens: Math.round(totalBytes.get() / 4.0d),
+            totalInputBytes: totalInputBytes.get(),
             boundedReads   : bounded,
             fullReads      : fullReads,
             boundedRatio   : readTotal > 0 ? Math.round(bounded * 100.0d / readTotal) : 0,
@@ -228,16 +245,18 @@ class UsageTracker {
         String todayStr = currentDate.toString()
 
         // Query DB for historical days (excludes today - we'll merge live counts)
-        Map<String, Long> dbCalls = [:] as Map<String, Long>
-        Map<String, Long> dbBytes = [:] as Map<String, Long>
-        long dbTotalCalls = 0
-        long dbTotalBytes = 0
+        Map<String, Long> dbCalls      = [:] as Map<String, Long>
+        Map<String, Long> dbBytes      = [:] as Map<String, Long>
+        Map<String, Long> dbInputBytes = [:] as Map<String, Long>
+        long dbTotalCalls      = 0
+        long dbTotalBytes      = 0
+        long dbTotalInputBytes = 0
         long dbBounded = 0
         long dbFull = 0
 
         withConnection { Connection conn ->
             PreparedStatement ps = conn.prepareStatement(
-                "SELECT tool_name, SUM(call_count) as calls, SUM(response_bytes) as bytes " +
+                "SELECT tool_name, SUM(call_count) as calls, SUM(response_bytes) as bytes, SUM(input_bytes) as ibytes " +
                 "FROM token_usage " +
                 "WHERE context_layer = ? AND recorded_date >= ? AND recorded_date < ? " +
                 "GROUP BY tool_name")
@@ -249,10 +268,13 @@ class UsageTracker {
                 String key  = rs.getString('tool_name')
                 long calls  = rs.getLong('calls')
                 long bytes  = rs.getLong('bytes')
-                dbCalls[key] = calls
-                dbBytes[key] = bytes
-                dbTotalCalls += calls
-                dbTotalBytes += bytes
+                long iBytes = rs.getLong('ibytes')
+                dbCalls[key]      = calls
+                dbBytes[key]      = bytes
+                dbInputBytes[key] = iBytes
+                dbTotalCalls      += calls
+                dbTotalBytes      += bytes
+                dbTotalInputBytes += iBytes
                 // classify
                 String action = key.contains(':') ? key.split(':')[1] : ''
                 if (action in BOUNDED_ACTIONS)       dbBounded += calls
@@ -263,19 +285,22 @@ class UsageTracker {
 
         // Merge today's live in-memory counts
         callCounts.each { String key, AtomicInteger count ->
-            dbCalls[key] = (dbCalls[key] ?: 0L) + count.get()
-            dbBytes[key] = (dbBytes[key] ?: 0L) + (responseBytes[key]?.get() ?: 0L)
+            dbCalls[key]      = (dbCalls[key] ?: 0L) + count.get()
+            dbBytes[key]      = (dbBytes[key] ?: 0L) + (responseBytes[key]?.get() ?: 0L)
+            dbInputBytes[key] = (dbInputBytes[key] ?: 0L) + (inputBytes[key]?.get() ?: 0L)
         }
-        long mergedTotal = dbTotalCalls + totalCalls.get()
-        long mergedBytes = dbTotalBytes + totalBytes.get()
-        long mergedBounded = dbBounded + boundedCalls.get()
-        long mergedFull = dbFull + fullReadCalls.get()
-        long readTotal = mergedBounded + mergedFull
+        long mergedTotal      = dbTotalCalls + totalCalls.get()
+        long mergedBytes      = dbTotalBytes + totalBytes.get()
+        long mergedInputBytes = dbTotalInputBytes + totalInputBytes.get()
+        long mergedBounded    = dbBounded + boundedCalls.get()
+        long mergedFull       = dbFull + fullReadCalls.get()
+        long readTotal        = mergedBounded + mergedFull
 
         List<Map<String, Object>> breakdown = []
         dbCalls.each { String key, Long calls ->
-            long bytes = dbBytes[key] ?: 0L
-            breakdown << ([key: key, calls: calls, responseKB: Math.round(bytes / 1024.0d), estTokens: Math.round(bytes / 4.0d)] as Map<String, Object>)
+            long bytes   = dbBytes[key] ?: 0L
+            long inBytes = dbInputBytes[key] ?: 0L
+            breakdown << ([key: key, calls: calls, responseKB: Math.round(bytes / 1024.0d), estTokens: Math.round(bytes / 4.0d), inputKB: Math.round(inBytes / 1024.0d)] as Map<String, Object>)
         }
         breakdown.sort { Map a, Map b -> (b.calls as long) <=> (a.calls as long) }
 
@@ -287,6 +312,7 @@ class UsageTracker {
             totalBytes      : mergedBytes,
             totalKB         : Math.round(mergedBytes / 1024.0d),
             estimatedTokens : Math.round(mergedBytes / 4.0d),
+            totalInputBytes : mergedInputBytes,
             boundedReads    : mergedBounded,
             fullReads       : mergedFull,
             boundedRatio    : readTotal > 0 ? Math.round(mergedBounded * 100.0d / readTotal) : 0,
@@ -311,11 +337,12 @@ class UsageTracker {
                 // session_ids never conflict) while correctly refreshing totals for periodic
                 // flushes within the same session (same session_id -> UNIQUE index triggers replace).
                 PreparedStatement ins = conn.prepareStatement(
-                    "INSERT OR REPLACE INTO token_usage (recorded_date, session_id, tool_name, call_count, estimated_tokens, response_bytes, context_layer) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)")
+                    "INSERT OR REPLACE INTO token_usage (recorded_date, session_id, tool_name, call_count, estimated_tokens, response_bytes, input_bytes, context_layer) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 
                 callCounts.each { String key, AtomicInteger count ->
                     long bytes    = responseBytes[key]?.get() ?: 0L
+                    long inBytes  = inputBytes[key]?.get() ?: 0L
                     int estTokens = (int) Math.round(bytes / 4.0d)
                     ins.setString(1, dateStr)
                     ins.setString(2, sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm')))
@@ -323,7 +350,8 @@ class UsageTracker {
                     ins.setInt(4, count.get())
                     ins.setInt(5, estTokens)
                     ins.setLong(6, bytes)
-                    ins.setString(7, LAYER)
+                    ins.setLong(7, inBytes)
+                    ins.setString(8, LAYER)
                     ins.addBatch()
                 }
                 ins.executeBatch()
@@ -344,20 +372,23 @@ class UsageTracker {
         String todayStr = currentDate.toString()
         withConnection { Connection conn ->
             PreparedStatement ps = conn.prepareStatement(
-                "SELECT tool_name, SUM(call_count) as calls, SUM(response_bytes) as bytes " +
+                "SELECT tool_name, SUM(call_count) as calls, SUM(response_bytes) as bytes, SUM(input_bytes) as ibytes " +
                 "FROM token_usage WHERE recorded_date = ? AND context_layer = ? GROUP BY tool_name")
             ps.setString(1, todayStr)
             ps.setString(2, LAYER)
             ResultSet rs = ps.executeQuery()
             int loaded = 0
             while (rs.next()) {
-                String key = rs.getString('tool_name')
-                int calls  = rs.getInt('calls')
-                long bytes = rs.getLong('bytes')
+                String key  = rs.getString('tool_name')
+                int calls   = rs.getInt('calls')
+                long bytes  = rs.getLong('bytes')
+                long iBytes = rs.getLong('ibytes')
                 callCounts.computeIfAbsent(key, { k -> new AtomicInteger(0) }).addAndGet(calls)
                 responseBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(bytes)
+                inputBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(iBytes)
                 totalCalls.addAndGet(calls)
                 totalBytes.addAndGet(bytes)
+                totalInputBytes.addAndGet(iBytes)
                 String action = key.contains(':') ? key.split(':')[1] : ''
                 if (action in BOUNDED_ACTIONS)       boundedCalls.addAndGet(calls)
                 else if (action in FULL_READ_ACTIONS) fullReadCalls.addAndGet(calls)
@@ -380,8 +411,14 @@ class UsageTracker {
                     call_count       INTEGER DEFAULT 1,
                     estimated_tokens INTEGER DEFAULT 0,
                     response_bytes   INTEGER DEFAULT 0,
+                    input_bytes      INTEGER DEFAULT 0,
                     context_layer    TEXT DEFAULT 'other'
                 )""")
+            // Migrate: add input_bytes to any pre-existing table that lacks the column
+            try {
+                conn.createStatement().execute(
+                    'ALTER TABLE token_usage ADD COLUMN input_bytes INTEGER DEFAULT 0')
+            } catch (Exception ignored) {}
             // UNIQUE constraint required for INSERT OR REPLACE: one row per
             // (date, tool, layer, session). Multiple sessions on the same day
             // accumulate independently; periodic flushes within a session update in-place.
@@ -396,12 +433,9 @@ class UsageTracker {
     }
 
     private void withConnection(Closure action) {
-        Class.forName('org.sqlite.JDBC')
-        Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
-        try {
-            action(conn)
-        } finally {
-            conn.close()
+        if (!dbConn) throw new IllegalStateException('UsageTracker: DB connection not available')
+        synchronized (dbLock) {
+            action(dbConn)
         }
     }
 
@@ -418,8 +452,10 @@ class UsageTracker {
 
             callCounts.clear()
             responseBytes.clear()
+            inputBytes.clear()
             totalCalls.set(0)
             totalBytes.set(0)
+            totalInputBytes.set(0)
             boundedCalls.set(0)
             fullReadCalls.set(0)
             currentDate = today

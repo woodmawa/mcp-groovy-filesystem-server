@@ -50,7 +50,7 @@ class ToolsService extends AbstractFileService implements ToolHandler {
             name       : 'tools',
             description: '''\
 Developer toolchain. Actions:
-- git(subcommand, args[], options.workingDir, options.message): status|log|diff|add|commit|push|pull|branch|stash|clone|fetch|checkout|merge|show|tag|remote|reset|revert. IMPORTANT: commit requires options.message or process hangs.
+- git(subcommand, args[], options.workingDir, options.message): common git commands. IMPORTANT: commit requires options.message or process hangs.
 - gradle(subcommand, args[], options.workingDir, options.timeout): build|test|clean|compileGroovy|compileJava|bootRun|bootJar|jar|dependencies|tasks|check|assemble|publish|wrapper
 - mvn(subcommand, args[]): package|test|clean|install|verify|compile|dependency:tree
 - npm(subcommand, args[]): install|build|test|run|start|lint|audit

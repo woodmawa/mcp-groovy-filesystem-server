@@ -58,8 +58,8 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 Write, append, or modify file content. Actions:
 - write(path, content): overwrite entire file
 - append(path, content): append to end
-- replace(path, options.oldText, options.newText): replace ONE unique string. Fails with nearest_match hint if not found.
-- patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed. ALWAYS read exact lines first.
+- replace(path, options.oldText, options.newText): replace ONE unique string. Not-found returns nearest_match hint; duplicate returns line numbers.
+- patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed, both startLine AND endLine required. ALWAYS read exact lines first.
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
 - chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
 All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.
@@ -338,6 +338,19 @@ SKILL: For worked examples read:
             int count = countOccurrences(snapshot, oldText)
             if (count == 0) validationErrors << ("Entry ${i}: oldText not found: '${sanitize(oldText.take(60))}'" as String)
             if (count > 1)  validationErrors << ("Entry ${i}: oldText not unique (${count} occurrences): '${sanitize(oldText.take(60))}'" as String)
+        }
+        // Check for content overlap: if any oldText is a substring of another, sequential apply will corrupt
+        if (!validationErrors) {
+            List<String> oldTexts = replacements.collect { (it.oldText as String) ?: '' }.findAll { it }
+            for (int i = 0; i < oldTexts.size() - 1; i++) {
+                for (int j = i + 1; j < oldTexts.size(); j++) {
+                    if (oldTexts[i].contains(oldTexts[j])) {
+                        validationErrors << ("Entry ${j}: oldText is a substring of entry ${i} — replacements overlap in content and will interact unexpectedly" as String)
+                    } else if (oldTexts[j].contains(oldTexts[i])) {
+                        validationErrors << ("Entry ${i}: oldText is a substring of entry ${j} — replacements overlap in content and will interact unexpectedly" as String)
+                    }
+                }
+            }
         }
         if (validationErrors) {
             return McpResponse.error(requestId, -32602,
