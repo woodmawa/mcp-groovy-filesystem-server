@@ -36,6 +36,9 @@ mcp:
     # v0.0.7: Chunked read threshold (KB) - files larger than this are auto-chunked
     read-chunk-threshold-kb: 300
 
+    # v0.7.25: Soft warning threshold for large read responses (~3750 tokens at 15KB)
+    large-response-warn-chars: 15000
+
     # v0.0.7: Default file pattern for project/content searches
     default-file-pattern: '.*\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$'
 

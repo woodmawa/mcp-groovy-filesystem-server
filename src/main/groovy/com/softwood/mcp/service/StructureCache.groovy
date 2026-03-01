@@ -37,6 +37,9 @@ class StructureCache {
 
     // path -> CacheEntry  (holds both structure result AND hash)
     private final Map<String, CacheEntry> cache = new ConcurrentHashMap<>()
+    // Per-path locks — only threads competing for the SAME file block each other.
+    // Prevents duplicate (wasted) computation when two threads miss the cache simultaneously.
+    private final ConcurrentHashMap<String, Object> computeLocks = new ConcurrentHashMap<>()
     // Access-order tracking for LRU eviction (LinkedHashMap under a simple lock)
     private final LinkedHashMap<String, Long> accessOrder = new LinkedHashMap<String, Long>(16, 0.75f, true) {
         @Override
@@ -69,21 +72,36 @@ class StructureCache {
             return hit
         }
 
-        // Cache miss or stale - compute structure
-        log.debug("Structure cache MISS: {}", normalizedPath)
-        Map<String, Object> result = scanner.scan(file)
+        // Cache miss or stale — acquire per-path lock so only one thread computes for this file.
+        // Threads competing for different files are unaffected.
+        Object pathLock = computeLocks.computeIfAbsent(normalizedPath) { new Object() }
+        synchronized (pathLock) {
+            // Double-check: another thread may have populated the cache while we waited
+            CacheEntry recheck = cache.get(normalizedPath)
+            if (recheck != null && recheck.lastModified == currentModified && recheck.result != null) {
+                touchLru(normalizedPath, currentModified)
+                log.debug("Structure cache HIT (after lock): {}", normalizedPath)
+                Map<String, Object> hit2 = new LinkedHashMap<>(recheck.result)
+                hit2.put('cached', (Object) true)
+                hit2.put('cacheKey', (Object) normalizedPath)
+                return hit2
+            }
 
-        // Store in cache - preserve any existing hash if file hasn't changed
-        evictIfNeeded()
-        CacheEntry existing = cache.get(normalizedPath)
-        String preservedHash = (existing != null && existing.lastModified == currentModified) ? existing.hash : null
-        cache.put(normalizedPath, new CacheEntry(lastModified: currentModified, result: result, hash: preservedHash))
-        touchLru(normalizedPath, currentModified)
+            log.debug("Structure cache MISS: {}", normalizedPath)
+            Map<String, Object> result = scanner.scan(file)
 
-        Map<String, Object> miss = new LinkedHashMap<>(result)
-        miss.put('cached', (Object) false)
-        miss.put('cacheKey', (Object) normalizedPath)
-        return miss
+            // Store in cache - preserve any existing hash if file hasn't changed
+            evictIfNeeded()
+            CacheEntry existing = cache.get(normalizedPath)
+            String preservedHash = (existing != null && existing.lastModified == currentModified) ? existing.hash : null
+            cache.put(normalizedPath, new CacheEntry(lastModified: currentModified, result: result, hash: preservedHash))
+            touchLru(normalizedPath, currentModified)
+
+            Map<String, Object> miss = new LinkedHashMap<>(result)
+            miss.put('cached', (Object) false)
+            miss.put('cacheKey', (Object) normalizedPath)
+            return miss
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -109,18 +127,29 @@ class StructureCache {
             return entry.hash
         }
 
-        // Compute hash
-        log.debug("Hash cache MISS: {}", normalizedPath)
-        String hash = computeHash(file)
+        // Acquire per-path lock — prevents duplicate hash computation for the same file.
+        Object pathLock = computeLocks.computeIfAbsent(normalizedPath) { new Object() }
+        synchronized (pathLock) {
+            // Double-check after acquiring lock
+            CacheEntry recheck = cache.get(normalizedPath)
+            if (recheck != null && recheck.lastModified == currentModified && recheck.hash != null) {
+                touchLru(normalizedPath, currentModified)
+                log.debug("Hash cache HIT (after lock): {}", normalizedPath)
+                return recheck.hash
+            }
 
-        // Store - preserve existing structure result if present and still valid
-        evictIfNeeded()
-        CacheEntry existing = cache.get(normalizedPath)
-        Map<String, Object> preservedResult = (existing != null && existing.lastModified == currentModified) ? existing.result : null
-        cache.put(normalizedPath, new CacheEntry(lastModified: currentModified, result: preservedResult, hash: hash))
-        touchLru(normalizedPath, currentModified)
+            log.debug("Hash cache MISS: {}", normalizedPath)
+            String hash = computeHash(file)
 
-        return hash
+            // Store - preserve existing structure result if present and still valid
+            evictIfNeeded()
+            CacheEntry existing = cache.get(normalizedPath)
+            Map<String, Object> preservedResult = (existing != null && existing.lastModified == currentModified) ? existing.result : null
+            cache.put(normalizedPath, new CacheEntry(lastModified: currentModified, result: preservedResult, hash: hash))
+            touchLru(normalizedPath, currentModified)
+
+            return hash
+        }
     }
 
     // -----------------------------------------------------------------------

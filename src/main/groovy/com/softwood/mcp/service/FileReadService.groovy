@@ -44,6 +44,9 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Value('${mcp.filesystem.read-chunk-threshold-kb:300}')
     int readChunkThresholdKb
 
+    @Value('${mcp.filesystem.large-response-warn-chars:15000}')
+    int largeResponseWarnChars
+
     FileReadService(PathService pathService) {
         super(pathService)
     }
@@ -72,7 +75,7 @@ Read files and query filesystem metadata. Actions:
 - normalize(path): Windows/WSL path conversion
 - diff(path, options.compareTo): line-by-line diff of two files
 - checksum(path, options.algorithm=SHA-256): file hash
-- structure(path): code/markdown outline with line AND endLine per entry - FILE path only, NOT directory
+- structure(path): code/markdown outline with line AND endLine per entry - FILE path only, NOT directory. options.compact=true returns methods only (no endLine, ~50% smaller)
 - get_method(path, options.method): returns complete named method body in ONE call - preferred over structure+range for editing
 - chunk_read(options.sessionId, options.chunkIndex): retrieve one chunk from a paged read
 - finalise_read(options.sessionId): free chunk session when all chunks consumed
@@ -104,7 +107,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                                   algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
-                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep']
+                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (structure: methods only, no endLine)']
                               ]]
                 ],
                 required  : ['action']
@@ -137,7 +140,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 case 'normalize'   : return doNormalize(path, requestId)
                 case 'diff'        : return doDiff(path, options, requestId)
                 case 'checksum'    : return doChecksum(path, options, requestId)
-                case 'structure'   : return doStructure(path, requestId)
+                case 'structure'   : return doStructure(path, options, requestId)
                 case 'get_method'  : return doGetMethod(path, options, requestId)
                 case 'chunk_read'  : return doChunkRead(options, requestId)
                 case 'finalise_read': return doFinaliseRead(options, requestId)
@@ -191,18 +194,14 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
         String content = new File(normalized).getText(encoding)
         String hash = structureCache.getHash(normalized)
+        Map<String, Object> resp
         if (isCompact(options)) {
-            return textResponse(requestId, [
-                content: sanitize(content),
-                lines  : content.count('\n') + 1,
-                file_content_hash: hash
-            ])
+            resp = [content: sanitize(content), lines: content.count('\n') + 1, file_content_hash: hash] as Map<String, Object>
+        } else {
+            resp = [action: 'read', path: normalized, content: sanitize(content), size: content.length(), file_content_hash: hash] as Map<String, Object>
         }
-        return textResponse(requestId, [
-            action: 'read', path: normalized,
-            content: sanitize(content), size: content.length(),
-            file_content_hash: hash
-        ])
+        maybeAddSizeWarning(resp, content.length())
+        return textResponse(requestId, resp)
     }
 
     private McpResponse doHead(String path, Map<String, Object> options, Object requestId) {
@@ -219,15 +218,16 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             }
         }
 
+        String joinedHead = result.join('\n')
+        String hashHead = structureCache.getHash(normalized)
+        Map<String, Object> respHead
         if (isCompact(options)) {
-            return textResponse(requestId, [content: result.join('\n'), lines: result.size(),
-                file_content_hash: structureCache.getHash(normalized)])
+            respHead = [content: joinedHead, lines: result.size(), file_content_hash: hashHead] as Map<String, Object>
+        } else {
+            respHead = [action: 'head', path: normalized, lines: result.size(), content: joinedHead, file_content_hash: hashHead] as Map<String, Object>
         }
-        return textResponse(requestId, [
-            action: 'head', path: normalized,
-            lines: result.size(), content: result.join('\n'),
-            file_content_hash: structureCache.getHash(normalized)
-        ])
+        maybeAddSizeWarning(respHead, joinedHead.length())
+        return textResponse(requestId, respHead)
     }
 
     private McpResponse doTail(String path, Map<String, Object> options, Object requestId) {
@@ -277,17 +277,19 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 result << truncateAndSanitize(line)
             }
         }
+        String joinedRange = result.join('\n')
+        String hashRange = structureCache.getHash(normalized)
+        Map<String, Object> respRange
         if (isCompact(options)) {
-            return textResponse(requestId, [content: result.join('\n'), lines: result.size(),
-                startLine: startLine, endLine: startLine + result.size() - 1,
-                file_content_hash: structureCache.getHash(normalized)])
+            respRange = [content: joinedRange, lines: result.size(), startLine: startLine,
+                         endLine: startLine + result.size() - 1, file_content_hash: hashRange] as Map<String, Object>
+        } else {
+            respRange = [action: 'range', path: normalized, startLine: startLine,
+                         endLine: startLine + result.size() - 1, lines: result.size(),
+                         content: joinedRange, file_content_hash: hashRange] as Map<String, Object>
         }
-        return textResponse(requestId, [
-            action: 'range', path: normalized,
-            startLine: startLine, endLine: startLine + result.size() - 1,
-            lines: result.size(), content: result.join('\n'),
-            file_content_hash: structureCache.getHash(normalized)
-        ])
+        maybeAddSizeWarning(respRange, joinedRange.length())
+        return textResponse(requestId, respRange)
     }
 
     private McpResponse doGrep(String path, Map<String, Object> options, Object requestId) {
@@ -579,7 +581,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         return [ext: ext, structure: structure] as Map<String, Object>
     }
 
-    private McpResponse doStructure(String path, Object requestId) {
+    private McpResponse doStructure(String path, Map<String, Object> options, Object requestId) {
         String normalized = pathService.normalizePath(path)
         if (!isPathAllowed(normalized)) {
             return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(normalized)}")
@@ -598,7 +600,19 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         }
 
         Map<String, Object> result = structureCache.getStructure(normalized)
-        List entries = result.structure as List
+        List<Map<String, Object>> entries = result.structure as List<Map<String, Object>>
+
+        if (isCompact(options)) {
+            // Compact: methods only, no endLine — ~50% smaller for files with many fields/classes
+            List<Map<String, Object>> methods = entries
+                .findAll { Map<String, Object> e -> e.type == 'method' }
+                .collect { Map<String, Object> e ->
+                    [line: e.line, type: e.type, content: e.content] as Map<String, Object>
+                }
+            return textResponse(requestId, [structure: methods, count: methods.size(),
+                                            file_content_hash: structureCache.getHash(normalized)])
+        }
+
         return textResponse(requestId, [action: 'structure', path: normalized, ext: result.ext, count: entries.size(),
                                         structure: entries, scanner: result.scanner, cached: result.cached])
     }
@@ -675,5 +689,21 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
         chunkBufferService.finaliseRead(sessionId)
         return textResponse(requestId, [action: 'finalise_read', sessionId: sessionId, success: true])
+    }
+
+    // -----------------------------------------------------------------------
+    // Size-warning helper
+    // -----------------------------------------------------------------------
+
+    /** Appends a soft _sizeWarning to a response map when content is large enough to
+     *  meaningfully consume context window budget. Threshold configurable via
+     *  mcp.filesystem.large-response-warn-chars (default 15000 chars ≈ 3750 tokens). */
+    private void maybeAddSizeWarning(Map<String, Object> response, int contentLength) {
+        if (contentLength > largeResponseWarnChars) {
+            long kb = Math.round(contentLength / 1024.0f)
+            long tokens = Math.round(contentLength / 4.0f)
+            response._sizeWarning = ("NOTE: response is ${kb}KB (~${tokens} tokens). " +
+                "Consider head/range/grep for targeted reads to preserve context window." as String)
+        }
     }
 }
