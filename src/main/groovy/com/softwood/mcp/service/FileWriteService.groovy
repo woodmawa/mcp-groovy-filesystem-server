@@ -114,7 +114,7 @@ SKILL: For worked examples read:
             String action  = arguments.action as String
             String path    = arguments.path as String
             String content = arguments.content as String
-            Map<String, Object> options = (arguments.options as Map<String, Object>) ?: [:] as Map<String, Object>
+            Map<String, Object> options = normaliseOptions(arguments.options)
 
             McpResponse response
             switch (action) {

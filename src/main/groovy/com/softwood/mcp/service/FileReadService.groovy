@@ -65,7 +65,7 @@ Read files and query filesystem metadata. Actions:
 - head(path, options.lines=50): first N lines
 - tail(path, options.lines=50): last N lines
 - range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
-- grep(path, options.pattern, options.maxMatches=10, options.contextLines=0): regex matches; set contextLines>0 for before/after context on each match
+- grep(path, options.pattern, options.maxMatches=10, options.contextLines=0): regex matches; FILE path only, NOT directory. set contextLines>0 for before/after context
 - multi(options.paths[]): read up to 10 files in parallel - cheapest multi-file read
 - info(path): file/dir metadata
 - summary(path): line count + size only - NO content, cheapest existence check
@@ -76,7 +76,7 @@ Read files and query filesystem metadata. Actions:
 - diff(path, options.compareTo): line-by-line diff of two files
 - checksum(path, options.algorithm=SHA-256): file hash
 - structure(path): code/markdown outline with line AND endLine per entry - FILE path only, NOT directory. options.compact=true returns methods only (no endLine, ~50% smaller)
-- get_method(path, options.method): returns complete named method body in ONE call - preferred over structure+range for editing
+- get_method(path, options.method): returns complete named method body - FILE path only, NOT directory. Preferred over structure+range for editing
 - chunk_read(options.sessionId, options.chunkIndex): retrieve one chunk from a paged read
 - finalise_read(options.sessionId): free chunk session when all chunks consumed
 NOTE: Use summary before read on unknown files to check size. Batch reads with multi.

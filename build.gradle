@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.25'  // v0.7.25: response-size warning, StructureCache per-entry lock, structure compact mode
+version = '0.7.26'  // v0.7.26: patch options-as-string crash fix, grep/get_method FILE-only description
 
 java {
     toolchain {

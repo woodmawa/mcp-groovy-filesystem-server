@@ -2,6 +2,7 @@ package com.softwood.mcp.service
 
 import com.softwood.mcp.model.McpResponse
 import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Value
@@ -268,6 +269,27 @@ abstract class AbstractFileService {
     // ========================================================================
     // SHARED HELPERS
     // ========================================================================
+
+    /**
+     * Normalise options: if the caller passed options as a pre-serialised JSON string
+     * (e.g. from Claude Code MCP serialisation), parse it into a Map first.
+     * Returns an empty map if raw is null/empty or cannot be parsed.
+     */
+    protected static Map<String, Object> normaliseOptions(Object raw) {
+        if (raw == null) return [:]
+        if (raw instanceof Map) return (Map<String, Object>) raw
+        if (raw instanceof String) {
+            String s = ((String) raw).trim()
+            if (!s) return [:]
+            try {
+                Object parsed = new JsonSlurper().parseText(s)
+                return (parsed instanceof Map) ? (Map<String, Object>) parsed : [:]
+            } catch (Exception ignored) {
+                return [:]
+            }
+        }
+        return [:]
+    }
 
     /**
      * Helper to create properly typed Map for CompileStatic
