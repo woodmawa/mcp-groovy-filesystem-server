@@ -1,8 +1,19 @@
-# mcp-groovy-filesystem-server v0.7.35
+# mcp-groovy-filesystem-server v0.7.36
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.36
+
+**Endpoint review + stdio hardening (v0.7.36):**
+
+- **CommandWhitelistConfig refactor:** Whitelist configuration hardened and cleaned up — pattern matching improved for multi-line scripts.
+- **ToolsService git status cap:** `doProjectScan` git status output capped at 2,000 chars (FS-4 follow-on) — consistent across both the dedicated git tool and project_scan.
+- **UsageTracker WAL per-op connection:** Busy timeout and WAL pragma now set on every operation, not just flush. Eliminates residual `SQLITE_BUSY` edge cases under concurrent access.
+- **application.yml stdio profile cleanup:** `web-application-type` now absent from stdio profile stanza (inherits `none` correctly without explicit override).
 
 ---
 
@@ -483,6 +494,11 @@ server_lifecycle action=status
 ## Version History
 | Version | Highlights |
 |---------|-----------|
+| **0.7.36** | CommandWhitelistConfig hardened; ToolsService git-status cap consistent; UsageTracker WAL per-op; stdio profile yml cleanup |
+| **0.7.35** | FS-2 duplicate maxLines guard removed; FS-4 git status cap 2K in doProjectScan |
+| **0.7.34** | FIX-A/B/C/D/H: doRead 40K cap, doGetMethod char cap, structure entry cap, list/children size cap, stdout/stderr truncation flags |
+| **0.7.33** | head/tail/range/grep hard caps 40K; PowerShell multiline whitelist fix |
+| **0.7.32** | SQLite busy_timeout + WAL; statement leak fixes in UsageTracker |
 | **0.7.31** | Response-size discipline: doRead 60KB soft cap (FIX-15), doMulti 1MB aggregate cap (FIX-16), FileSearchService genuine stream short-circuit (FIX-17), @Deprecated createReadSession(String,String), tool description improvements |
 | **0.7.30** | 14 performance/robustness fixes: size guards on replace/multi_replace, O(nxm) nearest-match removed, stdout capped in loop, zero-copy estimateResponseSize, virtual threads, UsageTracker WAL per-op connections, stream limit short-circuit, doDiff size guard, sessionCallCache bound, shared CompilerConfig, evict lock order |
 | **0.7.29** | LF normalisation on all write paths (doWrite/doReplace/doPatch) - eliminates Windows CRLF/Linux LF split permanently |
