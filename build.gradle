@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.26'  // v0.7.26: patch options-as-string crash fix, grep/get_method FILE-only description
+version = '0.7.30'  // v0.7.30: all 14 performance fixes from cd-performance-assessment.md - size guards, O(nm) nearest-match removal, stdout cap-in-loop, zero-copy telemetry, virtual threads, WAL connection, stream limit, diff guard, cache bound, shared CompilerConfig, evict lock order
 
 java {
     toolchain {

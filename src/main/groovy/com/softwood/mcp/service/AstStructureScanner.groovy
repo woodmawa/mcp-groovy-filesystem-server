@@ -32,6 +32,11 @@ import java.util.regex.Pattern
 @CompileStatic
 class AstStructureScanner {
 
+    // FIX-13: shared static instance - CompilerConfiguration is read-only after init, safe to share across threads
+    private static final CompilerConfiguration SHARED_COMPILER_CONFIG = new CompilerConfiguration().tap {
+        setTolerance(10) // allow some errors - we want partial results
+    }
+
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
@@ -65,11 +70,10 @@ class AstStructureScanner {
 
     private List<Map<String, Object>> scanGroovyAst(File file) {
         List<Map<String, Object>> entries = []
+        Set<String> seen = new HashSet<String>()
 
-        CompilerConfiguration config = new CompilerConfiguration()
-        config.setTolerance(10) // allow some errors - we want partial results
-
-        CompilationUnit unit = new CompilationUnit(config)
+        // FIX-13: reuse shared config instance (CompilationUnit is still per-call as it is stateful)
+        CompilationUnit unit = new CompilationUnit(SHARED_COMPILER_CONFIG)
         unit.addSource(file)
 
         // We only need up to CONVERSION (builds AST) - don't do semantic analysis
@@ -130,7 +134,14 @@ class AstStructureScanner {
             ((int) a.line) <=> ((int) b.line)
         }
 
-        return entries
+        // Deduplicate: inner classes are visited via both the parent cn.getInnerClasses()
+        // and as top-level entries in module.getClasses(), producing duplicate entries.
+        List<Map<String, Object>> deduped = []
+        entries.each { Map<String, Object> e ->
+            String key = "${e.line}:${e.type}:${e.content}"
+            if (seen.add(key)) deduped << e
+        }
+        return deduped
     }
 
     private static Map<String, Object> classEntry(ClassNode cn) {

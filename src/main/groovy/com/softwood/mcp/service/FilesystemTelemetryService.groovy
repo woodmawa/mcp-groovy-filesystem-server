@@ -4,6 +4,7 @@ import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
+import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import java.sql.Connection
 import java.sql.DriverManager
@@ -43,6 +44,9 @@ class FilesystemTelemetryService {
         t
     }
 
+    /** Persistent JDBC connection — shared by the single async writer thread (no pool needed). */
+    private volatile Connection dbConn = null
+
     /** Repeat-call detection: "toolName:argsHash" -> first-call timestamp, per session */
     private final Map<String, String> sessionCallCache = new ConcurrentHashMap<>()
     private volatile String trackedSessionId = null
@@ -74,7 +78,8 @@ class FilesystemTelemetryService {
                 String argsHash  = buildArgsHash(args)
                 String cacheKey  = "${toolName}:${argsHash}"
                 boolean isRepeat = sessionCallCache.containsKey(cacheKey)
-                if (!isRepeat) sessionCallCache.put(cacheKey, new Date().toInstant().toString())
+                // FIX-12: bound cache to 1000 entries to prevent unbounded growth in long sessions
+                if (!isRepeat && sessionCallCache.size() < 1000) sessionCallCache.put(cacheKey, new Date().toInstant().toString())
 
                 int tokenEst = Math.round(responseChars / 4) as int
 
@@ -106,6 +111,19 @@ class FilesystemTelemetryService {
     // Lifecycle
     // -------------------------------------------------------------------------
 
+    @PostConstruct
+    void init() {
+        if (!dbPath) return   // persistence not configured
+        try {
+            Class.forName('org.sqlite.JDBC')
+            dbConn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
+            dbConn.autoCommit = true
+            log.debug('FilesystemTelemetryService: persistent JDBC connection opened at {}', dbPath)
+        } catch (Exception e) {
+            log.debug('FilesystemTelemetryService: DB connection failed (non-fatal): {}', e.message)
+        }
+    }
+
     @PreDestroy
     void shutdown() {
         asyncWriter.shutdown()
@@ -115,6 +133,7 @@ class FilesystemTelemetryService {
             asyncWriter.shutdownNow()
             Thread.currentThread().interrupt()
         }
+        try { dbConn?.close() } catch (Exception ignored) {}
     }
 
     // -------------------------------------------------------------------------
@@ -122,12 +141,17 @@ class FilesystemTelemetryService {
     // -------------------------------------------------------------------------
 
     private void withConnection(Closure work) {
-        Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
-        try {
-            conn.autoCommit = true
-            work(conn)
-        } finally {
-            conn.close()
+        if (dbConn) {
+            work(dbConn)
+        } else {
+            // Fallback: open a one-off connection if persistent connection failed at init
+            Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
+            try {
+                conn.autoCommit = true
+                work(conn)
+            } finally {
+                conn.close()
+            }
         }
     }
 

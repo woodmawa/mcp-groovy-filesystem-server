@@ -4,12 +4,15 @@ import com.softwood.mcp.model.McpResponse
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
+import java.nio.charset.Charset
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.util.regex.Pattern
 
 /**
@@ -37,6 +40,9 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 
     @Autowired
     StructureCache structureCache
+
+    @Value('${mcp.filesystem.read-chunk-threshold-kb:300}')
+    int replaceChunkThresholdKb
 
     private static final Set<String> MUTATING_ACTIONS = ['write','append','replace','patch','multi_replace','finalise_write'] as Set
 
@@ -73,7 +79,7 @@ SKILL: For worked examples read:
                     action : [type: 'string',
                               enum: ['write','append','replace','patch','multi_replace',
                                      'chunk_write','finalise_write','abort_write']],
-                    path   : [type: 'string', description: 'Target file path (required for all except abort_write)'],
+                    path   : [type: 'string', description: 'Target file path (required for all actions except abort_write, which does not use path)'],
                     content: [type: 'string', description: 'Content for write/append/chunk_write'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
@@ -174,8 +180,13 @@ SKILL: For worked examples read:
         if (mkdirs && target.parent) Files.createDirectories(target.parent)
         if (backup && Files.exists(target)) makeBackup(target)
 
-        atomicWrite(target, body.getBytes(encoding))
-        log.info("write: {} bytes -> {} (atomic)", body.length(), normalized)
+        // Normalise to LF for source files — ensures Windows CRLF never creeps in,
+        // keeping line endings consistent across Windows and Linux for all source types.
+        String finalBody = shouldNormaliseLf(target)
+            ? body.replace('\r\n', '\n').replace('\r', '\n')
+            : body
+        atomicWrite(target, finalBody.getBytes(encoding))
+        log.info("write: {} bytes -> {} (atomic, endings: {})", finalBody.length(), normalized, shouldNormaliseLf(target) ? 'LF' : 'preserved')
 
         String hash = fileHash(target)
         if (isWriteCompact(options)) {
@@ -228,6 +239,13 @@ SKILL: For worked examples read:
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
 
+        // FIX-1: size guard — full-file load for replace is unavoidable, so reject files above threshold
+        long fileSizeKb = Files.size(Paths.get(normalized)).intdiv(1024)
+        if (fileSizeKb > replaceChunkThresholdKb) {
+            return McpResponse.error(requestId, -32602,
+                ("replace: file is ${fileSizeKb}KB which exceeds threshold ${replaceChunkThresholdKb}KB. Use patch (line-range edit) for large files." as String))
+        }
+
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
         String rawContent = new String(rawBytes, encoding)
         boolean hasCrLf   = rawContent.contains('\r\n')
@@ -249,18 +267,12 @@ SKILL: For worked examples read:
             int nearestLine = -1
             if (firstLine) {
                 int bestScore = Integer.MAX_VALUE
-                List<String> fileLines = new ArrayList<String>(Arrays.asList(current.split('\n', -1)))
+                // FIX-3: cap scan to 500 lines; removed O(n*m) toSet().intersect() second pass
+                List<String> fileLines = new ArrayList<String>(Arrays.asList(current.split('\n', -1))).take(500) as List<String>
                 fileLines.eachWithIndex { String fl, int idx ->
                     String trimFl = fl.trim()
-                    if (trimFl.contains(firstLine) || firstLine.contains(trimFl)) {
+                    if (trimFl.containsIgnoreCase(firstLine) || firstLine.containsIgnoreCase(trimFl)) {
                         int score = Math.abs(trimFl.length() - firstLine.length())
-                        if (score < bestScore) { bestScore = score; nearestContent = fl; nearestLine = idx + 1 }
-                    }
-                }
-                if (nearestLine < 0 && firstLine.length() <= 80) {
-                    fileLines.eachWithIndex { String fl, int idx ->
-                        int common = fl.trim().toSet().intersect(firstLine.toSet()).size()
-                        int score  = firstLine.length() - common
                         if (score < bestScore) { bestScore = score; nearestContent = fl; nearestLine = idx + 1 }
                     }
                 }
@@ -289,13 +301,15 @@ SKILL: For worked examples read:
         }
 
         String updated = current.replace(oldText, newText)
-        if (hasCrLf) updated = updated.replace('\n', '\r\n')
-
+        // For non-source files, restore original CRLF endings; source files stay LF.
         Path target = Paths.get(normalized)
+        if (hasCrLf && !shouldNormaliseLf(target)) updated = updated.replace('\n', '\r\n')
+
         if (backup) makeBackup(target)
         atomicWrite(target, updated.getBytes(encoding))
 
-        log.debug("replace: 1 occurrence in {} (line endings: {})", normalized, hasCrLf ? 'CRLF' : 'LF')
+        log.debug("replace: 1 occurrence in {} (line endings: {})", normalized,
+            shouldNormaliseLf(target) ? 'LF (normalised)' : (hasCrLf ? 'CRLF (preserved)' : 'LF'))
         String hash = fileHash(target)
         if (isWriteCompact(options)) {
             return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
@@ -315,6 +329,13 @@ SKILL: For worked examples read:
         boolean backup      = options.backup as boolean ?: false
         String encoding     = options.encoding as String ?: 'UTF-8'
         String expectedHash = options.expectedHash as String
+
+        // FIX-2: size guard — reject files above threshold before heap-loading
+        long fileSizeKb = Files.size(Paths.get(normalized)).intdiv(1024)
+        if (fileSizeKb > replaceChunkThresholdKb) {
+            return McpResponse.error(requestId, -32602,
+                ("multi_replace: file is ${fileSizeKb}KB which exceeds threshold ${replaceChunkThresholdKb}KB. Use patch (line-range edit) for large files." as String))
+        }
 
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
         String rawContent = new String(rawBytes, encoding)
@@ -514,11 +535,12 @@ SKILL: For worked examples read:
         int expectedResultLines = originalLineCount + expectedDelta
 
         // ---- Phase 3: Atomic write via temp file + rename ----
-        // Reassemble: join content lines, then restore trailing newline if file had one
-        String lineEnding  = hasCrLf ? '\r\n' : '\n'
-        String assembled   = lines.join(lineEnding) + (hadTrailingNewline ? lineEnding : '')
+        // Reassemble with LF for source files; restore CRLF only for non-source files.
+        // This permanently eliminates Windows CRLF creep for .groovy/.java/etc.
+        Path targetPath   = Paths.get(normalized)
+        String lineEnding = (hasCrLf && !shouldNormaliseLf(targetPath)) ? '\r\n' : '\n'
+        String assembled  = lines.join(lineEnding) + (hadTrailingNewline ? lineEnding : '')
         byte[] resultBytes = assembled.getBytes(encoding)
-        Path targetPath    = Paths.get(normalized)
         try {
             if (backup) makeBackup(targetPath)
             atomicWrite(targetPath, resultBytes)
@@ -620,14 +642,32 @@ SKILL: For worked examples read:
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean mkdirs    = options.mkdirs as boolean ?: true
 
-        String assembled = chunkBufferService.finaliseWrite(sessionId, totalChunks)
+        // S-I4 FIX: stream chunks directly to a temp file via BufferedWriter — no full-String join
+        Collection<String> chunks = chunkBufferService.getWriteChunksAndRelease(sessionId, totalChunks)
 
         Path target = Paths.get(normalized)
         if (mkdirs && target.parent) Files.createDirectories(target.parent)
         if (backup && Files.exists(target)) makeBackup(target)
 
-        atomicWrite(target, assembled.getBytes(encoding))
-        log.info("finalise_write: wrote {}B to {} from {} chunks (atomic)", assembled.length(), normalized, totalChunks)
+        Path tmp = target.resolveSibling(target.fileName.toString() + '.tmp')
+        long totalWritten = 0L
+        try {
+            tmp.withWriter(encoding) { BufferedWriter w ->
+                chunks.each { String chunk ->
+                    w.write(chunk)
+                    totalWritten += chunk.length()
+                }
+            }
+            try {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+            }
+        } catch (Exception e) {
+            try { Files.deleteIfExists(tmp) } catch (Exception ignored) {}
+            throw e
+        }
+        log.info("finalise_write: streamed {}B to {} from {} chunks (atomic)", totalWritten, normalized, totalChunks)
 
         String hash = fileHash(Paths.get(normalized))
         if (isWriteCompact(options)) {
@@ -637,7 +677,7 @@ SKILL: For worked examples read:
             action     : 'finalise_write',
             path       : normalized,
             totalChunks: totalChunks,
-            size       : assembled.length(),
+            size       : totalWritten,
             success    : true, content_hash: hash, file_content_hash: hash
         ])
     }
@@ -673,6 +713,30 @@ SKILL: For worked examples read:
      * REPLACE_EXISTING on cross-filesystem or unsupported cases.
      * Cleans up the temp file if anything goes wrong so we never leave stray .tmp files.
      */
+
+    /**
+     * Returns true for text source files that should always be written with LF line endings,
+     * regardless of the platform or the original file's line endings.
+     *
+     * This eliminates the Windows CRLF / Linux LF split permanently: source files are always
+     * LF on disk, so patch line-number calculations, git diffs, and cross-platform reads are
+     * all consistent. Files NOT in this list (e.g. .bat, .cmd, binary) keep their original
+     * line endings unchanged.
+     */
+    private static final Set<String> LF_EXTENSIONS = [
+        'groovy', 'java', 'kt', 'kts', 'scala',
+        'gradle', 'properties', 'yml', 'yaml', 'toml',
+        'xml', 'json', 'md', 'txt', 'sh', 'py',
+        'js', 'ts', 'css', 'html', 'sql'
+    ] as Set<String>
+
+    private static boolean shouldNormaliseLf(Path target) {
+        String name = target.fileName.toString()
+        int dot = name.lastIndexOf('.')
+        if (dot < 0) return false
+        return LF_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase())
+    }
+
     private static void atomicWrite(Path target, byte[] bytes) {
         Path tmp = target.resolveSibling(target.fileName.toString() + '.tmp')
         try {

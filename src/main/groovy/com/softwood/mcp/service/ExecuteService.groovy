@@ -231,11 +231,26 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             StringBuilder stdout = new StringBuilder()
             StringBuilder stderr = new StringBuilder()
 
+            // FIX-6: cap inside loop to prevent heap fill; drain remainder to avoid child process blocking
+            int capturedOut = 0
+            int capturedErr = 0
             Thread stdoutThread = Thread.ofVirtual().start({
-                process.inputStream.eachLine { String line -> stdout.append(sanitize(line)).append('\n') }
+                process.inputStream.eachLine { String line ->
+                    if (capturedOut < maxStdout) {
+                        String s = sanitize(line)
+                        stdout.append(s).append('\n')
+                        capturedOut += s.length() + 1
+                    } // else: drain without storing
+                }
             })
             Thread stderrThread = Thread.ofVirtual().start({
-                process.errorStream.eachLine { String line -> stderr.append(sanitize(line)).append('\n') }
+                process.errorStream.eachLine { String line ->
+                    if (capturedErr < maxStderr) {
+                        String s = sanitize(line)
+                        stderr.append(s).append('\n')
+                        capturedErr += s.length() + 1
+                    } // else: drain without storing
+                }
             })
 
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
@@ -256,8 +271,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
             int exitCode = process.exitValue()
             log.info("execute {}: exitCode={}, duration={}ms, workingDir={}", action, exitCode, durationMs, workingDir)
-            String stdoutStr = stdout.toString().take(maxStdout)
-            String stderrStr = stderr.toString().take(maxStderr)
+            // FIX-6: already capped in loop above - no .take() needed
+            String stdoutStr = stdout.toString()
+            String stderrStr = stderr.toString()
 
             if (compact) {
                 return textResponse(requestId, [

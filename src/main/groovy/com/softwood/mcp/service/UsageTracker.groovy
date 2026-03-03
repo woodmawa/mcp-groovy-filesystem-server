@@ -96,9 +96,10 @@ class UsageTracker {
     private final AtomicInteger boundedCalls    = new AtomicInteger(0)
     private final AtomicInteger fullReadCalls   = new AtomicInteger(0)
 
-    // Single JDBC connection held for the lifetime of the service (SQLite is embedded)
-    private volatile Connection dbConn = null
-    private final Object dbLock = new Object()
+    /** Dirty flag: true when in-memory counters have unsaved changes. */
+    private volatile boolean dirty = false
+
+    // FIX-9: no shared connection - per-operation connections with WAL mode for concurrent access
 
     // -----------------------------------------------------------------------
     // Lifecycle
@@ -112,10 +113,10 @@ class UsageTracker {
         }
         try {
             Class.forName('org.sqlite.JDBC')
-            dbConn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
+            // FIX-9: verify connectivity and set up schema via short-lived connection
             ensureSchema()
             loadTodayFromDb()
-            log.info('UsageTracker: SQLite persistence active at {}', dbPath)
+            log.info('UsageTracker: SQLite persistence active at {} (WAL mode)', dbPath)
         } catch (Exception e) {
             log.warn('UsageTracker: DB init failed, running in-memory only: {}', e.message)
         }
@@ -131,7 +132,7 @@ class UsageTracker {
                 log.warn('UsageTracker: flush on shutdown failed: {}', e.message)
             }
         }
-        try { dbConn?.close() } catch (Exception ignored) {}
+        // FIX-9: no persistent connection to close
     }
 
     /**
@@ -174,6 +175,7 @@ class UsageTracker {
         callCounts.computeIfAbsent(key, { k -> new AtomicInteger(0) }).incrementAndGet()
         responseBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(size)
         inputBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(inSize)
+        dirty = true
 
         if (action && action in BOUNDED_ACTIONS)       boundedCalls.incrementAndGet()
         else if (action && action in FULL_READ_ACTIONS) fullReadCalls.incrementAndGet()
@@ -207,8 +209,10 @@ class UsageTracker {
     }
 
     private Map<String, Object> buildTodayStats() {
-        // Persist current state on every stats read - cheap and crash-safe
-        if (dbPath) { try { flushToDb(currentDate) } catch (Exception e) { log.warn('Stats flush failed: {}', e.message) } }
+        // Only flush when counters have changed since last flush - avoids unnecessary DB writes on read-only stats calls
+        if (dbPath && dirty) {
+            try { flushToDb(currentDate); dirty = false } catch (Exception e) { log.warn('Stats flush failed: {}', e.message) }
+        }
         int total     = totalCalls.get()
         int bounded   = boundedCalls.get()
         int fullReads = fullReadCalls.get()
@@ -432,10 +436,15 @@ class UsageTracker {
         }
     }
 
+    // FIX-9: per-operation connection with WAL mode - eliminates shared-state serialisation bottleneck
     private void withConnection(Closure action) {
-        if (!dbConn) throw new IllegalStateException('UsageTracker: DB connection not available')
-        synchronized (dbLock) {
-            action(dbConn)
+        if (!dbPath) throw new IllegalStateException('UsageTracker: DB path not configured')
+        Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
+        try {
+            conn.createStatement().execute('PRAGMA journal_mode=WAL')
+            action(conn)
+        } finally {
+            try { conn?.close() } catch (Exception ignored) {}
         }
     }
 
@@ -458,6 +467,7 @@ class UsageTracker {
             totalInputBytes.set(0)
             boundedCalls.set(0)
             fullReadCalls.set(0)
+            dirty = false
             currentDate = today
             sessionStart = LocalDateTime.now()
 

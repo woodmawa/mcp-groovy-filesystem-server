@@ -72,8 +72,10 @@ class StructureCache {
             return hit
         }
 
-        // Cache miss or stale — acquire per-path lock so only one thread computes for this file.
+        // Cache miss or stale - acquire per-path lock so only one thread computes for this file.
         // Threads competing for different files are unaffected.
+        // FIX-14: evict before acquiring pathLock to avoid nested lock order (pathLock -> lruLock)
+        evictIfNeeded()
         Object pathLock = computeLocks.computeIfAbsent(normalizedPath) { new Object() }
         synchronized (pathLock) {
             // Double-check: another thread may have populated the cache while we waited
@@ -91,7 +93,6 @@ class StructureCache {
             Map<String, Object> result = scanner.scan(file)
 
             // Store in cache - preserve any existing hash if file hasn't changed
-            evictIfNeeded()
             CacheEntry existing = cache.get(normalizedPath)
             String preservedHash = (existing != null && existing.lastModified == currentModified) ? existing.hash : null
             cache.put(normalizedPath, new CacheEntry(lastModified: currentModified, result: result, hash: preservedHash))
@@ -127,7 +128,9 @@ class StructureCache {
             return entry.hash
         }
 
-        // Acquire per-path lock — prevents duplicate hash computation for the same file.
+        // Acquire per-path lock - prevents duplicate hash computation for the same file.
+        // FIX-14: evict before acquiring pathLock to avoid nested lock order (pathLock -> lruLock)
+        evictIfNeeded()
         Object pathLock = computeLocks.computeIfAbsent(normalizedPath) { new Object() }
         synchronized (pathLock) {
             // Double-check after acquiring lock
@@ -162,6 +165,7 @@ class StructureCache {
      */
     void invalidate(String normalizedPath) {
         cache.remove(normalizedPath)
+        computeLocks.remove(normalizedPath)
         synchronized (lruLock) {
             accessOrder.remove(normalizedPath)
         }
@@ -217,11 +221,8 @@ class StructureCache {
     private void touchLru(String path, long ts) {
         synchronized (lruLock) {
             accessOrder.put(path, ts)
-            if (accessOrder.size() < cache.size()) {
-                List<String> toRemove = new ArrayList<>(cache.keySet())
-                toRemove.removeAll(accessOrder.keySet())
-                toRemove.each { String k -> cache.remove(k) }
-            }
+            // Orphan cleanup removed: the TOCTOU window between cache.size() and accessOrder.size()
+            // could produce false removals. Eviction is handled solely by evictIfNeeded().
         }
     }
 

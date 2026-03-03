@@ -163,10 +163,12 @@ class McpController {
         return response
     }
 
+    // FIX-7: zero-copy size estimate - read text field directly instead of serialising whole result Map
     private static int estimateResponseSize(McpResponse response) {
         try {
-            return response?.result?.toString()?.length() ?: 0
-        } catch (Exception e) {
+            List content = response?.result?.content as List
+            return ((content?.first() as Map)?.get('text') as String)?.length() ?: 0
+        } catch (Exception ignored) {
             return 0
         }
     }

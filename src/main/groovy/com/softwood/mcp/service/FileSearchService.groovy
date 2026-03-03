@@ -207,15 +207,18 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
             if (sizeBytes > (long)(maxFileSizeMb) * 1024 * 1024) return matches
 
             int lineNum = 0
-            file.eachLine('UTF-8') { String line ->
-                if (matches.size() >= maxMatches) return
-                lineNum++
-                Matcher m = pattern.matcher(line)
-                if (m.find()) {
-                    matches << ([
-                        line   : lineNum,
-                        content: truncateAndSanitize(line.trim())
-                    ] as Map<String, Object>)
+            // FIX-4: explicit withReader for guaranteed stream close
+            new File(file.toString()).withReader('UTF-8') { BufferedReader br ->
+                br.eachLine { String line ->
+                    if (matches.size() >= maxMatches) return
+                    lineNum++
+                    Matcher m = pattern.matcher(line)
+                    if (m.find()) {
+                        matches << ([
+                            line   : lineNum,
+                            content: truncateAndSanitize(line.trim())
+                        ] as Map<String, Object>)
+                    }
                 }
             }
         } catch (Exception e) {

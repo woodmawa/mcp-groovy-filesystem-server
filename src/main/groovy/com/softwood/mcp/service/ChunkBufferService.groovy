@@ -87,28 +87,33 @@ class ChunkBufferService {
     }
 
     /**
-     * Reassemble all write chunks into a single string and remove the session.
-     * Throws if chunks are missing or session doesn't exist.
+     * S-I4 FIX: Return ordered chunks for streaming write — never joins into a single String.
+     * Caller iterates chunks and writes each directly to a BufferedWriter.
+     * Removes the session on return. Throws on missing session or count mismatch.
      */
-    String finaliseWrite(String sessionId, int expectedTotal) {
+    Collection<String> getWriteChunksAndRelease(String sessionId, int expectedTotal) {
         ConcurrentSkipListMap<Integer, String> chunks = writeSessions.remove(sessionId)
         sessionExpiry.remove(sessionId)
 
         if (!chunks) {
             throw new IllegalStateException("No write session found for sessionId='${sessionId}'")
         }
-
         if (chunks.size() != expectedTotal) {
             throw new IllegalStateException(
                 "Write session '${sessionId}': expected ${expectedTotal} chunks, got ${chunks.size()}"
             )
         }
-
-        // ConcurrentSkipListMap is sorted — concatenate in order
-        String assembled = chunks.values().join('')
-        log.info("Write session '{}' finalised — {} chunks, total {}B", sessionId, expectedTotal, assembled.length())
-        return assembled
+        // ConcurrentSkipListMap.values() is sorted by key — chunks returned in index order
+        log.info("Write session '{}' chunks retrieved for streaming — {} chunks", sessionId, expectedTotal)
+        return chunks.values()
     }
+
+    /** @deprecated Use getWriteChunksAndRelease() for zero-join streaming write. */
+    @Deprecated
+    String finaliseWrite(String sessionId, int expectedTotal) {
+        return getWriteChunksAndRelease(sessionId, expectedTotal).join('')
+    }
+
 
     /**
      * Abort and discard a write session.
@@ -137,6 +142,27 @@ class ChunkBufferService {
 
         log.info("Read session '{}' created — {} chunks for {}B content", sessionId, chunks.size(), fullContent.length())
         return [sessionId: sessionId, totalChunks: chunks.size(), chunkSize: MAX_CHUNK_BYTES] as Map<String, Object>
+    }
+
+    /**
+     * S-I1 FIX: Store a single chunk for a streamed read session (called per-chunk during streaming).
+     * Used by FileReadService.streamFileToChunks() to avoid loading the full file into memory.
+     */
+    void storeReadChunk(String sessionId, int chunkIndex, String content) {
+        ConcurrentSkipListMap<Integer, String> chunkMap = readSessions.computeIfAbsent(sessionId) {
+            new ConcurrentSkipListMap<Integer, String>()
+        }
+        chunkMap.put(chunkIndex, content)
+        log.debug("Streamed read chunk stored: session={}, index={}, size={}B", sessionId, chunkIndex, content?.length() ?: 0)
+    }
+
+    /**
+     * S-I1 FIX: Register TTL for a session whose chunks were stored via storeReadChunk().
+     * Must be called after all chunks have been stored to activate expiry tracking.
+     */
+    void registerStreamedReadSession(String sessionId, int totalChunks) {
+        refreshExpiry(sessionId)
+        log.info("Streamed read session '{}' registered  {} chunks", sessionId, totalChunks)
     }
 
     /**

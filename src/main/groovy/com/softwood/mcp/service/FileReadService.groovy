@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
+import java.nio.charset.Charset
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -123,7 +124,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         try {
             String action  = arguments.action as String
             String path    = arguments.path as String
-            Map<String, Object> options = (arguments.options as Map<String, Object>) ?: [:] as Map<String, Object>
+            Map<String, Object> options = normaliseOptions(arguments.options)
 
             switch (action) {
                 case 'read'        : return doRead(path, options, requestId)
@@ -175,20 +176,19 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         long fileSize       = Files.size(Paths.get(normalized))
         long threshBytes    = (long) readChunkThresholdKb * 1024
 
-        // FIX 2: size-check BEFORE loading - never pull large files into memory
+        // S-I1 FIX: stream large files directly into chunks - never load full file into memory
         if (fileSize > threshBytes) {
             String sessionId = ChunkBufferService.newSessionId()
-            String content   = new File(normalized).getText(encoding)
-            Map<String, Object> sessionInfo = chunkBufferService.createReadSession(sessionId, content)
-            log.info("file_read auto-chunked '{}' ({} bytes) -> {} chunks", normalized, fileSize, sessionInfo.totalChunks)
+            int totalChunks  = streamFileToChunks(normalized, sessionId, encoding)
+            log.info("file_read auto-chunked '{}' ({} bytes) -> {} chunks (streamed)", normalized, fileSize, totalChunks)
             return textResponse(requestId, [
                 action     : 'read',
                 path       : normalized,
                 chunked    : true,
-                sessionId  : sessionInfo.sessionId,
-                totalChunks: sessionInfo.totalChunks,
-                chunkSize  : sessionInfo.chunkSize,
-                message    : ("File is large - use action=chunk_read with sessionId and chunkIndex 0..${(sessionInfo.totalChunks as int) - 1}, then action=finalise_read when done" as String)
+                sessionId  : sessionId,
+                totalChunks: totalChunks,
+                chunkSize  : ChunkBufferService.MAX_CHUNK_BYTES,
+                message    : ("File is large - use action=chunk_read with sessionId and chunkIndex 0..${totalChunks - 1}, then action=finalise_read when done" as String)
             ])
         }
 
@@ -202,6 +202,37 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         }
         maybeAddSizeWarning(resp, content.length())
         return textResponse(requestId, resp)
+    }
+
+    /**
+     * S-I1 FIX: Stream a large file directly into ChunkBufferService in fixed-size slices.
+     * Peak heap cost = 1 chunk buffer (MAX_CHUNK_BYTES) rather than 2-3× the full file size.
+     * Returns the total number of chunks created.
+     */
+    private int streamFileToChunks(String normalized, String sessionId, String encoding) {
+        Charset charset   = Charset.forName(encoding)
+        int chunkChars    = ChunkBufferService.MAX_CHUNK_BYTES  // treat as char budget per chunk
+        char[] buf        = new char[8192]
+        StringBuilder sb  = new StringBuilder(chunkChars)
+        int chunkIdx      = 0
+
+        new File(normalized).withReader(encoding) { Reader r ->
+            BufferedReader br = new BufferedReader(r, 65536)
+            int read
+            while ((read = br.read(buf)) != -1) {
+                sb.append(buf, 0, read)
+                if (sb.length() >= chunkChars) {
+                    chunkBufferService.storeReadChunk(sessionId, chunkIdx++, sb.toString())
+                    sb.setLength(0)
+                }
+            }
+        }
+        if (sb.length() > 0) {
+            chunkBufferService.storeReadChunk(sessionId, chunkIdx++, sb.toString())
+        }
+        // Register the session expiry (chunks already stored individually)
+        chunkBufferService.registerStreamedReadSession(sessionId, chunkIdx)
+        return chunkIdx
     }
 
     private McpResponse doHead(String path, Map<String, Object> options, Object requestId) {
@@ -472,9 +503,16 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
     private McpResponse doDiff(String path, Map<String, Object> options, Object requestId) {
         String compareTo = options.compareTo as String
         if (!compareTo) return McpResponse.error(requestId, -32602, "options.compareTo required for diff")
-
         String normA = validateFilePath(path)
         String normB = validateFilePath(compareTo)
+
+        // FIX-11: size pre-check before loading both files into heap
+        long sizeAKb = Files.size(Paths.get(normA)).intdiv(1024)
+        long sizeBKb = Files.size(Paths.get(normB)).intdiv(1024)
+        if (sizeAKb > readChunkThresholdKb || sizeBKb > readChunkThresholdKb) {
+            return McpResponse.error(requestId, -32602,
+                ("diff: one or both files exceed ${readChunkThresholdKb}KB threshold (${sizeAKb}KB vs ${sizeBKb}KB). Use grep or range for targeted comparison." as String))
+        }
 
         // Parallel reads  both files loaded concurrently on virtual threads
         Promise<List<String>> readA = Promises.async({ -> new File(normA).readLines('UTF-8') } as Callable<List<String>>)
@@ -597,6 +635,10 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         }
         if (!Files.isRegularFile(filePath)) {
             return McpResponse.error(requestId, -32602, "Path is not a regular file: ${sanitize(normalized)}")
+        }
+        if (Files.size(filePath) > 512 * 1024L) {
+            return McpResponse.error(requestId, -32602,
+                "File too large for structure scan (>512KB). Use head/range/grep for large files: ${sanitize(normalized)}")
         }
 
         Map<String, Object> result = structureCache.getStructure(normalized)

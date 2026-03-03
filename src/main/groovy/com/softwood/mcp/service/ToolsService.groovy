@@ -290,12 +290,26 @@ Developer toolchain. Actions:
 
             StringBuilder stdout = new StringBuilder()
             StringBuilder stderr = new StringBuilder()
-
+            // FIX-5: cap inside loop to prevent heap fill on large output; drain remainder to avoid child process blocking
+            int capturedOut = 0
+            int capturedErr = 0
             Thread stdoutThread = Thread.ofVirtual().start({
-                process.inputStream.eachLine { String line -> stdout.append(sanitize(line)).append('\n') }
+                process.inputStream.eachLine { String line ->
+                    if (capturedOut < 50000) {
+                        String s = sanitize(line)
+                        stdout.append(s).append('\n')
+                        capturedOut += s.length() + 1
+                    } // else: drain without storing
+                }
             })
             Thread stderrThread = Thread.ofVirtual().start({
-                process.errorStream.eachLine { String line -> stderr.append(sanitize(line)).append('\n') }
+                process.errorStream.eachLine { String line ->
+                    if (capturedErr < 5000) {
+                        String s = sanitize(line)
+                        stderr.append(s).append('\n')
+                        capturedErr += s.length() + 1
+                    } // else: drain without storing
+                }
             })
 
             boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)

@@ -106,11 +106,11 @@ All require a directory path.''',
 
         List<Map<String, Object>> results = []
         // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        // FIX-10: use filter+limit so stream genuinely short-circuits at max
         (Files.list(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
-            stream.each { Path p ->
-                if (results.size() >= max) return
-                String name = p.fileName.toString()
-                if (compiled && !(name =~ compiled)) return
+            stream.filter { Path p ->
+                compiled == null || (p.fileName.toString() =~ compiled)
+            }.limit(max).each { Path p ->
                 results << pathToMap(p)
             }
         }
@@ -133,12 +133,12 @@ All require a directory path.''',
         List<Map<String, Object>> results = []
 
         // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        // FIX-10: use filter+limit so stream genuinely short-circuits at max
         Stream<Path> stream = recursive ? Files.walk(Paths.get(path)) : Files.list(Paths.get(path))
         stream.withCloseable { Stream<Path> s ->
-            s.each { Path p ->
-                if (results.size() >= max) return
-                String name = p.fileName.toString()
-                if (compiled && !(name =~ compiled)) return
+            s.filter { Path p ->
+                compiled == null || (p.fileName.toString() =~ compiled)
+            }.limit(max).each { Path p ->
                 results << pathToMap(p)
             }
         }
@@ -178,9 +178,9 @@ All require a directory path.''',
 
         List<Map<String, Object>> results = []
         // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        // FIX-10: use limit so stream genuinely short-circuits at max
         (Files.list(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
-            stream.each { Path p ->
-                if (results.size() >= max) return
+            stream.limit(max).each { Path p ->
                 results << pathToMap(p)
             }
         }

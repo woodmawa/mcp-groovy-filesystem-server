@@ -35,7 +35,13 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'file_lifecycle',
-            description: 'File/directory operations. Actions: create|delete|copy|move|rename|touch.\ndst required for copy/move/rename. options.recursive=true required to delete non-empty directory.',
+            description: '''\
+File/directory operations. Actions: create|delete|copy|move|rename|touch.
+- create(path, options.type=file|directory, options.mkdirs=true): create file or directory
+- delete(path, options.recursive=true): delete file; directory requires recursive=true
+- copy/move/rename(path, dst, options.overwrite=false, options.mkdirs=true): copy or move/rename
+- touch(path): update mtime or create if missing
+dst required for copy/move/rename. All actions: options.verbose=true for full response (default: compact success-only).''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -129,7 +135,7 @@ class FileLifecycleService extends AbstractFileService implements ToolHandler {
         boolean recursive = options.recursive as boolean ?: false
 
         if (!Files.exists(target)) {
-            return textResponse(requestId, [success: false, reason: 'Path does not exist'])
+            return McpResponse.error(requestId, -32602, "Path does not exist: ${sanitize(normalized)}")
         }
 
         if (Files.isDirectory(target)) {
