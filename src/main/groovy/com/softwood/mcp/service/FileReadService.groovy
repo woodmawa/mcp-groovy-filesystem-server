@@ -49,10 +49,23 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     int largeResponseWarnChars
 
     /** Soft response-size cap for sub-threshold reads (chars). Responses larger than this are
-     *  truncated with an explanatory note. Default 61440 = 60 KB ≈ 15K tokens. */
-    @Value('${mcp.filesystem.read-soft-cap-chars:61440}')
+     *  truncated with an explanatory note. Default 40000 = ~10K tokens (aligned with partial-read cap). */
+    @Value('${mcp.filesystem.read-soft-cap-chars:40000}')
     int readSoftCapChars
 
+    /** Hard cap for head/tail/range/grep content (chars). Prevents context overflow from
+     *  large line counts. Default 40000 = ~10K tokens. Truncates with explanatory note. */
+    @Value('${mcp.filesystem.partial-read-cap-chars:40000}')
+    int partialReadCapChars
+
+    /** Hard cap for multi aggregate output (chars across all files). Default 80000 = ~20K tokens. */
+    @Value('${mcp.filesystem.multi-read-cap-chars:80000}')
+    int multiReadCapChars
+
+    /** Max entries returned by structure action. Prevents huge JSON arrays for files with many methods.
+     *  Default 100. Total entries count always returned separately. */
+    @Value('${mcp.filesystem.structure-max-entries:100}')
+    int structureMaxEntries
     FileReadService(PathService pathService) {
         super(pathService)
     }
@@ -271,6 +284,12 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         }
 
         String joinedHead = result.join('\n')
+        // FIX-17: hard cap head output to avoid context overflow
+        boolean truncatedHead = false
+        if (joinedHead.length() > partialReadCapChars) {
+            joinedHead = joinedHead.substring(0, partialReadCapChars)
+            truncatedHead = true
+        }
         String hashHead = structureCache.getHash(normalized)
         Map<String, Object> respHead
         if (isCompact(options)) {
@@ -278,7 +297,12 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         } else {
             respHead = [action: 'head', path: normalized, lines: result.size(), content: joinedHead, file_content_hash: hashHead] as Map<String, Object>
         }
-        maybeAddSizeWarning(respHead, joinedHead.length())
+        if (truncatedHead) {
+            respHead._truncated = true
+            respHead._truncatedNote = ("head output truncated at ${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). Reduce lines= or use range for targeted reads." as String)
+        } else {
+            maybeAddSizeWarning(respHead, joinedHead.length())
+        }
         return textResponse(requestId, respHead)
     }
 
@@ -297,25 +321,37 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             }
         }
         List<String> result = ring.collect { truncateAndSanitize(it) }
+        String joinedTail = result.join('\n')
 
-        if (isCompact(options)) {
-            return textResponse(requestId, [content: result.join('\n'), lines: result.size(),
-                file_content_hash: structureCache.getHash(normalized)])
+        // FIX-17: hard cap tail output to avoid context overflow
+        boolean truncatedTail = false
+        if (joinedTail.length() > partialReadCapChars) {
+            joinedTail = joinedTail.substring(0, partialReadCapChars)
+            truncatedTail = true
         }
-        return textResponse(requestId, [
-            action: 'tail', path: normalized,
-            lines: result.size(), content: result.join('\n'),
-            file_content_hash: structureCache.getHash(normalized)
-        ])
+        Map<String, Object> respTail
+        if (isCompact(options)) {
+            respTail = [content: joinedTail, lines: result.size(), file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+        } else {
+            respTail = [action: 'tail', path: normalized, lines: result.size(), content: joinedTail, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+        }
+        if (truncatedTail) {
+            respTail._truncated = true
+            respTail._truncatedNote = ("tail output truncated at ${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). Reduce lines= or use range for targeted reads." as String)
+        } else {
+            maybeAddSizeWarning(respTail, joinedTail.length())
+        }
+        return textResponse(requestId, respTail)
     }
-
-
-
     private McpResponse doRange(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
         int startLine     = (options.startLine as Integer) ?: 1
         int maxLines      = (options.maxLines as Integer) ?: 100
         String encoding   = options.encoding as String ?: 'UTF-8'
+
+        // FIX-17: hard cap maxLines to prevent requesting thousands of lines in one shot
+        if (maxLines > 500) maxLines = 500
+        if (maxLines > 500) maxLines = 500
 
         List<String> result = []
         int current = 0
@@ -330,6 +366,12 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             }
         }
         String joinedRange = result.join('\n')
+        // FIX-17: hard cap range char output
+        boolean truncated = false
+        if (joinedRange.length() > partialReadCapChars) {
+            joinedRange = joinedRange.substring(0, partialReadCapChars)
+            truncated = true
+        }
         String hashRange = structureCache.getHash(normalized)
         Map<String, Object> respRange
         if (isCompact(options)) {
@@ -340,7 +382,12 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                          endLine: startLine + result.size() - 1, lines: result.size(),
                          content: joinedRange, file_content_hash: hashRange] as Map<String, Object>
         }
-        maybeAddSizeWarning(respRange, joinedRange.length())
+        if (truncated) {
+            respRange._truncated = true
+            respRange._truncatedNote = ("range output truncated at ${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). Use smaller maxLines or target a narrower startLine." as String)
+        } else {
+            maybeAddSizeWarning(respRange, joinedRange.length())
+        }
         return textResponse(requestId, respRange)
     }
 
@@ -356,13 +403,12 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
         List<Map<String, Object>> matches = []
         int lineNum = 0
+        // FIX-17: track running content chars to cap grep output and avoid context overflow
+        int totalContentChars = 0
+        boolean sizeCapped    = false
 
         if (contextLines > 0) {
-            // Streaming grep with context - avoids loading whole file into memory.
-            // beforeBuf: sliding window of last contextLines lines (before-context).
-            // pendingAfter: matches still collecting their after-context lines.
             ArrayDeque<String> beforeBuf = new ArrayDeque<>(contextLines + 1)
-            // Each pending entry: [matchEntry: Map, remaining: int, afterList: List]
             List<Map<String, Object>> pendingAfter = []
 
             new File(normalized).withReader(encoding) { Reader r ->
@@ -372,7 +418,6 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                     lineNum++
                     String sanitized = truncateAndSanitize(line)
 
-                    // Feed this line as after-context to any pending matches
                     Iterator<Map<String, Object>> pit = pendingAfter.iterator()
                     while (pit.hasNext()) {
                         Map<String, Object> p = pit.next()
@@ -381,59 +426,61 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                         if ((p.remaining as int) <= 0) pit.remove()
                     }
 
-                    // Check for match
-                    if (matches.size() < maxMatches && compiled.matcher(line).find()) {
+                    if (matches.size() < maxMatches && !sizeCapped && compiled.matcher(line).find()) {
                         List<String> before = new ArrayList<>(beforeBuf as Collection<String>)
                         List<String> afterList = []
-                        Map<String, Object> entry = [
-                            line   : lineNum,
-                            content: sanitized,
-                            before : before,
-                            after  : afterList
-                        ] as Map<String, Object>
-                        matches << entry
-                        if (contextLines > 0) {
-                            pendingAfter << ([matchEntry: entry, remaining: contextLines, afterList: afterList] as Map<String, Object>)
+                        Map<String, Object> entry = [line: lineNum, content: sanitized, before: before, after: afterList] as Map<String, Object>
+                        totalContentChars += sanitized.length()
+                        if (totalContentChars > partialReadCapChars) {
+                            sizeCapped = true
+                        } else {
+                            matches << entry
+                            if (contextLines > 0) pendingAfter << ([matchEntry: entry, remaining: contextLines, afterList: afterList] as Map<String, Object>)
                         }
                     }
 
-                    // Maintain sliding before-window
                     beforeBuf.addLast(sanitized)
                     if (beforeBuf.size() > contextLines) beforeBuf.pollFirst()
                 }
             }
 
-            if (isCompact(options)) {
-                return textResponse(requestId, [matchCount: matches.size(), matches: matches,
-                    file_content_hash: structureCache.getHash(normalized)])
+            Map<String, Object> grepResp = isCompact(options)
+                ? [matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+                : [action: 'grep', path: normalized, pattern: sanitize(patternStr), contextLines: contextLines,
+                   matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+            if (sizeCapped) {
+                grepResp._sizeCapped = true
+                grepResp._sizeCappedNote = ("grep results capped at ~${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). Reduce maxMatches or narrow pattern." as String)
             }
-            return textResponse(requestId, [
-                action: 'grep', path: normalized, pattern: sanitize(patternStr),
-                contextLines: contextLines, matchCount: matches.size(), matches: matches,
-                file_content_hash: structureCache.getHash(normalized)
-            ])
+            return textResponse(requestId, grepResp)
         }
 
         // No context - simple streaming path
         new File(normalized).withReader(encoding) { Reader r ->
             BufferedReader br = new BufferedReader(r)
             String line
-            while ((line = br.readLine()) != null && matches.size() < maxMatches) {
+            while ((line = br.readLine()) != null && matches.size() < maxMatches && !sizeCapped) {
                 lineNum++
                 if (compiled.matcher(line).find()) {
-                    matches << ([line: lineNum, content: truncateAndSanitize(line)] as Map<String, Object>)
+                    String sanitized = truncateAndSanitize(line)
+                    totalContentChars += sanitized.length()
+                    if (totalContentChars > partialReadCapChars) {
+                        sizeCapped = true
+                    } else {
+                        matches << ([line: lineNum, content: sanitized] as Map<String, Object>)
+                    }
                 }
             }
         }
-        if (isCompact(options)) {
-            return textResponse(requestId, [matchCount: matches.size(), matches: matches,
-                file_content_hash: structureCache.getHash(normalized)])
+        Map<String, Object> grepResp2 = isCompact(options)
+            ? [matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+            : [action: 'grep', path: normalized, pattern: sanitize(patternStr),
+               matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+        if (sizeCapped) {
+            grepResp2._sizeCapped = true
+            grepResp2._sizeCappedNote = ("grep results capped at ~${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). Reduce maxMatches or narrow pattern." as String)
         }
-        return textResponse(requestId, [
-            action: 'grep', path: normalized,
-            pattern: sanitize(patternStr), matchCount: matches.size(), matches: matches,
-            file_content_hash: structureCache.getHash(normalized)
-        ])
+        return textResponse(requestId, grepResp2)
     }
 
     private McpResponse doMulti(Map<String, Object> options, Object requestId) {
@@ -444,7 +491,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         String encoding = options.encoding as String ?: 'UTF-8'
         long sizeCapBytes = (long) readChunkThresholdKb * 1024
 
-        // FIX-16: aggregate size pre-check  reject before loading if total would exceed 1 MB
+        // FIX-16: aggregate size pre-check - reject before loading if total would exceed 1 MB
         long totalBytes = 0L
         long aggregateCapBytes = 1024L * 1024L  // 1 MB
         for (String p : paths) {
@@ -459,10 +506,10 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                  "Use individual reads with chunking for large files." as String))
         }
 
-        // Parallel file reads via Promises  each on its own virtual thread
+        // Parallel file reads via Promises - each on its own virtual thread
         // P2 fix: guard each file against oversized reads before loading
         List<Promise<Map<String, Object>>> promises = paths.collect { String p ->
-            Promises.async({ ->
+            Promises.async(({ ->
                 try {
                     String normalized = validateFilePath(p)
                     long fileSize = Files.size(Paths.get(normalized))
@@ -474,11 +521,32 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 } catch (Exception e) {
                     return [path: sanitize(p), error: sanitize(e.message), success: false] as Map<String, Object>
                 }
-            } as Callable<Map<String, Object>>)
+            } as Callable<Map<String, Object>>))
         }
 
         List<Map<String, Object>> results = Promises.all(promises).get(30, TimeUnit.SECONDS)
-        return textResponse(requestId, [action: 'multi', count: results.size(), files: results])
+
+        // FIX-17: cap aggregate content output to avoid context overflow
+        int aggChars = 0
+        boolean aggCapped = false
+        for (Map<String, Object> r : results) {
+            if (r.success && r.content) {
+                String c = r.content as String
+                aggChars += c.length()
+                if (aggChars > multiReadCapChars) {
+                    int allowed = Math.max(0, multiReadCapChars - (aggChars - c.length()))
+                    r.content = allowed > 0 ? c.substring(0, allowed) : ''
+                    r._truncated = true
+                    aggCapped = true
+                }
+            }
+        }
+        Map<String, Object> multiResp = [action: 'multi', count: results.size(), files: results] as Map<String, Object>
+        if (aggCapped) {
+            multiResp._sizeCapped = true
+            multiResp._sizeCappedNote = ("multi aggregate output capped at ${multiReadCapChars} chars (~${multiReadCapChars/4000 as int}K tokens). Use fewer files or head/range for targeted reads." as String)
+        }
+        return textResponse(requestId, multiResp)
     }
 
     // -----------------------------------------------------------------------
@@ -680,19 +748,36 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         Map<String, Object> result = structureCache.getStructure(normalized)
         List<Map<String, Object>> entries = result.structure as List<Map<String, Object>>
 
+        int totalEntries = entries.size()
+
         if (isCompact(options)) {
-            // Compact: methods only, no endLine — ~50% smaller for files with many fields/classes
+            // Compact: methods only, no endLine  ~50% smaller for files with many fields/classes
             List<Map<String, Object>> methods = entries
                 .findAll { Map<String, Object> e -> e.type == 'method' }
                 .collect { Map<String, Object> e ->
                     [line: e.line, type: e.type, content: e.content] as Map<String, Object>
                 }
-            return textResponse(requestId, [structure: methods, count: methods.size(),
-                                            file_content_hash: structureCache.getHash(normalized)])
+            // FIX-C: cap compact result too
+            boolean compactCapped = methods.size() > structureMaxEntries
+            if (compactCapped) methods = methods.take(structureMaxEntries)
+            Map<String, Object> compactResp = [structure: methods, count: methods.size(), total_entries: totalEntries,
+                                               file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+            if (compactCapped) compactResp.entries_capped = true
+            return textResponse(requestId, compactResp)
         }
 
-        return textResponse(requestId, [action: 'structure', path: normalized, ext: result.ext, count: entries.size(),
-                                        structure: entries, scanner: result.scanner, cached: result.cached])
+        // FIX-C: cap full list at structureMaxEntries (default 100), truncate content strings at 200 chars
+        boolean entriesCapped = totalEntries > structureMaxEntries
+        List<Map<String, Object>> cappedEntries = (entriesCapped ? entries.take(structureMaxEntries) : entries)
+            .collect { Map<String, Object> e ->
+                String c = e.content as String
+                (c && c.length() > 200) ? (new LinkedHashMap<>(e) + [content: c.substring(0,200)+'...']) as Map<String,Object> : e
+            }
+        Map<String, Object> structResp = [action: 'structure', path: normalized, ext: result.ext,
+                                          count: cappedEntries.size(), total_entries: totalEntries,
+                                          structure: cappedEntries, scanner: result.scanner, cached: result.cached] as Map<String, Object>
+        if (entriesCapped) structResp.entries_capped = true
+        return textResponse(requestId, structResp)
     }
 
     // -----------------------------------------------------------------------
@@ -739,13 +824,23 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             }
         }
 
-        return textResponse(requestId, [
+        // FIX-B: hard cap method body output to partialReadCapChars to prevent enormous method bodies overflowing context
+        String content = lines.join('\n')
+        boolean methodTruncated = content.length() > partialReadCapChars
+        if (methodTruncated) content = content.substring(0, partialReadCapChars)
+
+        Map<String, Object> gmResp = [
             action: 'get_method', path: normalized,
             method: methodName,
             startLine: startLine, endLine: startLine + lines.size() - 1,
-            lines: lines.size(), content: lines.join('\n'),
+            lines: lines.size(), content: content,
             file_content_hash: structureCache.getHash(normalized)
-        ])
+        ] as Map<String, Object>
+        if (methodTruncated) {
+            gmResp._truncated = true
+            gmResp._truncatedNote = ("Method body truncated at ${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). Use action=range with startLine=${startLine} and maxLines to read the rest." as String)
+        }
+        return textResponse(requestId, gmResp)
     }
 
     // -----------------------------------------------------------------------

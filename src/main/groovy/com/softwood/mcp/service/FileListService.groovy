@@ -116,11 +116,38 @@ All require a directory path.''',
         }
 
         log.debug("file_list children: {} entries from {}", results.size(), path)
+        // FIX-D: cap response size to prevent large directory listings overflowing context window
+        int totalChildren = results.size()
+        boolean childrenCapped = false
         if (isCompact(options)) {
             List<Map<String, Object>> slim = results.collect { compactPathEntry(it) }
-            return textResponse(requestId, [count: slim.size(), entries: slim])
+            // estimate size and truncate if needed
+            int estChars = slim.sum { Map m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } as int
+            if (estChars > listResponseCapChars) {
+                slim = []; int acc = 0
+                for (Map<String, Object> e : results.collect { compactPathEntry(it) }) {
+                    int sz = (e.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10
+                    if (acc + sz > listResponseCapChars) { childrenCapped = true; break }
+                    slim << e; acc += sz
+                }
+            }
+            Map<String, Object> r = [count: slim.size(), total_available: totalChildren, entries: slim] as Map<String, Object>
+            if (childrenCapped) r._sizeCapped = true
+            return textResponse(requestId, r)
         }
-        return textResponse(requestId, [action: 'children', path: path, count: results.size(), entries: results])
+        int estChars = results.sum { Map<String,Object> m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } as int
+        if (estChars > listResponseCapChars) {
+            List<Map<String, Object>> trimmed = []; int acc = 0
+            for (Map<String, Object> e : results) {
+                int sz = (e.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10
+                if (acc + sz > listResponseCapChars) { childrenCapped = true; break }
+                trimmed << e; acc += sz
+            }
+            results = trimmed
+        }
+        Map<String, Object> childResp = [action: 'children', path: path, count: results.size(), total_available: totalChildren, entries: results] as Map<String, Object>
+        if (childrenCapped) childResp._sizeCapped = true
+        return textResponse(requestId, childResp)
     }
 
     private McpResponse doList(String path, Map<String, Object> options, Object requestId) {
@@ -155,7 +182,22 @@ All require a directory path.''',
         }
 
         log.debug("file_list list: {} entries from {}", results.size(), path)
-        return textResponse(requestId, [action: 'list', path: path, count: results.size(), entries: results])
+        // FIX-D: cap response size
+        int totalList = results.size()
+        boolean listCapped = false
+        int estChars = results.sum { Map<String,Object> m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } as int
+        if (estChars > listResponseCapChars) {
+            List<Map<String, Object>> trimmed = []; int acc = 0
+            for (Map<String, Object> e : results) {
+                int sz = (e.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10
+                if (acc + sz > listResponseCapChars) { listCapped = true; break }
+                trimmed << e; acc += sz
+            }
+            results = trimmed
+        }
+        Map<String, Object> listResp = [action: 'list', path: path, count: results.size(), total_available: totalList, entries: results] as Map<String, Object>
+        if (listCapped) listResp._sizeCapped = true
+        return textResponse(requestId, listResp)
     }
 
     private McpResponse doTree(String path, Map<String, Object> options, Object requestId) {
@@ -191,7 +233,12 @@ All require a directory path.''',
                 : (((a.name as String) ?: '') <=> ((b.name as String) ?: ''))
         }
 
-        return textResponse(requestId, [action: 'sizes', path: path, count: results.size(), entries: results])
+        // FIX-D: doSizes is diagnostic only - hard cap at 50 entries (top-N is all that matters)
+        boolean sizesCapped = results.size() > 50
+        if (sizesCapped) results = results.take(50)
+        Map<String, Object> sizesResp = [action: 'sizes', path: path, count: results.size(), entries: results] as Map<String, Object>
+        if (sizesCapped) sizesResp._capped = '50 entry limit applied (diagnostic use only)'
+        return textResponse(requestId, sizesResp)
     }
 
     // -----------------------------------------------------------------------

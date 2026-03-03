@@ -64,6 +64,11 @@ abstract class AbstractFileService {
     @Value('${mcp.filesystem.max-tree-files:200}')
     int maxTreeFiles
 
+    /** Hard cap on list/children/sizes response size in chars. Prevents large directories flooding the context window.
+     *  Default 30000 = ~7.5K tokens. */
+    @Value('${mcp.filesystem.list-response-cap-chars:30000}')
+    int listResponseCapChars
+
     @Value('${mcp.filesystem.max-read-multiple:10}')
     int maxReadMultiple
 

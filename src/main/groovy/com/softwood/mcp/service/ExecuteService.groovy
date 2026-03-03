@@ -272,25 +272,24 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             int exitCode = process.exitValue()
             log.info("execute {}: exitCode={}, duration={}ms, workingDir={}", action, exitCode, durationMs, workingDir)
             // FIX-6: already capped in loop above - no .take() needed
+            // FIX-H: add truncation flags so caller knows output was cut
             String stdoutStr = stdout.toString()
             String stderrStr = stderr.toString()
+            boolean stdoutTruncated = capturedOut >= maxStdout
+            boolean stderrTruncated = capturedErr >= maxStderr
 
             if (compact) {
-                return textResponse(requestId, [
-                    success : exitCode == 0,
-                    exitCode: exitCode,
-                    stdout  : stdoutStr,
-                    stderr  : stderrStr
-                ])
+                Map<String, Object> cr = [success: exitCode == 0, exitCode: exitCode,
+                                          stdout: stdoutStr, stderr: stderrStr] as Map<String, Object>
+                if (stdoutTruncated) cr.stdout_truncated = true
+                if (stderrTruncated) cr.stderr_truncated = true
+                return textResponse(requestId, cr)
             }
-            return textResponse(requestId, [
-                action    : action,
-                success   : exitCode == 0,
-                exitCode  : exitCode,
-                stdout    : stdoutStr,
-                stderr    : stderrStr,
-                durationMs: durationMs
-            ])
+            Map<String, Object> er = [action: action, success: exitCode == 0, exitCode: exitCode,
+                                      stdout: stdoutStr, stderr: stderrStr, durationMs: durationMs] as Map<String, Object>
+            if (stdoutTruncated) er.stdout_truncated = true
+            if (stderrTruncated) er.stderr_truncated = true
+            return textResponse(requestId, er)
         } catch (Exception e) {
             process?.destroyForcibly()
             long durationMs = System.currentTimeMillis() - start

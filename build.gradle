@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.31'  // v0.7.31: Opus 4.6 deep review fixes - doRead soft 60KB cap (FIX-15), doMulti 1MB aggregate cap (FIX-16), FileSearchService genuine stream short-circuit (FIX-17), @Deprecated createReadSession(String,String), tool description improvements
+version = '0.7.34'  // v0.7.34: FIX-A doRead soft cap 61440->40000, FIX-B doGetMethod char cap, FIX-C doStructure entry+content cap, FIX-D doList/doChildren/doSizes response-size cap, FIX-H stdout/stderr truncation flags
 
 java {
     toolchain {

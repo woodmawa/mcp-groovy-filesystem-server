@@ -267,14 +267,22 @@ Developer toolchain. Actions:
                                 String label, Object requestId) {
         Map<String, Object> result = runToolRaw(cmd, workingDir, timeout)
         log.info("tools {}: exitCode={}, duration={}ms", label, result.exitCode, result.durationMs)
-        return textResponse(requestId, [
+        String stdout = (result.stdout as String) ?: ''
+        String stderr = (result.stderr as String) ?: ''
+        // FIX-H: add truncation flags so caller knows output was silently cut
+        boolean stdoutTruncated = stdout.length() > 50000
+        boolean stderrTruncated = stderr.length() > 10000
+        Map<String, Object> tr = [
             action    : label,
             success   : (result.exitCode as int) == 0,
             exitCode  : result.exitCode,
-            stdout    : (result.stdout as String)?.take(50000),
-            stderr    : (result.stderr as String)?.take(10000),
+            stdout    : stdout.take(50000),
+            stderr    : stderr.take(10000),
             durationMs: result.durationMs
-        ])
+        ] as Map<String, Object>
+        if (stdoutTruncated) tr.stdout_truncated = true
+        if (stderrTruncated) tr.stderr_truncated = true
+        return textResponse(requestId, tr)
     }
 
     private Map<String, Object> runToolRaw(List<String> cmd, String workingDir, int timeout,
