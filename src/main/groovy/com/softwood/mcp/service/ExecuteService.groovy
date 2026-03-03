@@ -67,7 +67,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                     action : [type: 'string', enum: ['bash', 'powershell', 'groovy', 'cmd'],
                               description: 'Execution environment'],
                     script : [type: 'string', description: 'Script or command to execute'],
-                    options: [type: 'object', description: 'workingDir (string), timeout (int seconds), args (list), env (map), verbose (bool), maxStdout (int chars, default 50000), maxStderr (int chars, default 5000)',
+                    options: [type: 'object', description: 'workingDir (string), timeout (int seconds), args (list), env (map), verbose (bool). IMPORTANT: maxStdout (int chars, default 50000 ~12K tokens): cap stdout in response - set lower to save context window. maxStdout (int chars, default 50000 ~12K tokens), maxStderr (int chars, default 5000 ~1.2K tokens)',
                               properties: [
                                   workingDir: [type: 'string'],
                                   timeout   : [type: 'integer'],

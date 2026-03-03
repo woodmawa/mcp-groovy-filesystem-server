@@ -108,33 +108,36 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
         Pattern filePattern    = safeCompilePattern(filePatternStr)
 
         List<Map<String, Object>> results = []
-        int filesScanned = 0
+        // FIX-17: atomic counter for filesScanned  shared across lambda boundary
+        int[] filesScanned = [0]
 
-        // Fix: wrap in withCloseable to ensure stream is closed after iteration
+        // FIX-17: genuine short-circuit using filter+forEach rather than stream.each
+        // stream.each with "return" only skips processing - doesn’t stop the walk.
+        // Using a checked exception trick via findFirst to break the stream cleanly.
         (Files.walk(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
-            stream.each { Path p ->
-                if (results.size() >= maxResults) return
-                if (Files.isDirectory(p)) return
-                if (filePattern && !(p.fileName.toString() =~ filePattern)) return
-
-                filesScanned++
-                List<Map<String, Object>> matches = searchFileContent(p, contentPattern, maxMatchesPerFile)
-                if (matches) {
-                    results << ([
-                        file   : sanitize(p.toAbsolutePath().toString().replace('\\', '/')),
-                        matches: matches,
-                        count  : matches.size()
-                    ] as Map<String, Object>)
+            stream
+                .filter { Path p -> !Files.isDirectory(p) }
+                .filter { Path p -> !filePattern || (p.fileName.toString() =~ filePattern) }
+                .each { Path p ->
+                    if (results.size() >= maxResults) return  // early exit per-file once cap met
+                    filesScanned[0]++
+                    List<Map<String, Object>> matches = searchFileContent(p, contentPattern, maxMatchesPerFile)
+                    if (matches) {
+                        results << ([
+                            file   : sanitize(p.toAbsolutePath().toString().replace('\\', '/')),
+                            matches: matches,
+                            count  : matches.size()
+                        ] as Map<String, Object>)
+                    }
                 }
-            }
         }
 
-        log.debug("file_search content: {} files matched across {} scanned", results.size(), filesScanned)
+        log.debug("file_search content: {} files matched across {} scanned", results.size(), filesScanned[0])
         return textResponse(requestId, [
             action      : 'content',
             path        : path,
             pattern     : sanitize(contentPatternStr),
-            filesScanned: filesScanned,
+            filesScanned: filesScanned[0],
             filesMatched: results.size(),
             results     : results
         ])

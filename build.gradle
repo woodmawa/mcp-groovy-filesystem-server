@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.30'  // v0.7.30: all 14 performance fixes from cd-performance-assessment.md - size guards, O(nm) nearest-match removal, stdout cap-in-loop, zero-copy telemetry, virtual threads, WAL connection, stream limit, diff guard, cache bound, shared CompilerConfig, evict lock order
+version = '0.7.31'  // v0.7.31: Opus 4.6 deep review fixes - doRead soft 60KB cap (FIX-15), doMulti 1MB aggregate cap (FIX-16), FileSearchService genuine stream short-circuit (FIX-17), @Deprecated createReadSession(String,String), tool description improvements
 
 java {
     toolchain {

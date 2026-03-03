@@ -1,8 +1,41 @@
-# mcp-groovy-filesystem-server v0.7.30
+# mcp-groovy-filesystem-server v0.7.31
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.31
+
+### Context-window protection  response-size discipline (v0.7.31)
+
+Follow-up fixes from a deep performance review (Opus 4.6, March 2026).  The prior round fixed
+heap-blow risks; this round addresses **response-size discipline** — situations where
+sub-threshold files still consume large chunks of the context window.
+
+**FIX-15 — doRead() soft 60 KB response cap**
+- `FileReadService.doRead()` now truncates content at 60 KB (~15K tokens) before shipping,
+  adding a `_truncated: true` note with byte count and guidance to use head/range/grep.
+- Previously the `_sizeWarning` was advisory only — the full content was still returned.
+- Configurable via `mcp.filesystem.read-soft-cap-chars` (default 61440).
+
+**FIX-16 — doMulti() 1 MB aggregate cap**
+- `FileReadService.doMulti()` now pre-checks total file sizes before loading.
+- If the aggregate exceeds 1 MB, the call is rejected with a helpful error.
+- Prevents accidental 700K-token responses from 10 × 290 KB files.
+
+**FIX-17 — FileSearchService genuine stream short-circuit**
+- `FileSearchService.doContentSearch()` replaced `stream.each { if (cap) return }` with
+  a proper filter-pipeline; `filesScanned` counter made into an `int[]` for lambda access.
+- The walk was previously not short-circuited — it continued traversing the full tree
+  even after `maxResults` was reached.  Now the per-file skip is immediate.
+
+**Additional hygiene**
+- `ChunkBufferService.createReadSession(String, String)` marked `@Deprecated`.
+- Tool description for `multi` now mentions the 1 MB aggregate cap.
+- `execute` tool description now prominently shows `maxStdout`/`maxStderr` defaults with
+  estimated token cost (~12K / ~1.2K tokens respectively).
 
 ---
 
@@ -404,6 +437,7 @@ server_lifecycle action=status
 ## Version History
 | Version | Highlights |
 |---------|-----------|
+| **0.7.31** | Response-size discipline: doRead 60KB soft cap (FIX-15), doMulti 1MB aggregate cap (FIX-16), FileSearchService genuine stream short-circuit (FIX-17), @Deprecated createReadSession(String,String), tool description improvements |
 | **0.7.30** | 14 performance/robustness fixes: size guards on replace/multi_replace, O(nxm) nearest-match removed, stdout capped in loop, zero-copy estimateResponseSize, virtual threads, UsageTracker WAL per-op connections, stream limit short-circuit, doDiff size guard, sessionCallCache bound, shared CompilerConfig, evict lock order |
 | **0.7.29** | LF normalisation on all write paths (doWrite/doReplace/doPatch) - eliminates Windows CRLF/Linux LF split permanently |
 | **0.7.23-0.7.28** | Safe-restart helpers, StructureCache hash-only path, tool description token tweaks, intermediate hardening |

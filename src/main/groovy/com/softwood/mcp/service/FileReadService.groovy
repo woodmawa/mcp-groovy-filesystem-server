@@ -48,6 +48,11 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Value('${mcp.filesystem.large-response-warn-chars:15000}')
     int largeResponseWarnChars
 
+    /** Soft response-size cap for sub-threshold reads (chars). Responses larger than this are
+     *  truncated with an explanatory note. Default 61440 = 60 KB ≈ 15K tokens. */
+    @Value('${mcp.filesystem.read-soft-cap-chars:61440}')
+    int readSoftCapChars
+
     FileReadService(PathService pathService) {
         super(pathService)
     }
@@ -67,7 +72,8 @@ Read files and query filesystem metadata. Actions:
 - tail(path, options.lines=50): last N lines
 - range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
 - grep(path, options.pattern, options.maxMatches=10, options.contextLines=0): regex matches; FILE path only, NOT directory. set contextLines>0 for before/after context
-- multi(options.paths[]): read up to 10 files in parallel - cheapest multi-file read
+- multi(options.paths[]): read up to 10 files in parallel - cheapest multi-file read.
+  NOTE: aggregate content capped at ~1MB total. For large files, use individual read with chunking.
 - info(path): file/dir metadata
 - summary(path): line count + size only - NO content, cheapest existence check
 - exists(path): boolean exists + type
@@ -194,13 +200,28 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
         String content = new File(normalized).getText(encoding)
         String hash = structureCache.getHash(normalized)
+
+        // FIX-15: soft response-size cap  truncate before shipping to protect context window
+        boolean truncated = false
+        if (content.length() > readSoftCapChars) {
+            content  = content.substring(0, readSoftCapChars)
+            truncated = true
+        }
+
         Map<String, Object> resp
         if (isCompact(options)) {
             resp = [content: sanitize(content), lines: content.count('\n') + 1, file_content_hash: hash] as Map<String, Object>
         } else {
             resp = [action: 'read', path: normalized, content: sanitize(content), size: content.length(), file_content_hash: hash] as Map<String, Object>
         }
-        maybeAddSizeWarning(resp, content.length())
+        if (truncated) {
+            long totalChars = Files.size(Paths.get(normalized))  // raw byte count (close enough for message)
+            resp._truncated = true
+            resp._truncatedNote = ("Response truncated at ${readSoftCapChars} chars (~${readSoftCapChars / 4000 as int}K tokens). " +
+                "File has ~${totalChars} bytes total. Use head/range/grep for targeted reads, or use read with chunking for full content." as String)
+        } else {
+            maybeAddSizeWarning(resp, content.length())
+        }
         return textResponse(requestId, resp)
     }
 
@@ -422,6 +443,21 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
         String encoding = options.encoding as String ?: 'UTF-8'
         long sizeCapBytes = (long) readChunkThresholdKb * 1024
+
+        // FIX-16: aggregate size pre-check  reject before loading if total would exceed 1 MB
+        long totalBytes = 0L
+        long aggregateCapBytes = 1024L * 1024L  // 1 MB
+        for (String p : paths) {
+            try {
+                String norm = pathService.normalizePath(p)
+                if (isPathAllowed(norm)) totalBytes += Files.size(Paths.get(norm))
+            } catch (Exception ignored) {}
+        }
+        if (totalBytes > aggregateCapBytes) {
+            return McpResponse.error(requestId, -32602,
+                ("multi: aggregate file sizes (~${totalBytes / 1024}KB) exceed 1MB cap. " +
+                 "Use individual reads with chunking for large files." as String))
+        }
 
         // Parallel file reads via Promises  each on its own virtual thread
         // P2 fix: guard each file against oversized reads before loading

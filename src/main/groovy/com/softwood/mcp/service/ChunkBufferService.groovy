@@ -131,7 +131,10 @@ class ChunkBufferService {
     /**
      * Store pre-chunked file content for paged retrieval.
      * Returns the sessionId and total chunk count.
+     * @deprecated Use storeReadChunk() + registerStreamedReadSession() for memory-efficient streaming.
+     *             This method loads the entire file content as a String before splitting.
      */
+    @Deprecated
     Map<String, Object> createReadSession(String sessionId, String fullContent) {
         List<String> chunks = splitIntoChunks(fullContent)
         ConcurrentSkipListMap<Integer, String> chunkMap = new ConcurrentSkipListMap<>()
