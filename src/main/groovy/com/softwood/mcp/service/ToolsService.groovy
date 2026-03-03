@@ -221,7 +221,11 @@ Developer toolchain. Actions:
 
         // Await all three in parallel
         List<Map<String, Object>> results = Promises.all([gitStatusP, gitBranchP, dirScanP]).get(15, TimeUnit.SECONDS)
-        scan.gitStatus       = results[0].status
+        // FS-4: cap git status output - project_scan is a lightweight overview call
+        String rawGitStatus = results[0].status as String
+        scan.gitStatus = rawGitStatus && rawGitStatus.length() > 2000
+            ? rawGitStatus.substring(0, 2000) + '\n... (git status truncated, use git tool for full output)'
+            : rawGitStatus
         scan.gitBranch       = results[1].branch
         scan.putAll(results[2])
 

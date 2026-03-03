@@ -77,41 +77,47 @@ class CommandWhitelistConfig {
     }
     
     /**
-     * Check if a PowerShell command is allowed
+     * Check if a PowerShell command is allowed.
+     * Uses pattern.matcher().find() so that '.*' matches multiline scripts
+     * (Groovy ==~ is a full-string match and fails on newlines without DOTALL).
+     * Blocked patterns are also checked with find() against the first line only,
+     * keeping dangerous-command detection robust.
      */
     boolean isPowershellAllowed(String command) {
         String normalized = command.trim()
-        
-        // Check blacklist first (use getter to ensure initialization)
-        if (getPowershellBlockedPatterns().any { pattern -> normalized ==~ pattern }) {
-            log.debug("PowerShell command blocked by blacklist: {}", normalized.take(50))
+        String firstLine  = normalized.readLines().first() ?: normalized
+
+        // Check blacklist first - match against full script (find)
+        if (getPowershellBlockedPatterns().any { pattern -> pattern.matcher(normalized).find() }) {
+            log.debug("PowerShell command blocked by blacklist: {}", firstLine.take(50))
             return false
         }
-        
-        // Check whitelist (use getter to ensure initialization)
-        boolean allowed = getPowershellAllowedPatterns().any { pattern -> normalized ==~ pattern }
+
+        // Check whitelist - use find() so '.*' allows multiline scripts
+        boolean allowed = getPowershellAllowedPatterns().any { pattern -> pattern.matcher(normalized).find() }
         if (!allowed) {
-            log.debug("PowerShell command not in whitelist: {}", normalized.take(50))
+            log.debug("PowerShell command not in whitelist: {}", firstLine.take(50))
         }
         return allowed
     }
     
     /**
-     * Check if a Bash command is allowed
+     * Check if a Bash command is allowed.
+     * Uses pattern.matcher().find() so '.*' matches multiline scripts.
      */
     boolean isBashAllowed(String command) {
         String normalized = command.trim()
-        
-        // Check blacklist first (use getter to ensure initialization)
-        if (getBashBlockedPatterns().any { pattern -> normalized ==~ pattern }) {
-            log.debug("Bash command blocked by blacklist: {}", normalized.take(50))
+        String firstLine  = normalized.readLines().first() ?: normalized
+
+        // Check blacklist first
+        if (getBashBlockedPatterns().any { pattern -> pattern.matcher(normalized).find() }) {
+            log.debug("Bash command blocked by blacklist: {}", firstLine.take(50))
             return false
         }
-        
-        // Check whitelist (use getter to ensure initialization)
-        boolean allowed = getBashAllowedPatterns().any { pattern -> normalized ==~ pattern }
+
+        boolean allowed = getBashAllowedPatterns().any { pattern -> pattern.matcher(normalized).find() }
         if (!allowed) {
-            log.debug("Bash command not in whitelist: {}", normalized.take(50))
+            log.debug("Bash command not in whitelist: {}", firstLine.take(50))
         }
         return allowed
     }
@@ -141,7 +147,7 @@ class CommandWhitelistConfig {
         String normalized = command.trim()
 
         // Check blocklist first
-        if (getCmdBlockedPatterns().any { pattern -> normalized ==~ pattern }) {
+        if (getCmdBlockedPatterns().any { pattern -> pattern.matcher(normalized).find() }) {
             log.debug("CMD command blocked by blocklist: {}", normalized.take(50))
             return false
         }
@@ -151,7 +157,7 @@ class CommandWhitelistConfig {
             return true
         }
 
-        boolean allowed = getCmdAllowedPatterns().any { pattern -> normalized ==~ pattern }
+        boolean allowed = getCmdAllowedPatterns().any { pattern -> pattern.matcher(normalized).find() }
         if (!allowed) {
             log.debug("CMD command not in allowlist: {}", normalized.take(50))
         }

@@ -1,8 +1,38 @@
-# mcp-groovy-filesystem-server v0.7.32
+# mcp-groovy-filesystem-server v0.7.35
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.35
+
+**Residual overflow risk fixes (v0.7.35) - 2 fixes from static analysis review:**
+
+- **FS-2 - Remove duplicate `maxLines > 500` guard:** Dead second identical guard removed from `doRange`. Single cap now makes intent clear.
+- **FS-4 - Cap `git status` output in `doProjectScan` to 2,000 chars:** In large repos, `git status` could be substantial. `project_scan` is a lightweight overview; status now truncated at 2K chars with a note to use the `git` tool.
+
+---
+
+## What's New in v0.7.34
+
+**Context window overflow protection (v0.7.34) — 5 fixes from deep-review assessment:**
+
+- **FIX-A  doRead soft cap aligned to 40 K chars (CRITICAL):** `read-soft-cap-chars` default reduced from 61,440 to 40,000. Aligns plain `action=read` with the hard caps on head/tail/range/grep. Responses over this limit emit `_truncated: true` with a note to use chunked read for full content.
+- **FIX-B  doGetMethod output cap (HIGH):** Method body output is now capped at `partial-read-cap-chars` (40 K). A very large generated/data-heavy method body could previously return 90 K+ tokens in one call. Truncated responses include `_truncatedNote` with the `startLine` to resume from using `action=range`.
+- **FIX-C  doStructure entry count + content truncation (HIGH):** Structure results now capped at `structure-max-entries` (default 100) with a `total_entries` field. Individual entry `content` strings truncated at 200 chars. Both compact and full responses benefit. Applies to files with very many methods/fields.
+- **FIX-D  doList/doChildren response-size cap (HIGH):** List and children results now accumulate an estimated char count and stop adding entries once `list-response-cap-chars` (default 30,000) is reached. `_sizeCapped: true` and `total_available` tell the caller to paginate. `doSizes` hard-capped at 50 entries (diagnostic use only).
+- **FIX-H  stdout/stderr truncation flags (LOW):** `execute` and `tools` responses now include `stdout_truncated: true` and/or `stderr_truncated: true` when output was silently cut by the capture cap. Previously there was no way for the caller to know output was incomplete.
+
+---
+
+## What's New in v0.7.33
+
+**Hard response caps + PowerShell whitelist fix (v0.7.33):**
+
+- **FIX-17 head/tail/range/grep hard caps:** All partial-read operations capped at 40,000 chars (~10 K tokens). Prevents the primary overflow source (was producing up to 116 K char single responses).
+- **FIX-16 PowerShell multiline whitelist:** Changed from `==~` (full-string regex, fails on newlines) to `pattern.matcher(script).find()`. Multiline PowerShell scripts now pass the whitelist correctly.
 
 ---
 

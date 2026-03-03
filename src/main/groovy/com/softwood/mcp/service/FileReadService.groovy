@@ -351,7 +351,6 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
         // FIX-17: hard cap maxLines to prevent requesting thousands of lines in one shot
         if (maxLines > 500) maxLines = 500
-        if (maxLines > 500) maxLines = 500
 
         List<String> result = []
         int current = 0

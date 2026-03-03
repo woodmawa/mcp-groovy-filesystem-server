@@ -406,7 +406,7 @@ class UsageTracker {
     private void ensureSchema() {
         withConnection { Connection conn ->
             // Table already exists in context server DB - CREATE IF NOT EXISTS is a no-op
-            conn.createStatement().execute("""
+            conn.createStatement().withCloseable { it.execute("""
                 CREATE TABLE IF NOT EXISTS token_usage (
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
                     recorded_date    TEXT NOT NULL,
@@ -417,31 +417,33 @@ class UsageTracker {
                     response_bytes   INTEGER DEFAULT 0,
                     input_bytes      INTEGER DEFAULT 0,
                     context_layer    TEXT DEFAULT 'other'
-                )""")
+                )""") }
             // Migrate: add input_bytes to any pre-existing table that lacks the column
             try {
-                conn.createStatement().execute(
-                    'ALTER TABLE token_usage ADD COLUMN input_bytes INTEGER DEFAULT 0')
+                conn.createStatement().withCloseable { it.execute(
+                    'ALTER TABLE token_usage ADD COLUMN input_bytes INTEGER DEFAULT 0') }
             } catch (Exception ignored) {}
             // UNIQUE constraint required for INSERT OR REPLACE: one row per
             // (date, tool, layer, session). Multiple sessions on the same day
             // accumulate independently; periodic flushes within a session update in-place.
-            conn.createStatement().execute(
+            conn.createStatement().withCloseable { it.execute(
                 'CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_unique ' +
-                'ON token_usage(recorded_date, tool_name, context_layer, session_id)')
+                'ON token_usage(recorded_date, tool_name, context_layer, session_id)') }
             // Composite index for period stats query (WHERE recorded_date >= ? AND context_layer = ?)
-            conn.createStatement().execute(
+            conn.createStatement().withCloseable { it.execute(
                 'CREATE INDEX IF NOT EXISTS idx_token_usage_date_layer ' +
-                'ON token_usage(recorded_date, context_layer)')
+                'ON token_usage(recorded_date, context_layer)') }
         }
     }
 
     // FIX-9: per-operation connection with WAL mode - eliminates shared-state serialisation bottleneck
+    // FIX-1: added busy_timeout=10000 so filesystem server waits rather than failing immediately on SQLITE_BUSY
     private void withConnection(Closure action) {
         if (!dbPath) throw new IllegalStateException('UsageTracker: DB path not configured')
         Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
         try {
-            conn.createStatement().execute('PRAGMA journal_mode=WAL')
+            conn.createStatement().withCloseable { it.execute('PRAGMA journal_mode=WAL') }
+            conn.createStatement().withCloseable { it.execute('PRAGMA busy_timeout=10000') }
             action(conn)
         } finally {
             try { conn?.close() } catch (Exception ignored) {}

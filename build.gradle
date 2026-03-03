@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.34'  // v0.7.34: FIX-A doRead soft cap 61440->40000, FIX-B doGetMethod char cap, FIX-C doStructure entry+content cap, FIX-D doList/doChildren/doSizes response-size cap, FIX-H stdout/stderr truncation flags
+version = '0.7.35'  // v0.7.35: FS-2 remove duplicate maxLines guard, FS-4 cap git status in doProjectScan to 2000 chars
 
 java {
     toolchain {
