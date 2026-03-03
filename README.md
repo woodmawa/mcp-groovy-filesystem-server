@@ -1,8 +1,24 @@
-# mcp-groovy-filesystem-server v0.7.31
+# mcp-groovy-filesystem-server v0.7.32
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.32
+
+### SQLite write-collision fix (v0.7.32)
+
+Fix from Opus 4.6 assessment (FIX-1) — eliminates `SQLITE_BUSY` errors logged every 10 minutes.
+
+**Root cause:** Both servers share `best_practices.db`. `UsageTracker.withConnection()` opened a connection without a `busy_timeout` PRAGMA. When the context server's persistent connection held a write lock, the filesystem server's periodic flush failed immediately with `SQLITE_BUSY`.
+
+**Fixes applied:**
+- `UsageTracker.withConnection()` now sets `PRAGMA busy_timeout=10000` (10 seconds patience) and `PRAGMA journal_mode=WAL` — matches context server's settings.
+- `ensureSchema()` statement leaks fixed — all `conn.createStatement().execute(...)` calls wrapped in `.withCloseable { }` so statements are closed promptly.
+
+**Impact:** Silent `UsageTracker: periodic flush failed` errors (3× per session at ~10 min intervals) are eliminated. Token usage tracking is now fully reliable.
 
 ---
 
