@@ -1,8 +1,75 @@
-# mcp-groovy-filesystem-server v0.7.22
+# mcp-groovy-filesystem-server v0.7.30
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.23 - v0.7.30
+
+### CRLF drift fix — permanent normalisation (v0.7.23 - v0.7.29)
+
+A long-standing source of subtle bugs was Windows writing CRLF line endings into source files
+that were later read back on Linux (Syncthing sync), causing spurious diffs, grep misses, and
+patch failures.  From v0.7.23 onwards **all mutating write paths normalise to LF on output**:
+`doWrite`, `doAppend`, `doReplace`, `doPatch`, `doMultiReplace`, `doChunkWrite/finalise` all
+call `shouldNormaliseLf()` and rewrite through a `\r\n → \n` pass before the atomic rename.
+The original line-ending style is preserved only for the diagnostic `endings:` field in log
+messages so that regressions are visible, but written bytes are always LF.  This eliminates
+the CRLF/LF split permanently regardless of which OS built or edited a file.
+
+Intermediate versions in this range also added: safe-restart helper scripts, improved
+StructureCache hash-only path, and minor token-economy tweaks to tool descriptions.
+
+### Performance hardening — all 14 fixes from cd-performance-assessment.md (v0.7.30)
+
+A comprehensive code-review pass identified and fixed every performance and robustness issue
+in the codebase.  All fixes are tagged with `// FIX-N` comments in source for traceability.
+
+**HIGH — heap-load guards (FIX-1, FIX-2, FIX-3)**
+- `FileWriteService.doReplace` and `doMultiReplace` now check file size against
+  `replaceChunkThresholdKb` before calling `Files.readAllBytes()`.  Files over the threshold
+  return a helpful error directing callers to use `patch` instead.
+- The O(n×m) nearest-match fallback scan (which called `.toSet().intersect()` per line,
+  allocating a `HashSet<Character>` for every line in the file) is removed entirely.  The
+  first-pass `contains` scan is capped at 500 lines.  The hint is informational only —
+  accuracy beyond 500 lines was not worth the allocation cost.
+
+**MEDIUM — stream / process I/O fixes (FIX-4, FIX-5, FIX-6, FIX-7, FIX-8, FIX-9)**
+- `FileSearchService.searchFileContent`: replaced `file.eachLine('UTF-8')` with explicit
+  `withReader { BufferedReader br -> br.eachLine { ... } }` for guaranteed stream close.
+- `ToolsService.runToolRaw` and `ExecuteService.runProcess`: stdout/stderr `StringBuilder`
+  accumulation is now capped *inside* the virtual-thread reader loop (not downstream with
+  `.take()`).  A process generating 200 MB of output no longer fills the heap before
+  truncation — lines beyond the cap are drained and discarded so the child process never
+  blocks on a full pipe.
+- `McpController.estimateResponseSize`: replaced `response?.result?.toString()?.length()`
+  (which forced full Map serialisation) with a direct read of the `text` field from the
+  content list — zero allocations, zero serialisation.
+- Virtual threads enabled for the entire Tomcat thread pool via
+  `spring.threads.virtual.enabled=true` in `application.yml`.  Long-running tool calls
+  (gradle builds, bash scripts) no longer monopolise platform threads.
+- `UsageTracker`: replaced the single shared `volatile Connection dbConn` + `dbLock`
+  serialisation bottleneck with per-operation short-lived connections.  Each `withConnection`
+  call opens a fresh connection, sets `PRAGMA journal_mode=WAL`, runs the action, then closes.
+  Concurrent periodic flush + stats reads no longer block each other.
+
+**LOW — correctness and bounds fixes (FIX-10, FIX-11, FIX-12, FIX-13, FIX-14)**
+- `FileListService`: `stream.each { if (results.size() >= max) return }` was using `return`
+  as `continue`, iterating the entire directory even after the limit was hit.  Replaced with
+  `stream.filter(...).limit(max).each` in `doChildren`, `doList`, and `doSizes`.
+- `FileReadService.doDiff`: size pre-check added before loading both files into heap.  Files
+  over `readChunkThresholdKb` return an error directing callers to `grep` or `range`.
+- `FilesystemTelemetryService.sessionCallCache`: bounded at 1000 entries to prevent
+  unbounded growth in long sessions.
+- `AstStructureScanner`: `CompilerConfiguration` promoted to `private static final
+  SHARED_COMPILER_CONFIG`.  It is read-only after initialisation and safe to share across
+  threads.  `CompilationUnit` remains per-call as it is stateful.
+- `StructureCache`: `evictIfNeeded()` moved from *inside* `synchronized(pathLock)` to
+  *before* acquiring `pathLock` in both `getStructure()` and `getHash()`.  The previous
+  ordering created nested lock acquisition (`pathLock → lruLock`) on every cache miss,
+  serialising all concurrent hash computations through the LRU eviction lock.
 
 ---
 
@@ -314,7 +381,7 @@ server_lifecycle action=status
 
 ```bash
 ./gradlew bootJar -x test
-# Output: build/libs/mcp-groovy-filesystem-server-0.7.22.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.7.30.jar
 # Deploy: copy to claude-sync/jars/
 #         update mcp-http-servers.json jar name
 #         server_lifecycle action=reload then action=ensure name=filesystem
@@ -335,10 +402,12 @@ server_lifecycle action=status
 ---
 
 ## Version History
-
 | Version | Highlights |
 |---------|-----------|
-| **0.7.22** | doStop port-kill fallback (managed→runtime PID→actuator); reverse-order stop-all; HTTP-first config for Desktop+Code |
+| **0.7.30** | 14 performance/robustness fixes: size guards on replace/multi_replace, O(nxm) nearest-match removed, stdout capped in loop, zero-copy estimateResponseSize, virtual threads, UsageTracker WAL per-op connections, stream limit short-circuit, doDiff size guard, sessionCallCache bound, shared CompilerConfig, evict lock order |
+| **0.7.29** | LF normalisation on all write paths (doWrite/doReplace/doPatch) - eliminates Windows CRLF/Linux LF split permanently |
+| **0.7.23-0.7.28** | Safe-restart helpers, StructureCache hash-only path, tool description token tweaks, intermediate hardening |
+| **0.7.22** | doStop port-kill fallback (managed/runtime PID/actuator); reverse-order stop-all; HTTP-first config for Desktop+Code |
 | **0.7.21** | Safe editing workflow in tool descriptions; skills/SKILL.md; expectedHash guidance |
 | **0.7.20** | Write responses return file_content_hash alias alongside content_hash |
 | **0.7.19** | FilesystemTelemetryService hook |

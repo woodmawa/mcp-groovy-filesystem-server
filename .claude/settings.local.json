@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__context-server__context_lifecycle",
+      "mcp__groovy-filesystem__file_read",
+      "mcp__context-server__context_read",
+      "mcp__groovy-filesystem__file_list",
+      "mcp__context-server__context_write",
+      "mcp__groovy-filesystem__file_write",
+      "mcp__groovy-filesystem__tools",
+      "mcp__groovy-filesystem__file_search",
+      "mcp__groovy-filesystem__execute",
+      "mcp__groovy-filesystem__file_lifecycle",
+      "Bash(python3:*)",
+      "Bash(powershell:*)",
+      "Bash(curl:*)",
+      "Bash(netstat:*)",
+      "Bash(# Check what mappings/endpoints exist\ncurl -s http://localhost:8081/actuator/mappings 2>/dev/null | python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k\\) for k in d.get\\('contexts',{}\\).get\\('application',{}\\).get\\('mappings',{}\\).get\\('dispatcherServlet',{}\\).get\\('mappings',[]\\)]\" 2>/dev/null || curl -s \"http://localhost:8081/actuator\" 2>/dev/null)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "groovy-filesystem",
+    "context-server"
+  ]
+}
