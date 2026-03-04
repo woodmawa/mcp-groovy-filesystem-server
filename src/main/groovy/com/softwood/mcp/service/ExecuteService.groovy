@@ -147,8 +147,19 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             log.warn("PowerShell script rejected by whitelist/blacklist config")
             return McpResponse.error(requestId, -32603, "PowerShell command not permitted by whitelist configuration")
         }
-        List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command', script]
-        return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides, options)
+        // Always write script to a temp .ps1 file and invoke via -File.
+        // Passing scripts via -Command mangles multi-line scripts, backtick escapes,
+        // and regex string literals during MCP JSON serialisation -> ProcessBuilder arg passing.
+        // -File bypasses all of that: PowerShell reads the file directly, no quoting issues.
+        File tempScript = null
+        try {
+            tempScript = File.createTempFile('mcp-ps-', '.ps1')
+            tempScript.text = script
+            List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tempScript.absolutePath]
+            return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides, options)
+        } finally {
+            tempScript?.delete()
+        }
     }
 
     private McpResponse doCmd(String script, String workingDir, int timeout,
