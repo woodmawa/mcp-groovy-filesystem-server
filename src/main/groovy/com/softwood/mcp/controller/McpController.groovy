@@ -43,6 +43,10 @@ class McpController {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     FilesystemTelemetryService telemetryService
 
+    // FIX-C: v0.7.43 global backstop - hard ceiling on any single tool response
+    @org.springframework.beans.factory.annotation.Value('${mcp.filesystem.global-response-cap-chars:64000}')
+    int globalResponseCapChars
+
 
     McpController(List<ToolHandler> toolHandlers) {
         this.toolHandlers = toolHandlers
@@ -150,14 +154,25 @@ class McpController {
         log.debug('Dispatching tool: {}', toolName)
         McpResponse response = handler.handleToolCall(toolName, arguments, request.id)
 
-        // v0.7.19: telemetry — fire-and-forget, never blocks response
+        // v0.7.19: telemetry - fire-and-forget, never blocks response
+        int charCount = 0
         try {
             if (telemetryService != null) {
-                int charCount = estimateResponseSize(response)
+                charCount = estimateResponseSize(response)
                 telemetryService.recordToolCall('unknown', toolName, charCount, arguments)
             }
         } catch (Exception e) {
             log.debug('Telemetry hook failed (non-fatal): {}', e.message)
+        }
+
+        // FIX-C: v0.7.43 global response backstop - no response may exceed cap regardless of handler
+        if (globalResponseCapChars > 0 && charCount > globalResponseCapChars) {
+            int tokenEst = Math.round(charCount / 4.0f) as int
+            log.warn('BACKSTOP triggered: {} response {}chars (~{}tok) exceeds global cap {}chars',
+                toolName, charCount, tokenEst, globalResponseCapChars)
+            return McpResponse.error(request.id, -32603,
+                "Response too large: ${toolName} produced ${charCount} chars (~${tokenEst} tokens). " +
+                "Use targeted actions: structure/get_method/range/grep instead of full reads.")
         }
 
         return response

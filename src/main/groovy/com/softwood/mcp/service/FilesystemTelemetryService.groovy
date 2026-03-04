@@ -51,6 +51,34 @@ class FilesystemTelemetryService {
     private final Map<String, String> sessionCallCache = new ConcurrentHashMap<>()
     private volatile String trackedSessionId = null
 
+    // FIX-B: v0.7.43 session token accumulator
+    // Tracks cumulative read tokens synchronously (not async) so callers can
+    // include _session_read_tokens in their response before returning it.
+    private final java.util.concurrent.atomic.AtomicInteger sessionReadTokens = new java.util.concurrent.atomic.AtomicInteger(0)
+    private final java.util.concurrent.atomic.AtomicInteger sessionReadCalls  = new java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Record a read-family tool call synchronously and return the cumulative
+     * session token count AFTER this call. Used by FileReadService to inject
+     * _session_read_tokens into every read response.
+     * Thread-safe; O(1).
+     */
+    int accumulateReadTokens(int responseChars) {
+        int tokens = Math.round(responseChars / 4.0f) as int
+        sessionReadCalls.incrementAndGet()
+        return sessionReadTokens.addAndGet(tokens)
+    }
+
+    /** Reset the session accumulator (called when a new session starts). */
+    void resetSessionAccumulator() {
+        sessionReadTokens.set(0)
+        sessionReadCalls.set(0)
+    }
+
+    /** Current cumulative read tokens this session. */
+    int getSessionReadTokens() { sessionReadTokens.get() }
+    int getSessionReadCalls()  { sessionReadCalls.get() }
+
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
@@ -67,10 +95,12 @@ class FilesystemTelemetryService {
                          int responseChars, Map<String, Object> args) {
         if (!dbPath) return   // persistence not configured — silent no-op
 
-        // Reset repeat cache when session changes
+        // Reset repeat cache and token accumulator when session changes
         if (sessionId && sessionId != trackedSessionId) {
             sessionCallCache.clear()
+            resetSessionAccumulator()
             trackedSessionId = sessionId
+            log.debug('FilesystemTelemetry: new session {} - accumulator reset', sessionId)
         }
 
         asyncWriter.submit {

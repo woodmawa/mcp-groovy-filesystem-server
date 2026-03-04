@@ -42,6 +42,10 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Autowired
     StructureCache structureCache
 
+    // FIX-B: v0.7.43 session token meter - optional, non-fatal if absent
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    FilesystemTelemetryService telemetryService
+
     @Value('${mcp.filesystem.read-chunk-threshold-kb:60}')
     int readChunkThresholdKb
 
@@ -80,8 +84,7 @@ class FileReadService extends AbstractFileService implements ToolHandler {
             name       : 'file_read',
             description: '''\
 Read files and query filesystem metadata. Actions:
-- read(path): full file content. FILES >60KB AUTO-CHUNK - follow sessionId/totalChunks response.
-  CAUTION: read caps output at 8000 chars (~2K tokens). For files >~200 lines use structure+get_method or range instead.
+- read(path): full file content. FILES >60KB AUTO-CHUNK. REFUSED if file >200 lines (use structure/get_method/range instead). options.force=true overrides refusal. options.knownHash=<hash> returns {unchanged:true} instantly if file unchanged - USE THIS on any re-read within same session.
 - head(path, options.lines=50): first N lines
 - tail(path, options.lines=50): last N lines
 - range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
@@ -136,7 +139,9 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                                   algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
-                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (structure: methods only, no endLine)']
+                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (structure: methods only, no endLine)'],
+                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from a previous read of this file. If file unchanged, returns {unchanged:true, file_content_hash} with NO content - saves all tokens. Use on every re-read.'],
+                                  force       : [type: 'boolean', description: 'Pass force=true to override the >200 line refusal on action=read. Only use when you genuinely need the full file content.']
                               ]]
                 ],
                 required  : ['action']
@@ -201,8 +206,29 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
     private McpResponse doRead(String path, Map<String, Object> options, Object requestId) {
         String normalized   = validateFilePath(path)
         String encoding     = options.encoding as String ?: 'UTF-8'
+
+        // FIX-D: hash gate - if file unchanged, return sentinel instead of re-reading
+        McpResponse unchanged = checkKnownHash(normalized, options, requestId)
+        if (unchanged != null) return unchanged
+
         long fileSize       = Files.size(Paths.get(normalized))
         long threshBytes    = (long) readChunkThresholdKb * 1024
+
+        // FIX-A: refuse blind full read on large files - force targeted reading
+        // Skip this guard if force=true is passed (escape hatch for legitimate full reads)
+        if (!(options.force as boolean)) {
+            int lineCount = countLinesUpTo(normalized, readMaxLinesBeforeRefuse, encoding)
+            if (lineCount > readMaxLinesBeforeRefuse) {
+                return McpResponse.error(requestId, -32602,
+                    ("read refused: file has more than ${readMaxLinesBeforeRefuse} lines. " +
+                     "Use targeted actions instead:\n" +
+                     "  1. structure(path, compact=true) - get method/section outline\n" +
+                     "  2. get_method(path, method) - read one method body\n" +
+                     "  3. range(path, startLine, maxLines) - read specific lines\n" +
+                     "  4. grep(path, pattern) - find specific content\n" +
+                     "Pass options.force=true only if you genuinely need the full file.") as String)
+            }
+        }
 
         // S-I1 FIX: stream large files directly into chunks - never load full file into memory
         if (fileSize > threshBytes) {
@@ -244,6 +270,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         } else {
             maybeAddSizeWarning(resp, content.length())
         }
+        injectSessionTokenMeter(resp, content.length())
         return textResponse(requestId, resp)
     }
 
@@ -280,6 +307,9 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
     private McpResponse doHead(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
+        // FIX-D: hash gate
+        McpResponse unchanged = checkKnownHash(normalized, options, requestId)
+        if (unchanged != null) return unchanged
         int lines         = (options.lines as Integer) ?: 50
         String encoding   = options.encoding as String ?: 'UTF-8'
 
@@ -312,11 +342,15 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         } else {
             maybeAddSizeWarning(respHead, joinedHead.length())
         }
+        injectSessionTokenMeter(respHead, joinedHead.length())
         return textResponse(requestId, respHead)
     }
 
     private McpResponse doTail(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
+        // FIX-D: hash gate
+        McpResponse unchanged = checkKnownHash(normalized, options, requestId)
+        if (unchanged != null) return unchanged
         int lines         = (options.lines as Integer) ?: 50
         String encoding   = options.encoding as String ?: 'UTF-8'
 
@@ -350,10 +384,14 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         } else {
             maybeAddSizeWarning(respTail, joinedTail.length())
         }
+        injectSessionTokenMeter(respTail, joinedTail.length())
         return textResponse(requestId, respTail)
     }
     private McpResponse doRange(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
+        // FIX-D: hash gate
+        McpResponse unchanged = checkKnownHash(normalized, options, requestId)
+        if (unchanged != null) return unchanged
         int startLine     = (options.startLine as Integer) ?: 1
         int maxLines      = (options.maxLines as Integer) ?: 100
         String encoding   = options.encoding as String ?: 'UTF-8'
@@ -396,6 +434,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         } else {
             maybeAddSizeWarning(respRange, joinedRange.length())
         }
+        injectSessionTokenMeter(respRange, joinedRange.length())
         return textResponse(requestId, respRange)
     }
 
@@ -836,6 +875,10 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             return McpResponse.error(requestId, -32602, "File not found: ${sanitize(normalized)}")
         }
 
+        // FIX-D: hash gate - if file unchanged, no point re-reading method body
+        McpResponse unchanged = checkKnownHash(normalized, options, requestId)
+        if (unchanged != null) return unchanged
+
         String methodName = options.method as String
         boolean fuzzy     = options.fuzzy as Boolean ?: false
         if (!methodName) return McpResponse.error(requestId, -32602, "options.method is required for get_method")
@@ -883,6 +926,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             gmResp._truncated = true
             gmResp._truncatedNote = ("Method body truncated at ${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). Use action=range with startLine=${startLine} and maxLines to read the rest." as String)
         }
+        injectSessionTokenMeter(gmResp, content.length())
         return textResponse(requestId, gmResp)
     }
 
@@ -923,9 +967,6 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
     // Size-warning helper
     // -----------------------------------------------------------------------
 
-    /** Appends a soft _sizeWarning to a response map when content is large enough to
-     *  meaningfully consume context window budget. Threshold configurable via
-     *  mcp.filesystem.large-response-warn-chars (default 15000 chars ≈ 3750 tokens). */
     private void maybeAddSizeWarning(Map<String, Object> response, int contentLength) {
         if (contentLength > largeResponseWarnChars) {
             long kb = Math.round(contentLength / 1024.0f)
@@ -933,5 +974,68 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             response._sizeWarning = ("NOTE: response is ${kb}KB (~${tokens} tokens). " +
                 "Consider head/range/grep for targeted reads to preserve context window." as String)
         }
+    }
+
+    /**
+     * FIX-B: Accumulate this response's chars into the session token meter and
+     * inject _session_read_tokens + warning into the response map.
+     * Called on every read-family response before returning it.
+     */
+    private void injectSessionTokenMeter(Map<String, Object> response, int contentLength) {
+        if (telemetryService == null) return
+        int sessionTokens = telemetryService.accumulateReadTokens(contentLength)
+        int sessionCalls  = telemetryService.getSessionReadCalls()
+        response._session_read_tokens = sessionTokens
+        if (sessionTokens > 80000) {
+            response._session_budget_warn = ("CRITICAL: ${sessionTokens} tokens burned on file reads this session (${sessionCalls} calls). " +
+                "Context window at serious risk. STOP reading files - use only structure/get_method/grep from now on." as String)
+        } else if (sessionTokens > 40000) {
+            response._session_budget_warn = ("WARNING: ${sessionTokens} tokens burned on file reads this session (${sessionCalls} calls). " +
+                "Switch to structure/get_method/range to avoid context overflow." as String)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FIX-D: Hash-gated re-read
+    // If caller passes options.knownHash matching current file hash,
+    // the file has not changed - return unchanged sentinel (~10 tokens).
+    // -----------------------------------------------------------------------
+
+    private McpResponse checkKnownHash(String normalized, Map<String, Object> options, Object requestId) {
+        String knownHash = options.knownHash as String
+        if (!knownHash) return null
+        String currentHash = structureCache.getHash(normalized)
+        if (currentHash == knownHash) {
+            log.debug('hash-gate HIT: {} unchanged ({})', normalized, knownHash)
+            return textResponse(requestId, [
+                unchanged        : true,
+                file_content_hash: currentHash,
+                _note            : 'File unchanged since last read - reuse content from previous response.'
+            ] as Map<String, Object>)
+        }
+        log.debug('hash-gate MISS: {} changed (known={}, current={})', normalized, knownHash, currentHash)
+        return null
+    }
+
+    // -----------------------------------------------------------------------
+    // FIX-A: Line-count guard for doRead
+    // Refuse blind full reads on files over the threshold.
+    // Forces use of structure/get_method/range instead.
+    // -----------------------------------------------------------------------
+
+    @Value('${mcp.filesystem.read-max-lines-before-refuse:200}')
+    int readMaxLinesBeforeRefuse
+
+    /**
+     * Count lines up to limit+1. Stops early so we never scan the whole
+     * file just to get a line count.
+     */
+    private static int countLinesUpTo(String normalizedPath, int limit, String encoding) {
+        int count = 0
+        new File(normalizedPath).withReader(encoding) { Reader r ->
+            BufferedReader br = new BufferedReader(r)
+            while (count <= limit && br.readLine() != null) count++
+        }
+        return count
     }
 }

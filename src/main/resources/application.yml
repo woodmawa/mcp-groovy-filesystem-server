@@ -63,6 +63,15 @@ mcp:
     # multi is for small targeted files — anything bigger should use individual reads.
     multi-read-cap-chars: 24000
 
+    # v0.7.43: FIX-A - doRead refuses full reads on files with more than this many lines.
+    # Forces use of structure/get_method/range. Pass options.force=true to override.
+    read-max-lines-before-refuse: 200
+
+    # v0.7.43: FIX-C - global backstop in McpController. No single tool response may
+    # exceed this many chars regardless of which handler produced it.
+    # 64000 chars = ~16K tokens. Set to 0 to disable.
+    global-response-cap-chars: 64000
+
     # v0.0.7: Default file pattern for project/content searches
     default-file-pattern: '.*\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$'
 
