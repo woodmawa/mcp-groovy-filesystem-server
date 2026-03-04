@@ -85,8 +85,12 @@ Read files and query filesystem metadata. Actions:
 - tail(path, options.lines=50): last N lines
 - range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
 - grep(path, options.pattern, options.maxMatches=10, options.contextLines=0): regex matches; FILE path only, NOT directory. set contextLines>0 for before/after context
-- multi(options.paths[]): read up to 10 files in parallel - cheapest multi-file read.
+- multi(options.paths[]): read up to 10 files in parallel.
+  CONTEXT-EFFICIENCY: pass options.knownHashes {"path"->"12-char-hash"} from prior reads.
+  Server returns {unchanged:true, file_content_hash} for any file whose hash still matches,
+  omitting content entirely - saves tokens on re-reads within the same session.
   NOTE: aggregate content capped at ~1MB total. For large files, use individual read with chunking.
+  NOTE: Prefer get_method/range/grep over multi for targeted lookups within files already read.
 - info(path): file/dir metadata
 - summary(path): line count + size only - NO content, cheapest existence check
 - exists(path): boolean exists + type
@@ -102,7 +106,9 @@ Read files and query filesystem metadata. Actions:
 NOTE: Use summary before read on unknown files to check size. Batch reads with multi.
 NOTE: Use get_method to read a single method before editing it - cheaper than structure+range.
 NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char SHA-256 of whole file).
-      Pass this as options.expectedHash on patch/replace/multi_replace to guard against drift.''',
+      Pass this as options.expectedHash on patch/replace/multi_replace to guard against drift.
+NOTE: AVOID re-reading files already in context this session unless you know they have changed.
+      Use knownHashes on multi to verify staleness cheaply before fetching full content.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -123,6 +129,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                                   fuzzy       : [type: 'boolean', description: 'If true, match method name as substring (for get_method)'],
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   paths       : [type: 'array', items: [type: 'string'], description: 'File paths for multi (required for multi, max 10)'],
+                                  knownHashes : [type: 'object', description: 'Map of {path -> 12-char hash} from prior reads. Files whose hash still matches return {unchanged:true, file_content_hash} with no content - saves tokens on re-reads.'],
                                   compareTo   : [type: 'string',  description: 'Second file for diff (required for diff)'],
                                   algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
@@ -490,13 +497,28 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         String encoding = options.encoding as String ?: 'UTF-8'
         long sizeCapBytes = (long) readChunkThresholdKb * 1024
 
-        // FIX-16: aggregate size pre-check - reject before loading if total would exceed 1 MB
+        // v0.7.37: build normalised knownHashes lookup - both sides normalised to avoid
+        // Windows/WSL path format mismatches causing false cache misses
+        Map<String, String> rawKnown = (options.knownHashes instanceof Map)
+            ? (options.knownHashes as Map<String, String>)
+            : ([:] as Map<String, String>)
+        Map<String, String> knownHashes = [:] as Map<String, String>
+        rawKnown.each { String k, String v ->
+            try { knownHashes[pathService.normalizePath(k) as String] = v as String }
+            catch (Exception ignored) {}
+        }
+
+        // FIX-16: aggregate size pre-check - skip unchanged files from byte count
         long totalBytes = 0L
         long aggregateCapBytes = 1024L * 1024L  // 1 MB
         for (String p : paths) {
             try {
                 String norm = pathService.normalizePath(p)
-                if (isPathAllowed(norm)) totalBytes += Files.size(Paths.get(norm))
+                if (!isPathAllowed(norm)) continue
+                // unchanged files won't be loaded - don't count them against the cap
+                String currentHash = structureCache.getHash(norm)
+                if (knownHashes[norm] && knownHashes[norm] == currentHash) continue
+                totalBytes += Files.size(Paths.get(norm))
             } catch (Exception ignored) {}
         }
         if (totalBytes > aggregateCapBytes) {
@@ -506,17 +528,29 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
         }
 
         // Parallel file reads via Promises - each on its own virtual thread
-        // P2 fix: guard each file against oversized reads before loading
+        // v0.7.37: hash short-circuit - unchanged files return metadata only, no content loaded
         List<Promise<Map<String, Object>>> promises = paths.collect { String p ->
             Promises.async(({ ->
                 try {
                     String normalized = validateFilePath(p)
+                    String currentHash = structureCache.getHash(normalized)
+
+                    // Hash short-circuit: if caller has current hash, skip content fetch entirely
+                    if (knownHashes[normalized] && knownHashes[normalized] == currentHash) {
+                        return [path: normalized, unchanged: true,
+                                file_content_hash: currentHash, success: true] as Map<String, Object>
+                    }
+
                     long fileSize = Files.size(Paths.get(normalized))
                     if (fileSize > sizeCapBytes) {
                         return [path: normalized, error: "File too large for multi (${fileSize} bytes > ${sizeCapBytes} cap). Use read with chunking.", success: false] as Map<String, Object>
                     }
                     String content = new File(normalized).getText(encoding)
-                    return [path: normalized, content: sanitize(content), size: content.length(), success: true] as Map<String, Object>
+                    // v0.7.37: include file_content_hash on all successful results so callers
+                    // can build knownHashes map for subsequent multi calls
+                    return [path: normalized, content: sanitize(content),
+                            size: content.length(), file_content_hash: currentHash,
+                            success: true] as Map<String, Object>
                 } catch (Exception e) {
                     return [path: sanitize(p), error: sanitize(e.message), success: false] as Map<String, Object>
                 }
@@ -525,11 +559,14 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
 
         List<Map<String, Object>> results = Promises.all(promises).get(30, TimeUnit.SECONDS)
 
-        // FIX-17: cap aggregate content output to avoid context overflow
+        // Count unchanged for summary - helps callers confirm short-circuit worked
+        int unchangedCount = results.count { Map<String, Object> r -> r.unchanged == true } as int
+
+        // FIX-17: cap aggregate content - unchanged entries contribute 0 bytes
         int aggChars = 0
         boolean aggCapped = false
         for (Map<String, Object> r : results) {
-            if (r.success && r.content) {
+            if (r.success && !r.unchanged && r.content) {
                 String c = r.content as String
                 aggChars += c.length()
                 if (aggChars > multiReadCapChars) {
@@ -540,7 +577,12 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 }
             }
         }
-        Map<String, Object> multiResp = [action: 'multi', count: results.size(), files: results] as Map<String, Object>
+        Map<String, Object> multiResp = [
+            action         : 'multi',
+            count          : results.size(),
+            unchanged_count: unchangedCount,
+            files          : results
+        ] as Map<String, Object>
         if (aggCapped) {
             multiResp._sizeCapped = true
             multiResp._sizeCappedNote = ("multi aggregate output capped at ${multiReadCapChars} chars (~${multiReadCapChars/4000 as int}K tokens). Use fewer files or head/range for targeted reads." as String)

@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.36'  // v0.7.36: SSE transport (McpSseController GET /sse + POST /message), actuator health endpoint // v0.7.35: FS-2 remove duplicate maxLines guard, FS-4 cap git status in doProjectScan to 2000 chars
+version = '0.7.37'  // v0.7.37: multi hash short-circuit (knownHashes), file_content_hash on all multi results, re-read guidance in description // v0.7.36: SSE transport (McpSseController GET /sse + POST /message), actuator health endpoint
 
 java {
     toolchain {
