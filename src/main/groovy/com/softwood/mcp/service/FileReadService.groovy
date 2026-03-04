@@ -894,7 +894,19 @@ NOTE: AVOID re-reading files already in context this session unless you know the
         if (!sessionId) return McpResponse.error(requestId, -32602, "options.sessionId required for chunk_read")
 
         String chunk = chunkBufferService.getReadChunk(sessionId, chunkIndex)
-        return textResponse(requestId, [action: 'chunk_read', sessionId: sessionId, chunkIndex: chunkIndex, content: chunk])
+
+        // FIX-C1: cap individual chunk responses to partialReadCapChars to prevent
+        // 400KB chunks overflowing context window (chunk path previously bypassed all caps)
+        boolean chunkTruncated = chunk != null && chunk.length() > partialReadCapChars
+        if (chunkTruncated) chunk = chunk.substring(0, partialReadCapChars)
+
+        Map<String, Object> resp = [action: 'chunk_read', sessionId: sessionId, chunkIndex: chunkIndex, content: chunk]
+        if (chunkTruncated) {
+            resp._truncated = true
+            resp._truncatedNote = ("Chunk truncated at ${partialReadCapChars} chars (~${partialReadCapChars/4000 as int}K tokens). " +
+                "Increase specificity with head/range/grep rather than chunk_read for large files." as String)
+        }
+        return textResponse(requestId, resp)
     }
 
     private McpResponse doFinaliseRead(Map<String, Object> options, Object requestId) {

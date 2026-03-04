@@ -64,13 +64,14 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 Write, append, or modify file content. Actions:
 - write(path, content): overwrite entire file
 - append(path, content): append to end
-- replace(path, options.oldText, options.newText): replace ONE unique string. Not-found returns nearest_match hint; duplicate returns line numbers.
+- replace(path, options.oldText, options.newText): replace ONE unique string. CRITICAL: always check response for success:false or error field - not-found returns McpError with nearest_match hint; duplicate returns line numbers. Silent-looking success with no file change means oldText was not matched.
 - patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed, both startLine AND endLine required. ALWAYS read exact lines first.
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
 - chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
 All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.
 
 SAFE EDITING: always pass expectedHash (hash from last read). For targeted code edits: get_method -> patch. For unique string replacements: grep to confirm uniqueness -> replace. For multiple changes to same file: multi_replace. NEVER sequential replace calls without re-reading.
+CRITICAL: replace failure (oldText not found) returns a JSON-RPC error - STOP and read the error detail before retrying. Do NOT fall through to patch silently.
 SKILL: For worked examples read:
   file_read action=read path=${skillPath}""").toString(),
             inputSchema: [
