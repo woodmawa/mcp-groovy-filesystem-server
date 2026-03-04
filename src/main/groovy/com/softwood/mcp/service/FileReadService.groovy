@@ -42,24 +42,24 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Autowired
     StructureCache structureCache
 
-    @Value('${mcp.filesystem.read-chunk-threshold-kb:300}')
+    @Value('${mcp.filesystem.read-chunk-threshold-kb:60}')
     int readChunkThresholdKb
 
     @Value('${mcp.filesystem.large-response-warn-chars:15000}')
     int largeResponseWarnChars
 
     /** Soft response-size cap for sub-threshold reads (chars). Responses larger than this are
-     *  truncated with an explanatory note. Default 40000 = ~10K tokens (aligned with partial-read cap). */
-    @Value('${mcp.filesystem.read-soft-cap-chars:40000}')
+     *  truncated with an explanatory note. Default 8000 = ~2K tokens. */
+    @Value('${mcp.filesystem.read-soft-cap-chars:8000}')
     int readSoftCapChars
 
     /** Hard cap for head/tail/range/grep content (chars). Prevents context overflow from
-     *  large line counts. Default 40000 = ~10K tokens. Truncates with explanatory note. */
-    @Value('${mcp.filesystem.partial-read-cap-chars:40000}')
+     *  large line counts. Default 12000 = ~3K tokens. Truncates with explanatory note. */
+    @Value('${mcp.filesystem.partial-read-cap-chars:12000}')
     int partialReadCapChars
 
-    /** Hard cap for multi aggregate output (chars across all files). Default 80000 = ~20K tokens. */
-    @Value('${mcp.filesystem.multi-read-cap-chars:80000}')
+    /** Hard cap for multi aggregate output (chars across all files). Default 24000 = ~6K tokens. */
+    @Value('${mcp.filesystem.multi-read-cap-chars:24000}')
     int multiReadCapChars
 
     /** Max entries returned by structure action. Prevents huge JSON arrays for files with many methods.
@@ -80,16 +80,16 @@ class FileReadService extends AbstractFileService implements ToolHandler {
             name       : 'file_read',
             description: '''\
 Read files and query filesystem metadata. Actions:
-- read(path): full file content (auto-chunks if >300KB - follow sessionId/totalChunks in response)
+- read(path): full file content. FILES >60KB AUTO-CHUNK - follow sessionId/totalChunks response.
+  CAUTION: read caps output at 8000 chars (~2K tokens). For files >~200 lines use structure+get_method or range instead.
 - head(path, options.lines=50): first N lines
 - tail(path, options.lines=50): last N lines
 - range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
 - grep(path, options.pattern, options.maxMatches=10, options.contextLines=0): regex matches; FILE path only, NOT directory. set contextLines>0 for before/after context
 - multi(options.paths[]): read up to 10 files in parallel.
   CONTEXT-EFFICIENCY: pass options.knownHashes {"path"->"12-char-hash"} from prior reads.
-  Server returns {unchanged:true, file_content_hash} for any file whose hash still matches,
-  omitting content entirely - saves tokens on re-reads within the same session.
-  NOTE: aggregate content capped at ~1MB total. For large files, use individual read with chunking.
+  Server returns {unchanged:true, file_content_hash} for any file whose hash still matches.
+  NOTE: aggregate content capped at 24000 chars (~6K tokens) across all files. Use only for small files.
   NOTE: Prefer get_method/range/grep over multi for targeted lookups within files already read.
 - info(path): file/dir metadata
 - summary(path): line count + size only - NO content, cheapest existence check
@@ -103,12 +103,14 @@ Read files and query filesystem metadata. Actions:
 - get_method(path, options.method): returns complete named method body - FILE path only, NOT directory. Preferred over structure+range for editing
 - chunk_read(options.sessionId, options.chunkIndex): retrieve one chunk from a paged read
 - finalise_read(options.sessionId): free chunk session when all chunks consumed
-NOTE: Use summary before read on unknown files to check size. Batch reads with multi.
-NOTE: Use get_method to read a single method before editing it - cheaper than structure+range.
+CRITICAL CONTEXT EFFICIENCY - follow these rules to avoid session resets:
+  1. NEVER use action=read on files you have already read this session unless you know they changed.
+  2. For editing: use structure -> get_method (NOT read of whole file).
+  3. For searching: use grep or file_search (NOT read then scan).
+  4. Use summary first on unknown files to check size before reading.
+  5. Use knownHashes on multi to skip unchanged files entirely.
 NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char SHA-256 of whole file).
-      Pass this as options.expectedHash on patch/replace/multi_replace to guard against drift.
-NOTE: AVOID re-reading files already in context this session unless you know they have changed.
-      Use knownHashes on multi to verify staleness cheaply before fetching full content.''',
+      Pass this as options.expectedHash on patch/replace/multi_replace to guard against drift.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -510,7 +512,7 @@ NOTE: AVOID re-reading files already in context this session unless you know the
 
         // FIX-16: aggregate size pre-check - skip unchanged files from byte count
         long totalBytes = 0L
-        long aggregateCapBytes = 1024L * 1024L  // 1 MB
+        long aggregateCapBytes = 256L * 1024L  // 256 KB - keep multi responses small
         for (String p : paths) {
             try {
                 String norm = pathService.normalizePath(p)

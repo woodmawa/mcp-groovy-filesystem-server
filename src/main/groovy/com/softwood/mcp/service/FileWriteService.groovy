@@ -64,7 +64,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 Write, append, or modify file content. Actions:
 - write(path, content): overwrite entire file
 - append(path, content): append to end
-- replace(path, options.oldText, options.newText): replace ONE unique string. CRITICAL: always check response for success:false or error field - not-found returns McpError with nearest_match hint; duplicate returns line numbers. Silent-looking success with no file change means oldText was not matched. NOTE: file line endings must match oldText - LF-only files will reject CRLF in oldText; prefer patch for multi-line replacements.
+- replace(path, options): replace ONE unique string. REQUIRED params IN options object: options.oldText (string to find, must appear exactly once), options.newText (replacement). Do NOT pass oldText/newText at top level — they must be inside the options object. CRITICAL: always check response for success:false or error field - not-found returns McpError with nearest_match hint; duplicate returns line numbers. NOTE: prefer patch for multi-line replacements.
 - patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed, both startLine AND endLine required. ALWAYS read exact lines first.
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
 - chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
@@ -123,6 +123,10 @@ SKILL: For worked examples read:
             String content = arguments.content as String
             Map<String, Object> options = normaliseOptions(arguments.options)
 
+            // Parameter aliasing: some clients send params at top-level rather than nested in options.
+            // Promote them into options before dispatch so each doXxx() always finds what it expects.
+            options = promoteTopLevelParams(action, arguments, options)
+
             McpResponse response
             switch (action) {
                 case 'write'         : response = doWrite(path, content, options, requestId); break
@@ -153,6 +157,49 @@ SKILL: For worked examples read:
         }
     }
 
+
+    // -----------------------------------------------------------------------
+    // Parameter aliasing: promote top-level params into options for clients
+    // (e.g. Claude Desktop) that send them outside the options map.
+    // -----------------------------------------------------------------------
+
+    private static Map<String, Object> promoteTopLevelParams(
+            String action, Map<String, Object> arguments, Map<String, Object> options) {
+        Map<String, Object> merged = null  // lazy init - avoid copy unless needed
+
+        switch (action) {
+            case 'replace':
+                // Accept old_str / new_str (Claude Code style) or oldText / newText at root level
+                if (!options.oldText && !options.old_str) {
+                    String topOld = (arguments.oldText ?: arguments.old_str) as String
+                    if (topOld) {
+                        merged = new HashMap<String, Object>(options)
+                        merged.oldText = topOld
+                        String topNew = (arguments.newText ?: arguments.new_str) as String
+                        if (topNew != null) merged.newText = topNew
+                        log.debug('replace: promoted top-level old*/new* into options')
+                    }
+                }
+                // Normalise old_str -> oldText within options itself
+                if (!options.oldText && options.old_str) {
+                    merged = merged ?: new HashMap<String, Object>(options)
+                    merged.oldText = merged.old_str
+                    if (!merged.newText && merged.new_str != null) merged.newText = merged.new_str
+                }
+                break
+
+            case 'patch':
+            case 'multi_replace':
+                // replacements array sometimes sent at root level
+                if (!options.replacements && arguments.replacements instanceof List) {
+                    merged = new HashMap<String, Object>(options)
+                    merged.replacements = arguments.replacements
+                    log.debug('{}: promoted top-level replacements into options', action)
+                }
+                break
+        }
+        return merged ?: options
+    }
 
     // -----------------------------------------------------------------------
     // Write actions
