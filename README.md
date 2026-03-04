@@ -1,8 +1,20 @@
-# mcp-groovy-filesystem-server v0.7.36
+# mcp-groovy-filesystem-server v0.7.37
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.37
+
+**multi hash short-circuit + re-read guidance (v0.7.37):**
+
+- **`multi` hash short-circuit (`knownHashes`):** `file_read action=multi` now accepts `options.knownHashes: {"path" -> "12-char-hash"}`. For each path whose hash matches the server's current `StructureCache.getHash()` result, the server returns `{path, unchanged: true, file_content_hash}` with zero content bytes — no file I/O, no context window cost. Files with a stale or absent hash are fetched normally. The aggregate size pre-check also skips unchanged files from the byte count.
+- **`file_content_hash` on all `multi` results:** Previously successful `multi` entries omitted `file_content_hash`, making it impossible to build a `knownHashes` map for subsequent calls. Now every successful result includes the hash, enabling callers to pass it back on the next `multi` call to skip unchanged files.
+- **`unchanged_count` in `multi` response summary:** The top-level response now includes `unchanged_count` so callers can confirm how many files were short-circuited.
+- **Tool description re-read guidance:** `multi` description updated to document `knownHashes` usage and added a global `NOTE: AVOID re-reading files already in context this session` with guidance to use `knownHashes` for staleness checks. `options.knownHashes` added to `inputSchema`.
+- **Motivation:** Telemetry showed `file_read:multi` as the #3 token consumer (6.1 MB total). Worst single session: 85 multi calls / ~2 MB from repeated orientation re-reads. The hash short-circuit makes re-orientation calls near-zero cost when files haven't changed.
 
 ---
 
@@ -294,9 +306,18 @@ file_read action=exists  path=...  -> {exists, type}
 file_read action=get_method path=MyService.groovy options.method=doRead
 ```
 
-### Bulk parallel read (up to 10 files)
+### Bulk parallel read with hash short-circuit (up to 10 files)
 ```
+# First call - no hashes yet, capture file_content_hash from each result
 file_read action=multi options.paths=[path1, path2, path3]
+
+# Subsequent calls - pass knownHashes to skip unchanged files entirely
+file_read action=multi
+          options.paths=[path1, path2, path3]
+          options.knownHashes={"path1": "abc123def456", "path2": "fed987654321"}
+# Unchanged files return: {path, unchanged: true, file_content_hash} - zero content bytes
+# Changed/new files return: full content + updated file_content_hash
+# Response includes unchanged_count showing how many were skipped
 ```
 
 ### Hash-guarded edits (prevents silent corruption)
@@ -494,6 +515,7 @@ server_lifecycle action=status
 ## Version History
 | Version | Highlights |
 |---------|-----------|
+| **0.7.37** | multi hash short-circuit (knownHashes); file_content_hash on all multi results; unchanged_count in response; re-read guidance in description |
 | **0.7.36** | CommandWhitelistConfig hardened; ToolsService git-status cap consistent; UsageTracker WAL per-op; stdio profile yml cleanup |
 | **0.7.35** | FS-2 duplicate maxLines guard removed; FS-4 git status cap 2K in doProjectScan |
 | **0.7.34** | FIX-A/B/C/D/H: doRead 40K cap, doGetMethod char cap, structure entry cap, list/children size cap, stdout/stderr truncation flags |
