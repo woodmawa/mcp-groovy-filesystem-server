@@ -64,7 +64,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 Write, append, or modify file content. Actions:
 - write(path, content): overwrite entire file
 - append(path, content): append to end
-- replace(path, options.oldText, options.newText): replace ONE unique string. CRITICAL: always check response for success:false or error field - not-found returns McpError with nearest_match hint; duplicate returns line numbers. Silent-looking success with no file change means oldText was not matched.
+- replace(path, options.oldText, options.newText): replace ONE unique string. CRITICAL: always check response for success:false or error field - not-found returns McpError with nearest_match hint; duplicate returns line numbers. Silent-looking success with no file change means oldText was not matched. NOTE: file line endings must match oldText - LF-only files will reject CRLF in oldText; prefer patch for multi-line replacements.
 - patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed, both startLine AND endLine required. ALWAYS read exact lines first.
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
 - chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
