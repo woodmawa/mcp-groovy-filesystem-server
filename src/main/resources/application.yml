@@ -79,6 +79,12 @@ mcp:
     # v0.0.7: Default file pattern for project/content searches
     default-file-pattern: '.*\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$'
 
+  # Context server integration - structure persistence (WI5)
+  context-server:
+    url: http://localhost:8082
+    structure-group-id: mcp-servers
+    structure-persist-enabled: true
+
   # Usage tracking persistence - shared SQLite DB with context server
   usage:
     db-path: C:/Users/willw/claude-sync/best_practices.db
