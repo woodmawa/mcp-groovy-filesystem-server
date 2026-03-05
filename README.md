@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.7.46
+# mcp-groovy-filesystem-server v0.7.50
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
@@ -6,10 +6,19 @@ Eight parameterised tools replace what would otherwise be 30+ individual tools, 
 
 ---
 
+## What's New in v0.7.50
+
+**Unicode preservation fix + NFC normalization fallback (v0.7.50):**
+
+- **`sanitize()` preserving non-ASCII Unicode:** Both `AbstractFileService.sanitize()` and `Sanitizer.sanitize()` used a regex `[^\p{Print}\p{Space}]` to strip non-printable characters. However, `\p{Print}` only matches ASCII printable (0x20-0x7E), which silently stripped all non-ASCII characters including em-dashes (U+2014), smart quotes (U+2018/2019), accented characters, and CJK text. The `\p{Print}` filter has been removed; sanitize now only strips C0/C1 control characters (0x00-0x08, 0x0B-0x0C, 0x0E-0x1F, 0x7F-0x9F), preserving all valid Unicode in `file_read` responses and enabling correct round-trip through `replace`.
+- **NFC normalization fallback in `replace`/`multi_replace`:** When exact byte matching fails, both `doReplace()` and `doMultiReplace()` now try Unicode NFC normalization on both file content and `oldText`. If a unique NFC-normalized match is found, the replacement proceeds using normalized content. This handles edge cases where multi-byte characters survive the JSON round-trip but in a different normalization form.
+- **`oldText` line-ending normalization in `doReplace`:** `oldText` now gets `\r\n` -> `\n` normalization, matching the treatment already applied to `newText` and file content.
+
+---
+
 ## What's New in v0.7.46
 
 **Unicode crash fix in `replace` not-found diagnostic (v0.7.46):**
-
 - **`FileReplaceService` unicode scan fix:** `doReplace()` scans `oldText` for non-ASCII characters when the text is not found, to emit a helpful `non_ascii_hint` in the error response. The scan used `eachWithIndex { char c, int i -> }` on a `String`, which passes `char` for ASCII but falls back to `Integer` codepoints for unicode > 127 (e.g. `←`, `—`, smart quotes). Under `@CompileStatic` the closure signature is locked at compile time to `(char, int)`, causing a Groovy MOP dispatch crash (`No signature of method: doCall for class ... applicable for argument types: (String, Integer)`). Changed to `toCharArray().eachWithIndex` which guarantees `char` elements. One word change, no logic change — the non-ASCII hint now fires correctly instead of crashing with a `-32603` internal error.
 
 ---
