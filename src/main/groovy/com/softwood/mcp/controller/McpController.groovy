@@ -159,7 +159,12 @@ class McpController {
         try {
             if (telemetryService != null) {
                 charCount = estimateResponseSize(response)
-                telemetryService.recordToolCall('unknown', toolName, charCount, arguments)
+                String action   = arguments.action as String
+                String rawPath  = arguments.path as String
+                String pathHash = rawPath ? sha256Prefix(rawPath) : null
+                String outcome  = extractOutcome(response)
+                telemetryService.recordToolCall('unknown', toolName, charCount, arguments,
+                    action, pathHash, outcome)
             }
         } catch (Exception e) {
             log.debug('Telemetry hook failed (non-fatal): {}', e.message)
@@ -179,6 +184,30 @@ class McpController {
     }
 
     // FIX-7: zero-copy size estimate - read text field directly instead of serialising whole result Map
+    private static String sha256Prefix(String input) {
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance('SHA-256').digest(input.getBytes('UTF-8'))
+            StringBuilder sb = new StringBuilder(12)
+            for (int i = 0; i < 6; i++) sb.append(String.format('%02x', hash[i]))
+            return sb.toString()
+        } catch (Exception ignored) { return null }
+    }
+
+    private static String extractOutcome(McpResponse response) {
+        if (response?.error != null) {
+            String msg = response.error.message ?: ''
+            if (msg.toLowerCase().contains('refus')) return 'refused'
+            return 'error'
+        }
+        try {
+            List content = response?.result?.content as List
+            String text = ((content?.first() as Map)?.get('text') as String) ?: ''
+            if (text.contains('"unchanged":true')) return 'unchanged'
+            if (text.contains('_truncated')) return 'truncated'
+        } catch (Exception ignored) {}
+        return 'success'
+    }
+
     private static int estimateResponseSize(McpResponse response) {
         try {
             List content = response?.result?.content as List

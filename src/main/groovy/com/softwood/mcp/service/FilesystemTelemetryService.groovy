@@ -161,8 +161,11 @@ class FilesystemTelemetryService {
      * @param args           tool arguments map (hashed for repeat detection)
      */
     void recordToolCall(String sessionId, String toolName,
-                         int responseChars, Map<String, Object> args) {
-        if (!dbPath) return   // persistence not configured — silent no-op
+                         int responseChars, Map<String, Object> args,
+                         String action = null, String pathHash = null,
+                         String outcome = 'success') {
+        if (!dbPath) return   // persistence not configured  silent no-op
+
 
         // Reset repeat cache and token accumulator when session changes
         if (sessionId && sessionId != trackedSessionId) {
@@ -187,8 +190,9 @@ class FilesystemTelemetryService {
                         INSERT INTO tool_call_telemetry
                             (session_id, tool_name, server_name,
                              response_char_count, response_token_est,
-                             is_repeat_call, args_hash)
-                        VALUES (?,?,?,?,?,?,?)''')
+                             is_repeat_call, args_hash,
+                             action, path_hash, outcome)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)''')
                     stmt.setString(1, sessionId ?: 'unknown')
                     stmt.setString(2, toolName)
                     stmt.setString(3, 'filesystem-server')
@@ -196,8 +200,12 @@ class FilesystemTelemetryService {
                     stmt.setInt(5, tokenEst)
                     stmt.setInt(6, isRepeat ? 1 : 0)
                     stmt.setString(7, argsHash)
+                    stmt.setString(8, action)
+                    stmt.setString(9, pathHash)
+                    stmt.setString(10, outcome ?: 'success')
                     stmt.executeUpdate()
                     stmt.close()
+
                 }
             } catch (Exception e) {
                 // Table may not exist yet if context server hasn't run — silent
@@ -218,6 +226,16 @@ class FilesystemTelemetryService {
             dbConn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
             dbConn.autoCommit = true
             log.debug('FilesystemTelemetryService: persistent JDBC connection opened at {}', dbPath)
+            // Addendum C: safe migration - add new columns if table exists but columns are absent
+            ['action', 'path_hash', 'outcome'].each { String col ->
+                try {
+                    dbConn.createStatement().execute("ALTER TABLE tool_call_telemetry ADD COLUMN ${col} TEXT")
+                    log.info('telemetry: added column {}', col)
+                } catch (Exception ignored) {
+                    // column already exists - fine
+                    log.debug('telemetry column {} already present', col)
+                }
+            }
         } catch (Exception e) {
             log.debug('FilesystemTelemetryService: DB connection failed (non-fatal): {}', e.message)
         }
