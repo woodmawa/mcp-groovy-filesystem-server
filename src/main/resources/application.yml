@@ -63,6 +63,10 @@ mcp:
     # multi is for small targeted files — anything bigger should use individual reads.
     multi-read-cap-chars: 24000
 
+    # v0.7.44: Inactivity gap (minutes) after which the session read-token accumulator resets.
+    # Filesystem server has no session concept; this approximates session boundaries.
+    session-gap-minutes: 30
+
     # v0.7.43: FIX-A - doRead refuses full reads on files with more than this many lines.
     # Forces use of structure/get_method/range. Pass options.force=true to override.
     read-max-lines-before-refuse: 200

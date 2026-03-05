@@ -3,6 +3,7 @@ package com.softwood.mcp.service
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
+import java.util.concurrent.atomic.AtomicLong
 
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
@@ -37,6 +38,9 @@ class FilesystemTelemetryService {
     @Value('${mcp.usage.db-path:}')
     String dbPath
 
+    @Value('${mcp.filesystem.session-gap-minutes:30}')
+    int sessionGapMinutes
+
     /** Single daemon writer — serialises all SQLite writes */
     private final ExecutorService asyncWriter = Executors.newSingleThreadExecutor { Runnable r ->
         Thread t = new Thread(r, 'fs-telemetry-writer')
@@ -57,6 +61,11 @@ class FilesystemTelemetryService {
     private final java.util.concurrent.atomic.AtomicInteger sessionReadTokens = new java.util.concurrent.atomic.AtomicInteger(0)
     private final java.util.concurrent.atomic.AtomicInteger sessionReadCalls  = new java.util.concurrent.atomic.AtomicInteger(0)
 
+    // v0.7.44: time-based session gap detection - reset accumulator after 30 min inactivity
+    private final AtomicLong lastCallEpochMs = new AtomicLong(0L)
+
+    private long getSessionGapMs() { sessionGapMinutes * 60_000L }
+
     /**
      * Record a read-family tool call synchronously and return the cumulative
      * session token count AFTER this call. Used by FileReadService to inject
@@ -64,15 +73,23 @@ class FilesystemTelemetryService {
      * Thread-safe; O(1).
      */
     int accumulateReadTokens(int responseChars) {
+        long now = System.currentTimeMillis()
+        long last = lastCallEpochMs.get()
+        if (last > 0L && (now - last) > getSessionGapMs()) {
+            resetSessionAccumulator()
+            log.debug('FilesystemTelemetry: {}min gap - session accumulator reset', sessionGapMinutes)
+        }
+        lastCallEpochMs.set(now)
         int tokens = Math.round(responseChars / 4.0f) as int
         sessionReadCalls.incrementAndGet()
         return sessionReadTokens.addAndGet(tokens)
     }
 
-    /** Reset the session accumulator (called when a new session starts). */
+    /** Reset the session accumulator (called when a new session starts or gap detected). */
     void resetSessionAccumulator() {
         sessionReadTokens.set(0)
         sessionReadCalls.set(0)
+        lastCallEpochMs.set(0L)
     }
 
     /** Current cumulative read tokens this session. */
