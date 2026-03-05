@@ -19,8 +19,9 @@ class Sanitizer {
     static String sanitize(String text) {
         if (!text) return text
         try {
+            // Strip ASCII/Latin-1 control characters but PRESERVE all valid Unicode
+            // (em-dashes, smart quotes, accented chars, CJK, etc.)
             String cleaned = text.replaceAll(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]/, '')
-            cleaned = cleaned.replaceAll(/[^\p{Print}\p{Space}]/, '')
             return cleaned
         } catch (Exception e) {
             return "[sanitization error]"
