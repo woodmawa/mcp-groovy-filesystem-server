@@ -97,6 +97,57 @@ class FilesystemTelemetryService {
     int getSessionReadTokens() { sessionReadTokens.get() }
     int getSessionReadCalls()  { sessionReadCalls.get() }
 
+    /**
+     * Returns a health summary for the current session.
+     * Queries today's file_read vs context_* ratio from SQLite.
+     * Non-blocking: returns UNKNOWN if DB is unavailable.
+     */
+    Map<String, Object> getSessionHealthSummary() {
+        int tokens = sessionReadTokens.get()
+        int calls  = sessionReadCalls.get()
+        float ratio = getFileToContextRatio()
+        String healthStatus
+        if (ratio < 0f) {
+            healthStatus = 'UNKNOWN'
+        } else if (ratio < 3.0f) {
+            healthStatus = 'OK'
+        } else if (ratio < 6.0f) {
+            healthStatus = 'DEGRADED'
+        } else {
+            healthStatus = 'POOR'
+        }
+        Float displayRatio = ratio < 0f ? null : (Math.round(ratio * 100) / 100.0f) as Float
+        return [fileReadTokens: tokens, fileReadCalls: calls,
+                fileToContextRatio: displayRatio, healthStatus: healthStatus] as Map<String, Object>
+    }
+
+    /** Queries today's file_read / context_* call ratio from SQLite. Returns -1 if unavailable. */
+    private float getFileToContextRatio() {
+        if (!dbPath) return -1f
+        float[] result = [-1f]
+        try {
+            withConnection { Connection conn ->
+                PreparedStatement stmt = conn.prepareStatement('''
+                    SELECT
+                      CAST(SUM(CASE WHEN tool_name = 'file_read' THEN 1 ELSE 0 END) AS FLOAT),
+                      CAST(SUM(CASE WHEN tool_name LIKE 'context_%' THEN 1 ELSE 0 END) AS FLOAT)
+                    FROM tool_call_telemetry
+                    WHERE called_at > datetime('now', '-1 day')''')
+                ResultSet rs = stmt.executeQuery()
+                if (rs.next()) {
+                    float fileReads = rs.getFloat(1)
+                    float ctxReads  = rs.getFloat(2)
+                    result[0] = ctxReads > 0f ? fileReads / ctxReads : -1f
+                }
+                rs.close()
+                stmt.close()
+            }
+        } catch (Exception e) {
+            log.debug('FilesystemTelemetry: ratio query failed (non-fatal): {}', e.message)
+        }
+        return result[0]
+    }
+
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------

@@ -226,20 +226,26 @@ class UsageTracker {
         }
         breakdown.sort { Map a, Map b -> (b.calls as int) <=> (a.calls as int) }
 
+        float ratio = queryFileToContextRatio()
+        Float displayRatio = ratio < 0f ? null : (Math.round(ratio * 100) / 100.0f) as Float
+        String ratioHealth = ratio < 0f ? 'UNKNOWN' : (ratio < 3.0f ? 'OK' : (ratio < 6.0f ? 'DEGRADED' : 'POOR'))
+
         return [
-            period         : 'today',
-            date           : currentDate.toString(),
-            sessionStart   : sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm')),
-            totalCalls     : total,
-            totalBytes     : totalBytes.get(),
-            totalKB        : Math.round(totalBytes.get() / 1024.0d),
-            estimatedTokens: Math.round(totalBytes.get() / 4.0d),
-            totalInputBytes: totalInputBytes.get(),
-            boundedReads   : bounded,
-            fullReads      : fullReads,
-            boundedRatio   : readTotal > 0 ? Math.round(bounded * 100.0d / readTotal) : 0,
-            persistent     : dbPath ? true : false,
-            perAction      : breakdown.take(20)
+            period              : 'today',
+            date                : currentDate.toString(),
+            sessionStart        : sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm')),
+            totalCalls          : total,
+            totalBytes          : totalBytes.get(),
+            totalKB             : Math.round(totalBytes.get() / 1024.0d),
+            estimatedTokens     : Math.round(totalBytes.get() / 4.0d),
+            totalInputBytes     : totalInputBytes.get(),
+            boundedReads        : bounded,
+            fullReads           : fullReads,
+            boundedRatio        : readTotal > 0 ? Math.round(bounded * 100.0d / readTotal) : 0,
+            fileToContextRatio  : displayRatio,
+            ratioHealth         : ratioHealth,
+            persistent          : dbPath ? true : false,
+            perAction           : breakdown.take(20)
         ] as Map<String, Object>
     }
 
@@ -323,6 +329,37 @@ class UsageTracker {
             persistent      : true,
             perAction       : breakdown.take(20)
         ] as Map<String, Object>
+    }
+
+    /**
+     * Queries today's file_read / context_* call ratio from tool_call_telemetry.
+     * Returns -1f if DB unavailable or no context calls recorded.
+     * Target: ratio < 3.0 (file reads should not dominate context reads 3:1+)
+     */
+    private float queryFileToContextRatio() {
+        if (!dbPath) return -1f
+        float[] result = [-1f]
+        try {
+            withConnection { Connection conn ->
+                PreparedStatement stmt = conn.prepareStatement('''
+                    SELECT
+                      CAST(SUM(CASE WHEN tool_name = \'file_read\' THEN 1 ELSE 0 END) AS FLOAT),
+                      CAST(SUM(CASE WHEN tool_name LIKE \'context_%\' THEN 1 ELSE 0 END) AS FLOAT)
+                    FROM tool_call_telemetry
+                    WHERE called_at > datetime(\'now\', \'-1 day\')''')
+                ResultSet rs = stmt.executeQuery()
+                if (rs.next()) {
+                    float fileReads = rs.getFloat(1)
+                    float ctxReads  = rs.getFloat(2)
+                    result[0] = ctxReads > 0f ? (fileReads / ctxReads) as float : -1f
+                }
+                rs.close()
+                stmt.close()
+            }
+        } catch (Exception e) {
+            log.debug('UsageTracker: ratio query failed (non-fatal): {}', e.message)
+        }
+        return result[0]
     }
 
     // -----------------------------------------------------------------------

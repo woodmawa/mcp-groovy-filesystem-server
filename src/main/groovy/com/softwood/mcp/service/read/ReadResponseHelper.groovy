@@ -66,6 +66,13 @@ class ReadResponseHelper extends AbstractFileService {
         int sessionTokens = telemetryService.accumulateReadTokens(contentLength)
         int sessionCalls  = telemetryService.getSessionReadCalls()
         response._session_read_tokens = sessionTokens
+        // Inject ratio health when degraded (silent on OK/UNKNOWN - avoids noise)
+        Map<String, Object> health = telemetryService.getSessionHealthSummary()
+        String healthStatus = health.healthStatus as String
+        if (healthStatus == 'DEGRADED' || healthStatus == 'POOR') {
+            response._session_health = ("${healthStatus}: file_read/ctx ratio=${health.fileToContextRatio} today" +
+                " — run context_lifecycle start + context_read resume to improve" as String)
+        }
         if (sessionTokens > 80000) {
             response._session_budget_warn = ("CRITICAL: ${sessionTokens} tokens burned on file reads this session (${sessionCalls} calls). " +
                 "Context window at serious risk. STOP reading files - use only structure/get_method/grep from now on." as String)
