@@ -34,6 +34,9 @@ class FilePatchService extends AbstractFileService {
         String encoding     = options.encoding as String ?: 'UTF-8'
         boolean backup      = options.backup as boolean ?: false
         String expectedHash = options.expectedHash as String
+        if (!expectedHash) {
+            log.warn('doPatch called without expectedHash for {} — drift guard disabled. Caller should pass expectedHash from last read.', path)
+        }
 
         List<Map<String, Object>> replacements = (options.replacements instanceof List)
             ? options.replacements as List<Map<String, Object>>

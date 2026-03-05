@@ -156,6 +156,13 @@ SKILL: For worked examples read:
             String action, Map<String, Object> arguments, Map<String, Object> options) {
         Map<String, Object> merged = null
 
+        // Promote expectedHash for ALL mutating actions — Claude often sends it at top level
+        if (!options.expectedHash && arguments.expectedHash) {
+            merged = new HashMap<String, Object>(options)
+            merged.expectedHash = arguments.expectedHash
+            log.debug('{}: promoted top-level expectedHash into options', action)
+        }
+
         switch (action) {
             case 'replace':
                 if (!options.oldText && !options.old_str) {

@@ -38,6 +38,9 @@ class FileReplaceService extends AbstractFileService {
         String oldText      = options.oldText as String
         String newText      = (options.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
         String expectedHash = options.expectedHash as String
+        if (!expectedHash) {
+            log.warn('doReplace called without expectedHash for {} — drift guard disabled. Caller should pass expectedHash from last read.', path)
+        }
         if (!oldText) return McpResponse.error(requestId, -32602, 'options.oldText required for replace')
 
         String normalized = normalizeAndCheckPath(path)
@@ -83,7 +86,7 @@ class FileReplaceService extends AbstractFileService {
             }
             Map<String, Object> err = [
                 action: 'replace', success: false,
-                error: 'oldText not found in file. Check exact whitespace/newlines. NOTE: replace matches exact bytes \u2014 for strings containing non-ASCII characters (em-dashes, smart quotes, etc.) use patch with explicit startLine/endLine instead.',
+                error: 'oldText not found in file. Check exact whitespace/newlines. NOTE: replace matches exact bytes \u2014 for strings containing non-ASCII characters (em-dashes, smart quotes, etc.) use patch with explicit startLine/endLine instead. IMPORTANT: Do NOT fall back to patch \u2014 file content may have drifted. Re-read the target area with file_read action=range or action=get_method to get current content and content_hash, then retry replace with the exact current text and expectedHash.',
                 line_endings: hasCrLf ? 'CRLF' : 'LF',
                 oldText_first_line: firstLine.take(120)
             ] as Map<String, Object>

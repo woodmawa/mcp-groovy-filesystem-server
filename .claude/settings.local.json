@@ -15,7 +15,9 @@
       "Bash(powershell:*)",
       "Bash(curl:*)",
       "Bash(netstat:*)",
-      "Bash(# Check what mappings/endpoints exist\ncurl -s http://localhost:8081/actuator/mappings 2>/dev/null | python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k\\) for k in d.get\\('contexts',{}\\).get\\('application',{}\\).get\\('mappings',{}\\).get\\('dispatcherServlet',{}\\).get\\('mappings',[]\\)]\" 2>/dev/null || curl -s \"http://localhost:8081/actuator\" 2>/dev/null)"
+      "Bash(# Check what mappings/endpoints exist\ncurl -s http://localhost:8081/actuator/mappings 2>/dev/null | python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k\\) for k in d.get\\('contexts',{}\\).get\\('application',{}\\).get\\('mappings',{}\\).get\\('dispatcherServlet',{}\\).get\\('mappings',[]\\)]\" 2>/dev/null || curl -s \"http://localhost:8081/actuator\" 2>/dev/null)",
+      "Bash(sed -i 's/mcp-groovy-filesystem-server-0\\\\.7\\\\.45\\\\.jar/mcp-groovy-filesystem-server-0.7.46.jar/g' /c/Users/willw/.claude.json)",
+      "Read(//c/Users/willw/**)"
     ]
   },
   "enabledMcpjsonServers": [
