@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.text.Normalizer
 
 /**
  * FileReplaceService - handles replace and multi_replace actions.
@@ -68,7 +69,28 @@ class FileReplaceService extends AbstractFileService {
             }
         }
 
+        // Normalize oldText line endings (same as file content)
+        oldText = oldText.replace('\r\n', '\n').replace('\r', '\n')
+
         int count = WriteUtils.countOccurrences(current, oldText)
+
+        // If no match, try Unicode NFC normalization (handles em-dash, smart quotes, etc.)
+        boolean usedNormalized = false
+        if (count == 0) {
+            String nfcContent = Normalizer.normalize(current, Normalizer.Form.NFC)
+            String nfcOldText = Normalizer.normalize(oldText, Normalizer.Form.NFC)
+            int nfcCount = WriteUtils.countOccurrences(nfcContent, nfcOldText)
+            if (nfcCount == 1) {
+                // NFC normalization resolved the mismatch - use normalized versions
+                current = nfcContent
+                oldText = nfcOldText
+                newText = Normalizer.normalize(newText, Normalizer.Form.NFC)
+                count = 1
+                usedNormalized = true
+                log.debug('replace: NFC normalization resolved match for {}', normalized)
+            }
+        }
+
         if (count == 0) {
             String firstLine = oldText.trim().tokenize('\n').first()?.trim() ?: ''
             String nearestContent = null
@@ -119,8 +141,9 @@ class FileReplaceService extends AbstractFileService {
         if (backup) WriteUtils.makeBackup(target)
         WriteUtils.atomicWrite(target, updated.getBytes(encoding))
 
-        log.debug("replace: 1 occurrence in {} (line endings: {})", normalized,
-            WriteUtils.shouldNormaliseLf(target) ? 'LF (normalised)' : (hasCrLf ? 'CRLF (preserved)' : 'LF'))
+        log.debug("replace: 1 occurrence in {} (line endings: {}{})", normalized,
+            WriteUtils.shouldNormaliseLf(target) ? 'LF (normalised)' : (hasCrLf ? 'CRLF (preserved)' : 'LF'),
+            usedNormalized ? ', NFC-normalised' : '')
         String hash = WriteUtils.fileHash(target)
         if (isWriteCompact(options)) {
             return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
@@ -165,11 +188,22 @@ class FileReplaceService extends AbstractFileService {
         }
 
         // Phase 1: pre-validate all replacements before touching the file
+        // Try raw match first, then NFC-normalized match as fallback
+        boolean usedNormalized = false
+        String nfcSnapshot = null
         List<String> validationErrors = []
         replacements.eachWithIndex { Map<String, Object> rep, int i ->
-            String oldText = rep.oldText as String
+            String oldText = (rep.oldText as String)?.replace('\r\n', '\n')?.replace('\r', '\n')
             if (!oldText) { validationErrors << ("Entry ${i}: missing oldText" as String); return }
             int count = WriteUtils.countOccurrences(snapshot, oldText)
+            if (count == 0) {
+                // Try NFC normalization
+                if (nfcSnapshot == null) nfcSnapshot = Normalizer.normalize(snapshot, Normalizer.Form.NFC)
+                String nfcOld = Normalizer.normalize(oldText, Normalizer.Form.NFC)
+                int nfcCount = WriteUtils.countOccurrences(nfcSnapshot, nfcOld)
+                if (nfcCount == 1) { usedNormalized = true; count = 1 }
+                else if (nfcCount > 1) { count = nfcCount }
+            }
             if (count == 0) validationErrors << ("Entry ${i}: oldText not found: '${sanitize(oldText.take(60))}'" as String)
             if (count > 1)  validationErrors << ("Entry ${i}: oldText not unique (${count} occurrences): '${sanitize(oldText.take(60))}'" as String)
         }
@@ -190,15 +224,20 @@ class FileReplaceService extends AbstractFileService {
                 ("multi_replace validation failed (file NOT modified): ${validationErrors.join('; ')}" as String))
         }
 
-        // Phase 2: apply in order
-        String current = snapshot
+        // Phase 2: apply in order (use NFC-normalized content if raw match failed)
+        String current = usedNormalized ? Normalizer.normalize(snapshot, Normalizer.Form.NFC) : snapshot
         int applied = 0
         replacements.each { Map<String, Object> rep ->
-            String oldText = rep.oldText as String
+            String oldText = (rep.oldText as String)?.replace('\r\n', '\n')?.replace('\r', '\n')
             String newText = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+            if (usedNormalized) {
+                oldText = Normalizer.normalize(oldText, Normalizer.Form.NFC)
+                newText = Normalizer.normalize(newText, Normalizer.Form.NFC)
+            }
             current = current.replace(oldText, newText)
             applied++
         }
+        if (usedNormalized) log.debug('multi_replace: NFC normalization resolved matches for {}', normalized)
 
         Path target = Paths.get(normalized)
         if (backup) WriteUtils.makeBackup(target)
