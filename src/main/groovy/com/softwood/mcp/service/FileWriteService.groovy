@@ -138,6 +138,10 @@ SKILL: For worked examples read:
         } catch (SecurityException e) {
             log.warn("Security violation in file_write: {}", sanitize(e.message))
             return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+        } catch (java.nio.file.NoSuchFileException e) {
+            String msg = e.reason ?: "Path not found: ${e.file}"
+            log.warn("file_write bad path: {}", msg)
+            return McpResponse.error(requestId, -32602, msg)
         } catch (Exception e) {
             log.error("file_write error: {}", sanitize(e.message))
             return McpResponse.error(requestId, -32603, sanitize(e.message))

@@ -1,8 +1,17 @@
-# mcp-groovy-filesystem-server v0.7.37
+# mcp-groovy-filesystem-server v0.7.45
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.45
+
+**Two startup/write bug fixes (v0.7.45):**
+
+- **`UsageTracker` SQLite constraint fix:** `ensureSchema()` now wraps both `CREATE INDEX` calls in `try/catch`. The shared SQLite DB may already have `idx_token_usage_unique` created by the context server (potentially with columns in a different order), which caused `SQLITE_CONSTRAINT_UNIQUE` on every startup. The catch silently skips the index creation so `init()` completes cleanly and token telemetry is persisted to DB rather than running in-memory only.
+- **`atomicWrite` missing-parent-dir fix:** `WriteUtils.atomicWrite()` now checks for parent directory existence before attempting `Files.write(tmp, ...)`. Previously, a missing parent caused `NoSuchFileException` whose message was the opaque `.tmp` path. The fix throws a clear `"Parent directory does not exist: <path>"` message. `FileWriteService` catches `NoSuchFileException` specifically and returns `-32602` (invalid params) rather than `-32603` (internal error), correctly signalling to callers that retrying with the same args won't help.
 
 ---
 

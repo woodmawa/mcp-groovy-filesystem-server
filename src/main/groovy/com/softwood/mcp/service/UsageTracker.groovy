@@ -463,13 +463,20 @@ class UsageTracker {
             // UNIQUE constraint required for INSERT OR REPLACE: one row per
             // (date, tool, layer, session). Multiple sessions on the same day
             // accumulate independently; periodic flushes within a session update in-place.
-            conn.createStatement().withCloseable { it.execute(
-                'CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_unique ' +
-                'ON token_usage(recorded_date, tool_name, context_layer, session_id)') }
+            try {
+                conn.createStatement().withCloseable { it.execute(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_unique ' +
+                    'ON token_usage(recorded_date, tool_name, context_layer, session_id)') }
+            } catch (Exception ignored) {
+                // Index or equivalent constraint already exists (e.g. created by context server with different column order)
+                log.debug('UsageTracker: idx_token_usage_unique already exists, skipping')
+            }
             // Composite index for period stats query (WHERE recorded_date >= ? AND context_layer = ?)
-            conn.createStatement().withCloseable { it.execute(
-                'CREATE INDEX IF NOT EXISTS idx_token_usage_date_layer ' +
-                'ON token_usage(recorded_date, context_layer)') }
+            try {
+                conn.createStatement().withCloseable { it.execute(
+                    'CREATE INDEX IF NOT EXISTS idx_token_usage_date_layer ' +
+                    'ON token_usage(recorded_date, context_layer)') }
+            } catch (Exception ignored) {}
         }
     }
 

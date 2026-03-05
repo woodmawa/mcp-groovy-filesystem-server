@@ -44,6 +44,12 @@ class WriteUtils {
      * Cleans up .tmp on failure so stray temp files are never left behind.
      */
     static void atomicWrite(Path target, byte[] bytes) {
+        Path parent = target.parent
+        if (parent && !Files.exists(parent)) {
+            throw new java.nio.file.NoSuchFileException(
+                parent.toString(), null,
+                "Parent directory does not exist: ${parent}")
+        }
         Path tmp = target.resolveSibling(target.fileName.toString() + '.tmp')
         try {
             Files.write(tmp, bytes)
