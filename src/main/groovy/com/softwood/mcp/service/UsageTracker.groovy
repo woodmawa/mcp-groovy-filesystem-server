@@ -82,7 +82,7 @@ class UsageTracker {
     private volatile LocalDateTime sessionStart = LocalDateTime.now()
 
     /** "tool:action" -> call count (today, live) */
-    private final ConcurrentHashMap<String, AtomicInteger> callCounts = new ConcurrentHashMap<>()
+    private final ConcurrentHashMap<String, AtomicLong> callCounts = new ConcurrentHashMap<>()
 
     /** "tool:action" -> total response bytes (today, live) */
     private final ConcurrentHashMap<String, AtomicLong> responseBytes = new ConcurrentHashMap<>()
@@ -90,11 +90,11 @@ class UsageTracker {
     /** "tool:action" -> total request payload bytes (today, live) */
     private final ConcurrentHashMap<String, AtomicLong> inputBytes = new ConcurrentHashMap<>()
 
-    private final AtomicInteger totalCalls      = new AtomicInteger(0)
+    private final AtomicLong    totalCalls      = new AtomicLong(0)
     private final AtomicLong    totalBytes      = new AtomicLong(0)
     private final AtomicLong    totalInputBytes = new AtomicLong(0)
-    private final AtomicInteger boundedCalls    = new AtomicInteger(0)
-    private final AtomicInteger fullReadCalls   = new AtomicInteger(0)
+    private final AtomicLong    boundedCalls    = new AtomicLong(0)
+    private final AtomicLong    fullReadCalls   = new AtomicLong(0)
 
     /** Dirty flag: true when in-memory counters have unsaved changes. */
     private volatile boolean dirty = false
@@ -166,13 +166,13 @@ class UsageTracker {
         String tool    = event.toolName ?: 'unknown'
         String action  = extractAction(event.toolArgs)
         String key     = action ? "${tool}:${action}" as String : tool
-        int size       = event.responseSizeBytes
-        int inSize     = event.payloadSizeBytes
+        long size      = event.responseSizeBytes
+        long inSize    = event.payloadSizeBytes
 
         totalCalls.incrementAndGet()
         totalBytes.addAndGet(size)
         totalInputBytes.addAndGet(inSize)
-        callCounts.computeIfAbsent(key, { k -> new AtomicInteger(0) }).incrementAndGet()
+        callCounts.computeIfAbsent(key, { k -> new AtomicLong(0) }).incrementAndGet()
         responseBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(size)
         inputBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(inSize)
         dirty = true
@@ -213,18 +213,18 @@ class UsageTracker {
         if (dbPath && dirty) {
             try { flushToDb(currentDate); dirty = false } catch (Exception e) { log.warn('Stats flush failed: {}', e.message) }
         }
-        int total     = totalCalls.get()
-        int bounded   = boundedCalls.get()
-        int fullReads = fullReadCalls.get()
-        int readTotal = bounded + fullReads
+        long total     = totalCalls.get()
+        long bounded   = boundedCalls.get()
+        long fullReads = fullReadCalls.get()
+        long readTotal = bounded + fullReads
 
         List<Map<String, Object>> breakdown = []
-        callCounts.each { String key, AtomicInteger count ->
+        callCounts.each { String key, AtomicLong count ->
             long bytes   = responseBytes[key]?.get() ?: 0L
             long inBytes = inputBytes[key]?.get() ?: 0L
             breakdown << ([key: key, calls: count.get(), responseKB: Math.round(bytes / 1024.0d), estTokens: Math.round(bytes / 4.0d), inputKB: Math.round(inBytes / 1024.0d)] as Map<String, Object>)
         }
-        breakdown.sort { Map a, Map b -> (b.calls as int) <=> (a.calls as int) }
+        breakdown.sort { Map a, Map b -> (b.calls as long) <=> (a.calls as long) }
 
         float ratio = queryFileToContextRatio()
         Float displayRatio = ratio < 0f ? null : (Math.round(ratio * 100) / 100.0f) as Float
@@ -294,7 +294,7 @@ class UsageTracker {
         }
 
         // Merge today's live in-memory counts
-        callCounts.each { String key, AtomicInteger count ->
+        callCounts.each { String key, AtomicLong count ->
             dbCalls[key]      = (dbCalls[key] ?: 0L) + count.get()
             dbBytes[key]      = (dbBytes[key] ?: 0L) + (responseBytes[key]?.get() ?: 0L)
             dbInputBytes[key] = (dbInputBytes[key] ?: 0L) + (inputBytes[key]?.get() ?: 0L)
@@ -381,15 +381,15 @@ class UsageTracker {
                     "INSERT OR REPLACE INTO token_usage (recorded_date, session_id, tool_name, call_count, estimated_tokens, response_bytes, input_bytes, context_layer) " +
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 
-                callCounts.each { String key, AtomicInteger count ->
+                callCounts.each { String key, AtomicLong count ->
                     long bytes    = responseBytes[key]?.get() ?: 0L
                     long inBytes  = inputBytes[key]?.get() ?: 0L
-                    int estTokens = (int) Math.round(bytes / 4.0d)
+                    long estTokens = Math.round(bytes / 4.0d)
                     ins.setString(1, dateStr)
                     ins.setString(2, sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm')))
                     ins.setString(3, key)
-                    ins.setInt(4, count.get())
-                    ins.setInt(5, estTokens)
+                    ins.setLong(4, count.get())
+                    ins.setLong(5, estTokens)
                     ins.setLong(6, bytes)
                     ins.setLong(7, inBytes)
                     ins.setString(8, LAYER)
@@ -421,10 +421,10 @@ class UsageTracker {
             int loaded = 0
             while (rs.next()) {
                 String key  = rs.getString('tool_name')
-                int calls   = rs.getInt('calls')
+                long calls  = rs.getLong('calls')
                 long bytes  = rs.getLong('bytes')
                 long iBytes = rs.getLong('ibytes')
-                callCounts.computeIfAbsent(key, { k -> new AtomicInteger(0) }).addAndGet(calls)
+                callCounts.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(calls)
                 responseBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(bytes)
                 inputBytes.computeIfAbsent(key, { k -> new AtomicLong(0) }).addAndGet(iBytes)
                 totalCalls.addAndGet(calls)
