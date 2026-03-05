@@ -240,7 +240,7 @@ class ContextServerClient {
             ]
         ] as Map<String, Object>
 
-        URL url = new URL("${contextServerUrl}/")
+        URL url = new URL("${contextServerUrl}/mcp")
         HttpURLConnection conn = (HttpURLConnection) url.openConnection()
         try {
             conn.requestMethod = 'POST'
@@ -261,7 +261,7 @@ class ContextServerClient {
     }
 
     private String postWithTimeout(String jsonBody, int timeoutMs) {
-        URL url = new URL("${contextServerUrl}/")
+        URL url = new URL("${contextServerUrl}/mcp")
         HttpURLConnection conn = (HttpURLConnection) url.openConnection()
         try {
             conn.requestMethod  = 'POST'
