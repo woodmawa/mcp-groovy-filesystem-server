@@ -45,6 +45,11 @@ class FileReadService extends AbstractFileService implements ToolHandler {
         return [[\
             name       : 'file_read',
             description: '''\
+SESSION START SEQUENCE (every conversation, in order):
+  0. context_lifecycle action=start  (ALWAYS FIRST - auto-generates session ID)
+  1. context_read scope=project action=context groupId=<group>  (stable tier, prompt cache target)
+  2. context_read scope=session action=resume  (dynamic delta <150 tokens)
+
 Read files and query filesystem metadata. Actions:
 - read(path): full file content. FILES >60KB AUTO-CHUNK. REFUSED if file >200 lines (use structure/get_method/range instead). options.force=true overrides refusal. options.knownHash=<hash> returns {unchanged:true} instantly if file unchanged - USE THIS on any re-read within same session.
 - head(path, options.lines=50): first N lines
