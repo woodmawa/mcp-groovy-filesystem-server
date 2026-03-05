@@ -3,6 +3,8 @@ package com.softwood.mcp.service
 import com.softwood.mcp.model.McpResponse
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
 import java.nio.file.Files
@@ -23,6 +25,9 @@ import java.util.stream.Stream
 @Slf4j
 @CompileStatic
 class FileListService extends AbstractFileService implements ToolHandler {
+
+    @Autowired(required = false)
+    ContextServerClient contextServerClient
 
     FileListService(PathService pathService) {
         super(pathService)
@@ -105,17 +110,37 @@ All require a directory path.''',
         Pattern compiled = pattern ? safeCompilePattern(pattern) : null
 
         List<Map<String, Object>> results = []
-        // Fix: wrap in withCloseable to ensure stream is closed after iteration
-        // FIX-10: use filter+limit so stream genuinely short-circuits at max
-        (Files.list(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
-            stream.filter { Path p ->
-                compiled == null || (p.fileName.toString() =~ compiled)
-            }.limit(max).each { Path p ->
-                results << pathToMap(p)
+        boolean fromCache = false
+
+        // Cache check: only when no pattern filter (cache stores raw unfiltered listing)
+        if (compiled == null && contextServerClient != null) {
+            ContextServerClient.CachedListing cached = contextServerClient.getDirectoryListing(path)
+            if (cached != null) {
+                results = (cached.entries.size() > max ? cached.entries.take(max) : cached.entries) as List<Map<String, Object>>
+                fromCache = true
+                log.debug('file_list children: cache HIT ({} entries) for {}', results.size(), path)
             }
         }
 
-        log.debug("file_list children: {} entries from {}", results.size(), path)
+        if (!fromCache) {
+            // Fix: wrap in withCloseable to ensure stream is closed after iteration
+            // FIX-10: use filter+limit so stream genuinely short-circuits at max
+            (Files.list(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
+                stream.filter { Path p ->
+                    compiled == null || (p.fileName.toString() =~ compiled)
+                }.limit(max).each { Path p ->
+                    results << pathToMap(p)
+                }
+            }
+            // Persist unfiltered results to cache (only when no pattern filter)
+            if (compiled == null && contextServerClient != null) {
+                long dirMtime = new File(path).lastModified()
+                String hash = ContextServerClient.computeListingHash(results)
+                contextServerClient.persistDirectoryListingAsync(path, results, hash, dirMtime)
+            }
+        }
+
+        log.debug('file_list children: {} entries from {} (cache={})' , results.size(), path, fromCache)
         // FIX-D: cap response size to prevent large directory listings overflowing context window
         int totalChildren = results.size()
         boolean childrenCapped = false
@@ -210,7 +235,15 @@ All require a directory path.''',
         Path rootPath = Paths.get(path)
         Map<String, Object> tree = buildTree(rootPath, rootPath, 0, maxDepth, maxFiles, excludeCompiled, count)
 
-        log.debug("file_list tree: {} nodes from {}", count[0], path)
+        // Async persist tree children to directory cache (no short-circuit path for tree)
+        if (contextServerClient != null && tree.children != null) {
+            List<Map<String, Object>> topChildren = tree.children as List<Map<String, Object>>
+            long dirMtime = new File(path).lastModified()
+            String hash = ContextServerClient.computeListingHash(topChildren)
+            contextServerClient.persistDirectoryListingAsync(path, topChildren, hash, dirMtime)
+        }
+
+        log.debug('file_list tree: {} nodes from {}', count[0], path)
         return textResponse(requestId, [action: 'tree', rootPath: path, nodeCount: count[0], tree: tree])
     }
 

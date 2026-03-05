@@ -79,11 +79,14 @@ mcp:
     # v0.0.7: Default file pattern for project/content searches
     default-file-pattern: '.*\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$'
 
-  # Context server integration - structure persistence (WI5)
+  # Context server integration - structure persistence (WI5) + directory caching (Addendum A)
   context-server:
     url: http://localhost:8082
     structure-group-id: mcp-servers
     structure-persist-enabled: true
+    directory-cache-enabled: true
+    # Non-negotiable: 500ms max wait. Context server is an acceleration layer, not a dependency.
+    read-timeout-ms: 500
 
   # Usage tracking persistence - shared SQLite DB with context server
   usage:
