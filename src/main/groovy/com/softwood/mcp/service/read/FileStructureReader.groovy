@@ -59,6 +59,11 @@ class FileStructureReader extends AbstractFileService {
         if (!isPathAllowed(normalized)) {
             return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(normalized)}")
         }
+
+        // FIX-D: hash gate - if file unchanged, skip re-scan entirely
+        McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId)
+        if (unchanged != null) return unchanged
+
         Path filePath = Paths.get(normalized)
         if (Files.isDirectory(filePath)) {
             return McpResponse.error(requestId, -32602,
