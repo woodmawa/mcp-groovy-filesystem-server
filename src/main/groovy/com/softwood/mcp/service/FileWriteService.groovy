@@ -177,14 +177,20 @@ SKILL: For worked examples read:
                         merged.oldText = topOld
                         String topNew = (arguments.newText ?: arguments.new_str) as String
                         if (topNew != null) merged.newText = topNew
-                        log.debug('replace: promoted top-level old*/new* into options')
+                        boolean isSnake = arguments.old_str != null
+                        log.debug('replace: promoted top-level {}/*{} into options (variant: top-level {})',
+                            isSnake ? 'old_str' : 'oldText', isSnake ? 'new_str' : 'newText',
+                            isSnake ? 'snake_case' : 'camelCase')
                     }
+                } else if (options.oldText) {
+                    log.debug('replace: variant=options.oldText (correct nested form)')
                 }
                 // Normalise old_str -> oldText within options itself
                 if (!options.oldText && options.old_str) {
                     merged = merged ?: new HashMap<String, Object>(options)
                     merged.oldText = merged.old_str
                     if (!merged.newText && merged.new_str != null) merged.newText = merged.new_str
+                    log.debug('replace: normalised options.old_str -> oldText (variant: snake_case nested)')
                 }
                 break
 
@@ -304,7 +310,8 @@ SKILL: For worked examples read:
             String actualHash = computeHash(rawBytes)
             if (actualHash != expectedHash) {
                 return McpResponse.error(requestId, -32602,
-                    ("replace rejected: file has changed since last read (expected ${expectedHash}, got ${actualHash}). Re-read before retrying." as String))
+                    ("expectedHash mismatch: file has changed since your last read (expected ${expectedHash}, got ${actualHash}). " +
+                     "Re-read the target lines with action=range or action=get_method to get the current content_hash, then retry." as String))
             }
         }
 
@@ -327,11 +334,17 @@ SKILL: For worked examples read:
             }
             Map<String, Object> err = [
                 action: 'replace', success: false,
-                error: 'oldText not found in file. Check exact whitespace/newlines.',
+                error: 'oldText not found in file. Check exact whitespace/newlines. NOTE: replace matches exact bytes — for strings containing non-ASCII characters (em-dashes, smart quotes, etc.) use patch with explicit startLine/endLine instead.',
                 line_endings: hasCrLf ? 'CRLF' : 'LF',
                 oldText_first_line: firstLine.take(120)
             ] as Map<String, Object>
             if (nearestLine > 0) err.nearest_match = [line: nearestLine, content: nearestContent?.take(120)]
+            // Non-ASCII diagnostic: identify positions of chars outside ASCII 32-126
+            List<Integer> nonAsciiPositions = []
+            oldText.eachWithIndex { char c, int i -> if (c < 32 || c > 126) nonAsciiPositions << i }
+            if (nonAsciiPositions) {
+                err.non_ascii_hint = "oldText contains non-ASCII chars at positions ${nonAsciiPositions.take(10)} — use patch with explicit startLine/endLine for strings containing special characters."
+            }
             return McpResponse.error(requestId, -32602, new groovy.json.JsonBuilder(err).toString())
         }
         if (count > 1) {
@@ -502,7 +515,8 @@ SKILL: For worked examples read:
             if (actualHash != expectedHash) {
                 log.warn("patch: drift guard rejected '{}': expected hash {} but file is now {}", normalized, expectedHash, actualHash)
                 return McpResponse.error(requestId, -32602,
-                    "patch rejected: file has changed since last read (expected hash ${expectedHash}, got ${actualHash}). Re-read the file before patching.")
+                    "expectedHash mismatch: file has changed since your last read (expected ${expectedHash}, got ${actualHash}). " +
+                    "Re-read the target lines with action=range or action=get_method to get the current content_hash, then retry.")
             }
             log.debug("patch: drift guard OK for '{}' (hash {})", normalized, actualHash)
         }
