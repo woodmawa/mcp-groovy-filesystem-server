@@ -89,7 +89,7 @@ class FileReplaceService extends AbstractFileService {
             ] as Map<String, Object>
             if (nearestLine > 0) err.nearest_match = [line: nearestLine, content: nearestContent?.take(120)]
             List<Integer> nonAsciiPositions = []
-            oldText.eachWithIndex { char c, int i -> if (c < 32 || c > 126) nonAsciiPositions << i }
+            oldText.toCharArray().eachWithIndex { char c, int i -> if (c < 32 || c > 126) nonAsciiPositions << i }
             if (nonAsciiPositions) {
                 err.non_ascii_hint = "oldText contains non-ASCII chars at positions ${nonAsciiPositions.take(10)} \u2014 use patch with explicit startLine/endLine for strings containing special characters."
             }

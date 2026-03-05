@@ -1,8 +1,16 @@
-# mcp-groovy-filesystem-server v0.7.45
+# mcp-groovy-filesystem-server v0.7.46
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.46
+
+**Unicode crash fix in `replace` not-found diagnostic (v0.7.46):**
+
+- **`FileReplaceService` unicode scan fix:** `doReplace()` scans `oldText` for non-ASCII characters when the text is not found, to emit a helpful `non_ascii_hint` in the error response. The scan used `eachWithIndex { char c, int i -> }` on a `String`, which passes `char` for ASCII but falls back to `Integer` codepoints for unicode > 127 (e.g. `←`, `—`, smart quotes). Under `@CompileStatic` the closure signature is locked at compile time to `(char, int)`, causing a Groovy MOP dispatch crash (`No signature of method: doCall for class ... applicable for argument types: (String, Integer)`). Changed to `toCharArray().eachWithIndex` which guarantees `char` elements. One word change, no logic change — the non-ASCII hint now fires correctly instead of crashing with a `-32603` internal error.
 
 ---
 
