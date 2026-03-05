@@ -102,8 +102,9 @@ gradle compileGroovy
 gradle bootJar
 ```
 
-Copy jar + update four configs (see global CLAUDE.md for full list).
-Including mcp-http-servers.json — this controls the running jar and is NOT auto-synced.
+Copy jar + update FIVE configs (see global CLAUDE.md for full list).
+CRITICAL: update claude_code_mcp_config.json (not just .claude.json) — startup script syncs .claude.json FROM the canonical.
+Also update mcp-http-servers.json — controls the running jar, NOT auto-synced.
 Restart filesystem server after deploy (stdio process managed by Claude Desktop).
 
 ---
