@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.7.52
+# mcp-groovy-filesystem-server v0.7.53
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
@@ -6,7 +6,38 @@ Eight parameterised tools replace what would otherwise be 30+ individual tools, 
 
 ---
 
+## What's New in v0.7.53
+
+**CRITICAL BUG FIX: UsageTracker exponential data compounding on restart**
+
+- **Root cause:** `UsageTracker.loadTodayFromDb()` used `SUM(call_count)` across ALL sessions for the
+  current day when reloading in-memory counters on startup. However, `flushToDb()` writes accumulated
+  totals via `INSERT OR REPLACE` keyed by `(recorded_date, tool_name, context_layer, session_id)`.
+  On each restart within the same day, the reload summed every prior session's row into the new
+  session's in-memory counters, then flushed that inflated total back under the new `session_id`.
+  This caused **exponential compounding** — each restart roughly doubled the stored values.
+  After several restarts, `response_bytes` reached values in the quintillions (8.2×10¹⁸) and
+  `call_count` reached trillions, corrupting the `token_usage` table and causing SQLite integer
+  overflow errors that broke the dashboard (`/dashboard/data` and `/dashboard/kpis` returned HTTP 500).
+
+- **Fix:** `loadTodayFromDb()` now filters by `AND session_id = ?` (the current session's own ID),
+  so it only reloads its own previously-flushed data. Other sessions' rows are never loaded into
+  the in-memory counters, eliminating the compounding entirely.
+
+- **Impact:** 1,560+ rows of corrupt data had to be manually purged from `token_usage`
+  (`DELETE FROM token_usage WHERE response_bytes > 1000000000`). The corruption was confined to
+  `context_layer='filesystem'` rows from 2026-03-05 and 2026-03-06. The context server's own
+  `SqliteTelemetryStore` was unaffected as it uses a per-call `INSERT` pattern with no
+  reload-on-startup accumulation.
+
+- **Severity:** CRITICAL — silently corrupted telemetry data over multiple days, broke the
+  dashboard, and produced misleading token burn analytics. The compounding was invisible until
+  aggregation queries overflowed SQLite's integer range.
+
+---
+
 ## What's New in v0.7.52
+
 
 **Session ID pass-through to context server + ontology auto-reindex on write**
 

@@ -408,15 +408,21 @@ class UsageTracker {
         }
     }
 
-    /** Load today's existing DB rows into memory on startup (survive restarts) */
+    /** Load THIS session's existing DB rows into memory on startup (survive restarts).
+     *  BUG-FIX v0.7.53: was using SUM across ALL sessions for the day, but INSERT OR REPLACE
+     *  only replaces the current session's row. This caused exponential compounding on
+     *  multi-restart days: each restart loaded the sum of all sessions into counters, then
+     *  flushed that inflated total back under the current session_id. */
     private void loadTodayFromDb() {
         String todayStr = currentDate.toString()
+        String sessionId = sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm'))
         withConnection { Connection conn ->
             PreparedStatement ps = conn.prepareStatement(
                 "SELECT tool_name, SUM(call_count) as calls, SUM(response_bytes) as bytes, SUM(input_bytes) as ibytes " +
-                "FROM token_usage WHERE recorded_date = ? AND context_layer = ? GROUP BY tool_name")
+                "FROM token_usage WHERE recorded_date = ? AND context_layer = ? AND session_id = ? GROUP BY tool_name")
             ps.setString(1, todayStr)
             ps.setString(2, LAYER)
+            ps.setString(3, sessionId)
             ResultSet rs = ps.executeQuery()
             int loaded = 0
             while (rs.next()) {

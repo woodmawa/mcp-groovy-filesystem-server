@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.7.52'  // v0.7.52: sessionId pass-through to context server + ontology auto-reindex on write
+version = '0.7.53'  // v0.7.53: fix UsageTracker loadTodayFromDb exponential compounding bug — was SUM'ing all sessions then writing back under current session_id
 // v0.7.50: Fix sanitize() stripping non-ASCII Unicode (em-dashes, smart quotes, accented chars) - removed \p{Print} filter that only matched ASCII; added NFC normalization fallback in replace/multi_replace; normalized oldText line endings in doReplace
 // v0.7.49: ContextServerClient postToContextServer+postWithTimeout endpoint / -> /mcp (fixes 404 on file-structure registry calls)
 
