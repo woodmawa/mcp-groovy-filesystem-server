@@ -33,6 +33,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     @Autowired FilePatchService   patchService
     @Autowired FileChunkWriter    chunkWriter
     @Autowired StructureCache     structureCache
+    @Autowired ContextServerClient contextServerClient
 
     private static final Set<String> MUTATING_ACTIONS =
         ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write'] as Set
@@ -132,6 +133,14 @@ SKILL: For worked examples read:
             // Invalidate structure cache after any successful mutating action
             if (path && MUTATING_ACTIONS.contains(action) && response.error == null) {
                 try { structureCache.invalidate(pathService.normalizePath(path)) } catch (Exception ignored) {}
+                // Fire-and-forget registry upsert so context server tracks the new hash
+                try {
+                    String hash = extractFileHash(response)
+                    if (hash) {
+                        String np = pathService.normalizePath(path)
+                        contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
+                    }
+                } catch (Exception ignored) {}
             }
             return response
 
@@ -198,5 +207,17 @@ SKILL: For worked examples read:
                 break
         }
         return merged ?: options
+    }
+
+    private static String extractFileHash(McpResponse resp) {
+        try {
+            if (resp.result == null) return null
+            List content = resp.result.get('content') as List
+            if (!content) return null
+            String text = (content[0] as Map)?.get('text') as String
+            if (!text) return null
+            Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
+            return data?.get('content_hash') as String ?: data?.get('file_content_hash') as String
+        } catch (Exception ignored) { return null }
     }
 }

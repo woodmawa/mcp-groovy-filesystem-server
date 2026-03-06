@@ -227,6 +227,67 @@ class ContextServerClient {
     // Shared HTTP helpers
     // -----------------------------------------------------------------------
 
+    /**
+     * Fire-and-forget: upsert a file's hash into the context server's file-registry
+     * AND track it in session_working_files for the active Claude Code session.
+     * Never blocks — failures are silently logged at DEBUG.
+     */
+    void upsertFileRegistryAsync(String normalizedPath, String contentHash, int lineCount, long lastModified) {
+        if (!structurePersistEnabled || !contentHash) return
+        String path = normalizedPath
+        String hash = contentHash
+        int lc = lineCount
+        long lm = lastModified
+        asyncWriter.submit({
+            try {
+                String pathHash = sha256Short(path)
+                String pathTail = shortPathTail(path)
+                Map<String, Object> body = [
+                    jsonrpc: '2.0', method: 'tools/call', id: 1,
+                    params : [
+                        name     : 'context_write',
+                        arguments: [scope: 'knowledge', type: 'file-registry', action: 'upsert',
+                                    pathHash: pathHash, pathTail: pathTail,
+                                    contentHash: hash, lineCount: lc, lastModified: lm,
+                                    filePath: path]
+                    ]
+                ] as Map<String, Object>
+                URL url = new URL("${contextServerUrl}/mcp")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput     = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 3000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { Writer w -> w.write(JsonOutput.toJson(body)) }
+                    int status = conn.responseCode
+                    if (status != 200) {
+                        log.debug('upsertFileRegistry: context server returned {} for {}', status, pathTail)
+                    }
+                } finally { conn.disconnect() }
+            } catch (Exception e) {
+                log.debug('upsertFileRegistry async failed for {}: {}', path, e.message)
+            }
+        } as Runnable)
+    }
+
+    private static String sha256Short(String input) {
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance('SHA-256')
+        byte[] hash = md.digest(input.getBytes('UTF-8'))
+        StringBuilder sb = new StringBuilder()
+        for (int i = 0; i < 6; i++) sb.append(String.format('%02x', hash[i] & 0xff))
+        return sb.toString()
+    }
+
+    private static String shortPathTail(String path) {
+        String normalised = path.replace('\\', '/')
+        int slash = normalised.lastIndexOf('/')
+        if (slash < 0) return normalised.take(200)
+        int prev = normalised.lastIndexOf('/', slash - 1)
+        return (prev >= 0 ? normalised.substring(prev + 1) : normalised.substring(slash + 1)).take(200)
+    }
+
     private void postToContextServer(String type, String action, String groupId,
                                       String category, String title, String description,
                                       List<String> tags) {

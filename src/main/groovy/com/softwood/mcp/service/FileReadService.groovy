@@ -27,10 +27,11 @@ import org.springframework.stereotype.Service
 @CompileStatic
 class FileReadService extends AbstractFileService implements ToolHandler {
 
-    @Autowired FileContentReader  contentReader
-    @Autowired FileStructureReader structureReader
-    @Autowired FileMetaReader      metaReader
-    @Autowired ReadResponseHelper  responseHelper
+    @Autowired FileContentReader   contentReader
+    @Autowired FileStructureReader  structureReader
+    @Autowired FileMetaReader       metaReader
+    @Autowired ReadResponseHelper   responseHelper
+    @Autowired ContextServerClient  contextServerClient
 
     FileReadService(PathService pathService) {
         super(pathService)
@@ -127,10 +128,26 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             Map<String, Object> options = normaliseOptions(arguments.options)
 
             switch (action) {
-                case 'read'         : return contentReader.doRead(path, options, requestId)
-                case 'head'         : return contentReader.doHead(path, options, requestId)
-                case 'tail'         : return contentReader.doTail(path, options, requestId)
-                case 'range'        : return contentReader.doRange(path, options, requestId)
+                case 'read' : {
+                    McpResponse r = contentReader.doRead(path, options, requestId)
+                    if (r.error == null) fireRegistryUpsert(path, r)
+                    return r
+                }
+                case 'head' : {
+                    McpResponse r = contentReader.doHead(path, options, requestId)
+                    if (r.error == null) fireRegistryUpsert(path, r)
+                    return r
+                }
+                case 'tail' : {
+                    McpResponse r = contentReader.doTail(path, options, requestId)
+                    if (r.error == null) fireRegistryUpsert(path, r)
+                    return r
+                }
+                case 'range': {
+                    McpResponse r = contentReader.doRange(path, options, requestId)
+                    if (r.error == null) fireRegistryUpsert(path, r)
+                    return r
+                }
                 case 'grep'         : return contentReader.doGrep(path, options, requestId)
                 case 'multi'        : return contentReader.doMulti(options, requestId)
                 case 'info'         : return metaReader.doInfo(path, requestId)
@@ -156,5 +173,27 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             log.error('file_read error: {}', sanitize(e.message), e)
             return McpResponse.error(requestId, -32603, sanitize(e.message))
         }
+    }
+
+    private void fireRegistryUpsert(String path, McpResponse resp) {
+        if (!path || resp.result == null) return
+        try {
+            String hash = extractFileHash(resp)
+            if (!hash) return
+            String np = pathService.normalizePath(path)
+            contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
+        } catch (Exception ignored) {}
+    }
+
+    private static String extractFileHash(McpResponse resp) {
+        try {
+            if (resp.result == null) return null
+            List content = resp.result.get('content') as List
+            if (!content) return null
+            String text = (content[0] as Map)?.get('text') as String
+            if (!text) return null
+            Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
+            return data?.get('file_content_hash') as String
+        } catch (Exception ignored) { return null }
     }
 }
