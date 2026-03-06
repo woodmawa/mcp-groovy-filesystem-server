@@ -139,6 +139,10 @@ SKILL: For worked examples read:
                     if (hash) {
                         String np = pathService.normalizePath(path)
                         contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
+                        // Re-index ontology for source files so symbols stay current after writes
+                        if (np.endsWith('.groovy') || np.endsWith('.java')) {
+                            contextServerClient.reindexFileAsync(np)
+                        }
                     }
                 } catch (Exception ignored) {}
             }

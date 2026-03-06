@@ -56,6 +56,9 @@ class ContextServerClient {
         t
     }
 
+    // Active session ID — lazily resolved from context server, cached for session duration
+    private volatile String activeSessionId = null
+
     // -----------------------------------------------------------------------
     // In-memory directory listing cache (session-scoped, zero I/O)
     // -----------------------------------------------------------------------
@@ -238,6 +241,7 @@ class ContextServerClient {
         String hash = contentHash
         int lc = lineCount
         long lm = lastModified
+        String sid = resolveSessionId()
         asyncWriter.submit({
             try {
                 String pathHash = sha256Short(path)
@@ -249,7 +253,7 @@ class ContextServerClient {
                         arguments: [scope: 'knowledge', type: 'file-registry', action: 'upsert',
                                     pathHash: pathHash, pathTail: pathTail,
                                     contentHash: hash, lineCount: lc, lastModified: lm,
-                                    filePath: path]
+                                    filePath: path, sessionId: sid ?: '']
                     ]
                 ] as Map<String, Object>
                 URL url = new URL("${contextServerUrl}/mcp")
@@ -268,6 +272,79 @@ class ContextServerClient {
                 } finally { conn.disconnect() }
             } catch (Exception e) {
                 log.debug('upsertFileRegistry async failed for {}: {}', path, e.message)
+            }
+        } as Runnable)
+    }
+
+    /** Allow external callers (e.g. McpController on lifecycle start) to prime the session ID cache. */
+    void setActiveSessionId(String sessionId) {
+        this.activeSessionId = sessionId
+        log.debug('ContextServerClient: activeSessionId set to {}', sessionId)
+    }
+
+    /**
+     * Resolve the active session ID. Returns cached value if available; otherwise
+     * makes one lightweight GET to the context server and caches the result.
+     * Returns null if context server is unreachable or no session is active.
+     */
+    private String resolveSessionId() {
+        if (activeSessionId) return activeSessionId
+        if (!structurePersistEnabled) return null
+        try {
+            URL url = new URL("${contextServerUrl}/current-session")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod  = 'GET'
+                conn.connectTimeout = 1000
+                conn.readTimeout    = 1000
+                if (conn.responseCode == 200) {
+                    String body2 = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(body2)
+                    String sid = parsed?.get('session_id') as String
+                    if (sid) {
+                        activeSessionId = sid
+                        log.debug('ContextServerClient: resolved session_id={}', sid)
+                    }
+                    return sid
+                }
+            } finally { conn.disconnect() }
+        } catch (Exception e) {
+            log.debug('resolveSessionId failed: {}', e.message)
+        }
+        return null
+    }
+
+    /**
+     * Fire-and-forget: re-index a source file in the ontology after a write.
+     * Only fires for .groovy / .java files. Queued on the same asyncWriter executor.
+     */
+    void reindexFileAsync(String normalizedPath) {
+        if (!structurePersistEnabled) return
+        String path = normalizedPath
+        asyncWriter.submit({
+            try {
+                Map<String, Object> body = [
+                    jsonrpc: '2.0', method: 'tools/call', id: 1,
+                    params : [
+                        name     : 'context_write',
+                        arguments: [scope: 'ontology', type: 'node', action: 'index',
+                                    filePath: path, clearExisting: true]
+                    ]
+                ] as Map<String, Object>
+                URL url = new URL("${contextServerUrl}/mcp")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput     = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 5000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { Writer w -> w.write(JsonOutput.toJson(body)) }
+                    int status = conn.responseCode
+                    log.debug('reindexFile: context server returned {} for {}', status, path)
+                } finally { conn.disconnect() }
+            } catch (Exception e) {
+                log.debug('reindexFile async failed for {}: {}', path, e.message)
             }
         } as Runnable)
     }
