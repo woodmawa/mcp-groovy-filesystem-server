@@ -1,8 +1,40 @@
-# mcp-groovy-filesystem-server v0.7.50
+# mcp-groovy-filesystem-server v0.7.52
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.52
+
+**Session ID pass-through to context server + ontology auto-reindex on write**
+
+- **`reindexFileAsync()`** added to `ContextServerClient`: after every successful write to a `.groovy` or
+  `.java` file, `FileWriteService` fires a fire-and-forget `context_write scope=ontology type=node
+  action=index` call. The ontology reflects edited files within ~1 second of a write completing.
+  No manual re-indexing needed after Claude Code build sessions.
+
+- **Session ID pass-through**: `ContextServerClient` now resolves the active session ID before each
+  `upsertFileRegistryAsync` call and injects it as a `sessionId` argument. The context server uses
+  this to call `trackWorkingFile()` on the correct session, populating `session_working_files` for
+  cross-session hash carry-forward. Resolution uses a lazy `GET /current-session` call to the
+  context server HTTP endpoint (cached for the session duration).
+
+---
+
+## What's New in v0.7.51
+
+**Async file-registry upsert to context server (Change B)**
+
+- **`upsertFileRegistryAsync()`** added to `ContextServerClient`: after every `file_read` (read, head,
+  tail, range, get_method) and `file_write` completion, fires a fire-and-forget HTTP POST to
+  `context_write scope=knowledge type=file-registry action=upsert`. Keeps the context server's
+  `file_hash_registry` table live without any extra tool calls from Claude.
+- Uses a shared `asyncWriter` single-thread executor — never blocks the read/write response path.
+  Failures logged at DEBUG only.
+- `structurePersistEnabled` flag (from `application.properties`) gates all async calls — disabled
+  when context server URL is not configured.
 
 ---
 
