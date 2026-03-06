@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.7.53
+# mcp-groovy-filesystem-server v0.7.54
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
@@ -6,7 +6,31 @@ Eight parameterised tools replace what would otherwise be 30+ individual tools, 
 
 ---
 
+## What's New in v0.7.54
+
+**Null-path guards + UsageTracker sanity ceiling**
+
+- **`FileWriteService` null-path guard:** All `file_write` actions except `abort_write` now return
+  a clear `-32602` error ("requires a 'path' parameter, received null") before any dispatch if
+  `path` is missing from the arguments. Previously, a null path fell through to the security check
+  which returned an opaque "Path not allowed: null" error. Also attempts fallback extraction from
+  `options.path` in case the caller accidentally nests the path.
+
+- **`FileReadService` null-path guard:** Same validation for `file_read` — actions that require a
+  path (`read`, `head`, `tail`, `range`, `grep`, `get_method`, `structure`, `info`, `summary`,
+  `exists`, `normalize`, `diff`, `checksum`) now fail fast with a clear error. Path-optional
+  actions (`multi`, `project_root`, `allowed_dirs`, `chunk_read`, `finalise_read`) are excluded.
+
+- **`UsageTracker.flushToDb` sanity ceiling:** Before persisting any row to `token_usage`, the
+  flush method now rejects entries where `call_count > 50,000` or `response_bytes > 1GB` with a
+  `log.error` and skips the row. This is a defence-in-depth guard against the v0.7.52 exponential
+  compounding bug (fixed in v0.7.53) — even if a similar scope mismatch is reintroduced, corrupt
+  data will never reach the database.
+
+---
+
 ## What's New in v0.7.53
+
 
 **CRITICAL BUG FIX: UsageTracker exponential data compounding on restart**
 

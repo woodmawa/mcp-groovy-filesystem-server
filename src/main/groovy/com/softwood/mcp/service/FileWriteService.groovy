@@ -111,11 +111,18 @@ SKILL: For worked examples read:
             validateWriteEnabled()
 
             String action               = arguments.action as String
-            String path                 = arguments.path as String
+            String path                 = (arguments.path ?: (arguments.options instanceof Map ? (arguments.options as Map).path : null)) as String
             String content              = arguments.content as String
             Map<String, Object> options = normaliseOptions(arguments.options)
 
             options = promoteTopLevelParams(action, arguments, options)
+
+            // Guard: all actions except abort_write require a valid path
+            if (!path && action != 'abort_write') {
+                return McpResponse.error(requestId, -32602,
+                    "file_write '${action}' requires a 'path' parameter (received null). " +
+                    "Ensure 'path' is at the top level of the arguments object, not nested inside options.")
+            }
 
             McpResponse response
             switch (action) {

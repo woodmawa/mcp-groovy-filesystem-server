@@ -127,6 +127,12 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             String path                 = arguments.path as String
             Map<String, Object> options = normaliseOptions(arguments.options)
 
+            // Guard: most actions require a valid path
+            if (!path && !(action in ['multi', 'project_root', 'allowed_dirs', 'chunk_read', 'finalise_read'])) {
+                return McpResponse.error(requestId, -32602,
+                    "file_read '${action}' requires a 'path' parameter (received null).")
+            }
+
             switch (action) {
                 case 'read' : {
                     McpResponse r = contentReader.doRead(path, options, requestId)
