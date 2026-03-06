@@ -1,8 +1,42 @@
-# mcp-groovy-filesystem-server v0.7.54
+# mcp-groovy-filesystem-server v0.7.55
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.55
+
+**UsageTracker rewrite — per-event INSERT (Option B)**
+
+- **Eliminates the accumulation pattern entirely:** `UsageTracker` no longer maintains in-memory
+  counters (`callCounts`, `responseBytes`, `inputBytes` ConcurrentHashMaps, atomic totals). Each
+  tool call is now written as a single `INSERT` row immediately, matching the context server's
+  `SqliteTelemetryStore.recordTokenUsage` pattern exactly.
+
+- **Fixes duplicate row problem:** The shared `token_usage` table was written by both servers with
+  incompatible patterns — context server used per-event `INSERT`, filesystem used `INSERT OR REPLACE`
+  with accumulated counters. A `UNIQUE` index couldn't be created because it conflicted with the
+  context server's per-event rows (multiple rows with the same key per session). Without the index,
+  `INSERT OR REPLACE` degraded to plain `INSERT`, creating duplicate rows on every periodic flush.
+  Found 3,266 duplicates in one day (4,229 rows, only 963 unique keys). Per-event INSERT eliminates
+  the need for a UNIQUE index entirely — each row is unique by ROWID.
+
+- **Removes entire compounding bug class:** The v0.7.52 exponential compounding bug and v0.7.53 fix
+  both stemmed from the accumulate-flush-reload lifecycle. With no accumulation, no `loadTodayFromDb`,
+  no periodic flush, and no `INSERT OR REPLACE`, the entire category of scope-mismatch bugs is
+  structurally impossible.
+
+- **Removed:** `flushToDb()`, `loadTodayFromDb()`, `periodicFlush()`, `checkDateRollover()`,
+  `@PreDestroy shutdown()`, `dirty` flag, all in-memory counter maps/atomics, UNIQUE index creation.
+
+- **Added:** `insertEvent()` — single per-call INSERT with `call_count=1`.
+
+- **Rewritten:** `buildTodayStats()` and `buildPeriodStats()` unified into `buildStats(period)` —
+  all stats are now purely DB-driven via `SUM(call_count)` grouped by `tool_name`.
+
+- **Net change:** -213 lines (326 deletions, 113 insertions). No dashboard changes needed.
 
 ---
 
