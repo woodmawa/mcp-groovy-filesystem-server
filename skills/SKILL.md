@@ -76,7 +76,7 @@ the next call writes blind against stale context.
 
 ---
 
-## Anti-Patterns That Caused Phase 6 Failures
+## Anti-Patterns That Caused Failures
 
 | Anti-pattern | Risk | Fix |
 |---|---|---|
@@ -84,6 +84,47 @@ the next call writes blind against stale context.
 | `range()` then `replace()` ignoring returned hash | Blind write | Pass `file_content_hash` from range |
 | 5+ sequential `replace` calls | Each corrupts context for next | Use `multi_replace` or re-read between |
 | `replace` with non-unique `oldText` | Edits wrong occurrence | Grep first, or use `patch` |
+| `replace` without `path` param | Returns opaque "Path not allowed: null" | **Always** include `path` at top level |
+| `patch` with wrong line range | Duplicates code or orphans lines | **Always** `get_method` or `range` immediately before patching |
+| `patch` that doesn't cover the full old block | Leaves stale lines above/below | Verify startLine/endLine span the **entire** block being replaced |
+| Multiple sequential `patch` calls | Line numbers shift after first patch | Re-read between patches, or combine into single patch with multiple replacements |
+
+---
+
+## Patch Discipline (added v0.7.54 — from session that produced 4 broken patches)
+
+The `patch` action replaces lines startLine..endLine with newText. Getting this wrong
+leaves the file in a broken state (duplicate lines, orphaned code, missing closures).
+
+### The Iron Rule: Read → Patch → Verify
+
+1. **Read** the exact lines you intend to replace (`get_method` or `range`)
+2. **Count** the startLine and endLine from the response — these are your patch bounds
+3. **Write** the complete replacement in newText — include ALL structural elements
+   (closing braces, method javadoc, blank separator lines)
+4. **Verify** the result with another `range` read after patching
+
+### Common Patch Mistakes
+
+- **Partial replacement**: Your endLine doesn't cover the closing `}` or javadoc of
+  the next method. Result: duplicate closing braces or orphaned comment lines.
+- **Forgetting `ins.executeBatch()` / `ins.close()`**: When replacing loop bodies,
+  the lines after the loop are part of the method but NOT part of the loop.
+  If your endLine stops at the loop's `}`, you lose the lines between loop-end
+  and method-end.
+- **Line shift blindness**: After a patch that adds/removes lines, all line numbers
+  below the patch point have shifted. A second patch using pre-shift line numbers
+  will edit the wrong lines.
+
+### Safe Patch Checklist
+
+```
+☐ Did I read the file IMMEDIATELY before this patch? (not 3 tool calls ago)
+☐ Does my startLine..endLine span cover EXACTLY the lines I want to replace?
+☐ Does my newText include ALL structural elements (braces, blank lines, javadoc)?
+☐ Am I passing expectedHash from my most recent read?
+☐ After patching, will I verify the result before making another patch?
+```
 
 ---
 

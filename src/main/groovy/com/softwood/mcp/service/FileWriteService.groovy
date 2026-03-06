@@ -63,6 +63,7 @@ Write, append, or modify file content. Actions:
 All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.
 
 SAFE EDITING: always pass expectedHash (hash from last read). For targeted code edits: get_method -> patch. For unique string replacements: grep to confirm uniqueness -> replace. For multiple changes to same file: multi_replace. NEVER sequential replace calls without re-reading.
+PATCH SAFETY: get_method/range IMMEDIATELY before every patch. Verify startLine/endLine covers the ENTIRE block including closing braces. After any patch, re-read before the next patch (line numbers shift). Never patch from memory.
 CRITICAL: replace failure (oldText not found) returns a JSON-RPC error - STOP and read the error detail before retrying. Do NOT fall through to patch silently.
 SKILL: For worked examples read:
   file_read action=read path=${skillPath}""").toString(),
