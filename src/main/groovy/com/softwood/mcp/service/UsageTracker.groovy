@@ -385,10 +385,20 @@ class UsageTracker {
                     long bytes    = responseBytes[key]?.get() ?: 0L
                     long inBytes  = inputBytes[key]?.get() ?: 0L
                     long estTokens = Math.round(bytes / 4.0d)
+                    long calls    = count.get()
+
+                    // SANITY GUARD (v0.7.53): reject obviously corrupt accumulated values.
+                    // A single tool in a single session should never exceed these ceilings.
+                    // If hit, the read-accumulate-write loop has a scope mismatch bug.
+                    if (calls > 50_000 || bytes > 1_000_000_000L) {
+                        log.error('UsageTracker SANITY CHECK FAILED: {}  calls={} bytes={} — skipping flush for this key to prevent data corruption', key, calls, bytes)
+                        return  // skip this entry, don't persist corrupt data
+                    }
+
                     ins.setString(1, dateStr)
                     ins.setString(2, sessionStart.format(DateTimeFormatter.ofPattern('yyyy-MM-dd-HH-mm')))
                     ins.setString(3, key)
-                    ins.setLong(4, count.get())
+                    ins.setLong(4, calls)
                     ins.setLong(5, estTokens)
                     ins.setLong(6, bytes)
                     ins.setLong(7, inBytes)
