@@ -226,6 +226,22 @@ class FilesystemTelemetryService {
             dbConn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
             dbConn.autoCommit = true
             log.debug('FilesystemTelemetryService: persistent JDBC connection opened at {}', dbPath)
+            // Ensure table exists even when context server has never run (standalone mode)
+            def stmt = dbConn.createStatement()
+            stmt.execute('''CREATE TABLE IF NOT EXISTS tool_call_telemetry (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id          TEXT NOT NULL,
+                tool_name           TEXT NOT NULL,
+                server_name         TEXT NOT NULL DEFAULT 'context-server',
+                called_at           TEXT DEFAULT (datetime('now')),
+                response_char_count INTEGER DEFAULT 0,
+                response_token_est  INTEGER DEFAULT 0,
+                is_repeat_call      INTEGER DEFAULT 0,
+                args_hash           TEXT
+            )''')
+            stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_session ON tool_call_telemetry(session_id)')
+            stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_tool ON tool_call_telemetry(tool_name)')
+            stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_server ON tool_call_telemetry(server_name)')
             // Addendum C: safe migration - add new columns if table exists but columns are absent
             ['action', 'path_hash', 'outcome'].each { String col ->
                 try {

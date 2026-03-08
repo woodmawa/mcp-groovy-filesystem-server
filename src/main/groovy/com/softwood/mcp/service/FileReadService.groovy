@@ -31,7 +31,7 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Autowired FileStructureReader  structureReader
     @Autowired FileMetaReader       metaReader
     @Autowired ReadResponseHelper   responseHelper
-    @Autowired ContextServerClient  contextServerClient
+    @Autowired(required = false) ContextServerClient  contextServerClient
 
     FileReadService(PathService pathService) {
         super(pathService)
@@ -187,7 +187,9 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             String hash = extractFileHash(resp)
             if (!hash) return
             String np = pathService.normalizePath(path)
-            contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
+            if (contextServerClient != null) {
+                contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
+            }
         } catch (Exception ignored) {}
     }
 

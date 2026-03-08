@@ -33,7 +33,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     @Autowired FilePatchService   patchService
     @Autowired FileChunkWriter    chunkWriter
     @Autowired StructureCache     structureCache
-    @Autowired ContextServerClient contextServerClient
+    @Autowired(required = false) ContextServerClient contextServerClient
 
     private static final Set<String> MUTATING_ACTIONS =
         ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write'] as Set
@@ -144,7 +144,7 @@ SKILL: For worked examples read:
                 // Fire-and-forget registry upsert so context server tracks the new hash
                 try {
                     String hash = extractFileHash(response)
-                    if (hash) {
+                    if (hash && contextServerClient != null) {
                         String np = pathService.normalizePath(path)
                         contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
                         // Re-index ontology for source files so symbols stay current after writes
