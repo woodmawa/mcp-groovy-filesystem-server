@@ -1,8 +1,33 @@
-# mcp-groovy-filesystem-server v0.7.55
+# mcp-groovy-filesystem-server v0.7.56
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.7.56
+
+**Filesystem ↔ Context Server decoupling — standalone-safe**
+
+- **`FilesystemTelemetryService` self-sufficient schema:** `init()` now runs `CREATE TABLE IF NOT EXISTS
+  tool_call_telemetry` (exact schema matching the context server's `SqliteSchemaManager`) plus the
+  three `idx_telemetry_*` indexes before the existing `ALTER TABLE` column migrations. Previously,
+  if the context server had never run (fresh DB or standalone mode), every `recordToolCall()` write
+  silently failed in the catch block, losing all granular telemetry. Both servers use
+  `CREATE TABLE IF NOT EXISTS` so whichever starts first creates the table; the second is a no-op.
+
+- **`FileReadService` + `FileWriteService`: `@Autowired(required = false)` + null guards:**
+  Both services previously used the default `@Autowired` (required=true) for `ContextServerClient`.
+  Changed to `@Autowired(required = false)` to allow future `@ConditionalOnProperty` exclusion
+  without breaking Spring context startup. Added explicit null guards at each call site
+  (`fireRegistryUpsert` in `FileReadService`; the post-write upsert/reindex block in
+  `FileWriteService`) so a missing bean produces no NPE rather than a silently caught one.
+
+- **Context server: no changes** — already clean in both directions. Dashboard queries return empty
+  result sets when no filesystem rows exist; ratio health returns "UNKNOWN" as designed.
+
+- **Net change:** +23 lines across 3 files. No behaviour change when both servers are running together.
 
 ---
 
