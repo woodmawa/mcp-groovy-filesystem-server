@@ -1,3 +1,74 @@
+# SESSION ORIENTATION — Read This First
+_Every session. Before any filesystem exploration._
+
+---
+
+## The Rule: Ontology Before Filesystem
+
+The context server maintains an indexed ontology of all four MCP projects.
+Before using ANY of the following for orientation, query the ontology first:
+- `file_list:tree` or `file_list:children`
+- `file_read:read` on a file you haven't edited yet this session
+- `file_read:structure` to understand a class layout
+
+### Step 1 — Get the file map for your target cluster (replaces tree/children)
+
+```
+context_read scope=ontology action=file-map cluster=<target>
+```
+cluster values: `filesystem-server` | `context-server` | `llm-orchestrator` | `agentic-workflow`
+
+Returns: all files in the cluster with one-line purpose and line count.
+Cost: ~200 tokens. Replaces: `file_list:tree` (~626 tokens) + follow-up structure calls.
+
+**NOTE**: This endpoint exists from context-server v0.13.0 onwards. If you get an error
+saying unknown action, the server is pre-v0.13.0 — fall back to `file_list:children` and
+note that Ship 2 has not yet been deployed.
+
+### Step 2 — Understand a specific class (replaces structure + read)
+
+```
+context_read scope=ontology action=class-detail nodeId=<ClassName>
+```
+
+Returns: class purpose, all methods with doc comment, startLine, endLine, visibility.
+Cost: ~400-600 tokens. Replaces: `file_read:structure` (~400 tokens) + context you'd only
+get by reading the file body.
+
+**CRITICAL**: `endLine` from class-detail gives you exact patch bounds — you still need
+`file_read:get_method` immediately before patching to get the current body and file hash,
+but you no longer need `file_read:structure` first to find the method.
+
+**NOTE**: Requires context-server v0.13.0+. If error, fall back to `file_read:structure`.
+
+### Step 3 — Fall through to filesystem only when ontology can't answer
+
+Ontology CANNOT answer:
+- Config files (build.gradle, application.yml, *.json, *.ps1)
+- Files added since last `context_write scope=ontology action=index-dir`
+- The actual current body of a method (always use get_method before patching)
+
+Ontology CAN answer:
+- What files exist in a project and what they do
+- What methods a class has, where they start/end, what their purpose is
+- What annotations a class/method has
+- What dependencies a class injects
+
+---
+
+## Orientation Anti-Patterns — Never Do These
+
+| Anti-pattern | Why | Alternative |
+|---|---|---|
+| `file_list:tree` to understand project layout | 626+ tokens, re-run every session | `context_read scope=ontology action=file-map cluster=X` |
+| `file_list:children` loop to find a file | Expensive if project is large | `file_search action=name` or ontology file-map |
+| `file_read:read` on >100-line file for orientation | 1,000–3,000 tokens, you only need structure | `class-detail` then `get_method` only when patching |
+| `file_read:structure` before every edit | 400 tokens, often repeated | `class-detail` gives same info + doc + end_line |
+| Re-reading a file you already read this session | Wastes tokens if unchanged | Pass `options.knownHash` — returns {unchanged:true} instantly |
+| `file_list:children` on multiple dirs to orient | Chain of expensive calls | One `file-map` call covers the whole cluster |
+
+---
+
 # Filesystem Editing Skill — Safe Workflow
 _Part of: mcp-groovy-filesystem-server_
 _Read this before making any multi-step edits to large source files._
