@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.DirectoryStream
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.concurrent.Callable
@@ -140,5 +141,52 @@ class FileMetaReader extends AbstractFileService {
         }
         String hex = digest.digest().encodeHex().toString()
         return textResponse(requestId, [action: 'checksum', path: normalized, algorithm: algorithm, checksum: hex])
+    }
+
+    // v0.8.1: directory listing - replaces execute powershell Get-ChildItem
+    McpResponse doList(String path, Object requestId) {
+        String normalized = pathService.normalizePath(path)
+        if (!isPathAllowed(normalized)) throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
+
+        Path dirPath = Paths.get(normalized)
+        if (!Files.exists(dirPath)) {
+            return McpResponse.error(requestId, -32602, "Path not found: ${sanitize(normalized)}")
+        }
+        if (!Files.isDirectory(dirPath)) {
+            return McpResponse.error(requestId, -32602, "Not a directory: ${sanitize(normalized)}")
+        }
+
+        // Skip Windows reserved device names (create phantom files via GDK)
+        Set<String> reserved = (['NUL','CON','PRN','AUX',
+            'COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9',
+            'LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'] as Set<String>)
+
+        List<Map<String, Object>> dirs  = []
+        List<Map<String, Object>> files = []
+        DirectoryStream<Path> stream = Files.newDirectoryStream(dirPath)
+        try {
+            for (Path child : stream) {
+                String name = child.fileName.toString()
+                if (reserved.contains(name.toUpperCase(Locale.ROOT))) continue
+                boolean isDir = Files.isDirectory(child)
+                long size     = isDir ? 0L : Files.size(child)
+                long lastMod  = Files.getLastModifiedTime(child).toMillis()
+                Map<String, Object> entry = ([name: name, type: (isDir ? 'dir' : 'file') as String,
+                                              size: size, lastModified: lastMod] as Map<String, Object>)
+                if (isDir) dirs << entry else files << entry
+            }
+        } finally {
+            stream.close()
+        }
+
+        Comparator<Map<String, Object>> byName = { Map<String, Object> a, Map<String, Object> b ->
+            (a.name as String).compareToIgnoreCase(b.name as String)
+        } as Comparator<Map<String, Object>>
+        dirs.sort(byName)
+        files.sort(byName)
+        List<Map<String, Object>> entries = (dirs + files) as List<Map<String, Object>>
+
+        return textResponse(requestId, ([action: 'list', path: normalized,
+                                         entries: entries, count: entries.size()] as Map<String, Object>))
     }
 }

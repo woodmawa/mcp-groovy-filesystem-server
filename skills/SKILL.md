@@ -66,6 +66,8 @@ Ontology CAN answer:
 | `file_read:structure` before every edit | 400 tokens, often repeated | `class-detail` gives same info + doc + end_line |
 | Re-reading a file you already read this session | Wastes tokens if unchanged | Pass `options.knownHash` — returns {unchanged:true} instantly |
 | `file_list:children` on multiple dirs to orient | Chain of expensive calls | One `file-map` call covers the whole cluster |
+| `execute powershell Get-ChildItem` to list a dir | Full execute round-trip ~800-1200 bytes | `file_read action=list` — compact JSON, ~300-500 bytes |
+| `file_read:structure` without `className` on multi-class file | Returns entire file outline | Add `options.className=Foo` to get just that class subtree |
 
 ---
 
@@ -209,6 +211,9 @@ leaves the file in a broken state (duplicate lines, orphaned code, missing closu
 | New file or full overwrite | `write` (no hash needed) |
 | Append to end | `append` (no hash needed) |
 | Any file > 200 lines | Prefer `patch` always |
+| List directory contents | `file_read action=list` (not `execute powershell Get-ChildItem`) |
+| Gauge method size before reading | Check `lineCount` in `structure` response (v0.8.1+) |
+| Multi-class file, only need one class | `file_read action=structure options.className=Foo` |
 
 ---
 

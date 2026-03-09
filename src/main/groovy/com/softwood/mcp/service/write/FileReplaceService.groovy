@@ -27,6 +27,9 @@ class FileReplaceService extends AbstractFileService {
     @Value('${mcp.filesystem.read-chunk-threshold-kb:300}')
     int replaceChunkThresholdKb
 
+    // v0.8.1 Change 4: track recent writes to nudge multi_replace batching
+    private final Map<String, Long> recentWrites = Collections.synchronizedMap(new LinkedHashMap<String, Long>())
+
     FileReplaceService(PathService pathService) {
         super(pathService)
     }
@@ -145,14 +148,21 @@ class FileReplaceService extends AbstractFileService {
             WriteUtils.shouldNormaliseLf(target) ? 'LF (normalised)' : (hasCrLf ? 'CRLF (preserved)' : 'LF'),
             usedNormalized ? ', NFC-normalised' : '')
         String hash = WriteUtils.fileHash(target)
+
+        // v0.8.1 Change 4: hint to use multi_replace when editing same file repeatedly within 60s
+        long now = System.currentTimeMillis()
+        Long lastWrite = recentWrites.get(normalized)
+        boolean shouldHint = lastWrite != null && (now - lastWrite) < 60_000L
+        recentWrites.put(normalized, now)
+
         if (isWriteCompact(options)) {
             return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
         }
-        return textResponse(requestId, [
-            action: 'replace', path: normalized,
+        Map<String, Object> resp = ([action: 'replace', path: normalized,
             replacements: 1, success: true,
-            content_hash: hash, file_content_hash: hash
-        ])
+            content_hash: hash, file_content_hash: hash] as Map<String, Object>)
+        if (shouldHint) resp.hint = 'More edits to this file? Prefer multi_replace to batch them in one call.'
+        return textResponse(requestId, resp)
     }
 
     // -----------------------------------------------------------------------

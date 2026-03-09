@@ -1,8 +1,32 @@
-# mcp-groovy-filesystem-server v0.8.0
+# mcp-groovy-filesystem-server v0.8.1
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.8.1
+
+**Token-efficiency improvements — four new capabilities for `file_read`**
+
+- **`file_read action=list`:** Compact directory listing returning `[{name, type, size, lastModified}]`
+  sorted dirs-first then files, both alphabetical. Replaces `execute action=powershell Get-ChildItem`
+  round-trips for orientation — ~300-500 bytes vs ~800-1200 for a PowerShell exec.
+
+- **`structure` now includes `lineCount` per entry:** Every method/field/class entry in a `structure`
+  response now carries `lineCount = endLine - line + 1`. Works in both full and compact modes.
+  Lets callers decide whether to use `get_method` vs `range` immediately, without a follow-up call.
+
+- **`structure` optional `className` filter (`options.className`):** Pass a class name to get only
+  that class's subtree (the class entry + all its fields, methods, constructors). If the class is
+  not found, returns `{error, availableClasses:[...]}` so the correct name can be retried without a
+  second round-trip.
+
+- **`replace` nudges toward `multi_replace` on repeated edits:** When a second `replace` call
+  targets the same file within 60 seconds, the response includes
+  `hint: 'More edits to this file? Prefer multi_replace to batch them in one call.'`
+  Purely advisory — no change to write behaviour.
 
 ---
 

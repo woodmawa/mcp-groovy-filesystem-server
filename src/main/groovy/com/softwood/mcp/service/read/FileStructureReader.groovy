@@ -92,11 +92,49 @@ class FileStructureReader extends AbstractFileService {
             contextServerClient.persistStructureAsync(normalized, fileHash, entries)
         }
 
+        // v0.8.1 Change 3: className filter — return only the named class subtree
+        String filterClass = options['className'] as String
+        if (filterClass) {
+            List<Map<String, Object>> classTypeEntries = entries.findAll { Map<String, Object> e ->
+                String t = e.type as String
+                t == 'class' || t == 'interface' || t == 'enum' || t == 'trait'
+            }
+            // Match class entries whose content contains filterClass as a distinct word
+            List<Map<String, Object>> matched = classTypeEntries.findAll { Map<String, Object> e ->
+                String c = (e.content as String) ?: ''
+                c.contains(' ' + filterClass + ' ') || c.contains(' ' + filterClass + '<') ||
+                c.contains(' ' + filterClass + '{') || c.endsWith(' ' + filterClass)
+            }
+            if (matched.isEmpty()) {
+                List<String> available = classTypeEntries.collect { Map<String, Object> e ->
+                    String c = (e.content as String) ?: ''
+                    List<String> words = c.tokenize(' ')
+                    int idx = words.findIndexOf { String w ->
+                        w == 'class' || w == 'interface' || w == 'enum' || w == 'trait'
+                    }
+                    idx >= 0 && idx + 1 < words.size()
+                        ? words[idx + 1].replaceAll('[<{(].*', '')
+                        : c.take(40)
+                }
+                return textResponse(requestId, ([error: ("Class not found: ${filterClass}" as String),
+                                                 availableClasses: available,
+                                                 file_content_hash: fileHash] as Map<String, Object>))
+            }
+            entries = entries.findAll { Map<String, Object> e ->
+                String t = e.type as String
+                if (t == 'class' || t == 'interface' || t == 'enum' || t == 'trait') return matched.contains(e)
+                return (e.owner as String) == filterClass
+            }
+            totalEntries = entries.size()
+        }
+
         if (isCompact(options)) {
             List<Map<String, Object>> methods = entries
                 .findAll { Map<String, Object> e -> e.type == 'method' }
                 .collect { Map<String, Object> e ->
-                    [line: e.line, type: e.type, content: e.content] as Map<String, Object>
+                    // v0.8.1 Change 2: include lineCount so callers can gauge method size without get_method
+                    int lc = (e.endLine as int) - (e.line as int) + 1
+                    [line: e.line, type: e.type, content: e.content, lineCount: lc] as Map<String, Object>
                 }
             boolean compactCapped = methods.size() > structureMaxEntries
             if (compactCapped) methods = methods.take(structureMaxEntries)
@@ -110,7 +148,12 @@ class FileStructureReader extends AbstractFileService {
         List<Map<String, Object>> cappedEntries = (entriesCapped ? entries.take(structureMaxEntries) : entries)
             .collect { Map<String, Object> e ->
                 String c = e.content as String
-                (c && c.length() > 200) ? (new LinkedHashMap<>(e) + [content: c.substring(0, 200) + '...']) as Map<String, Object> : e
+                // v0.8.1 Change 2: add lineCount to every entry
+                Map<String, Object> entry = (c && c.length() > 200)
+                    ? (new LinkedHashMap<>(e) + [content: c.substring(0, 200) + '...']) as Map<String, Object>
+                    : new LinkedHashMap<>(e) as Map<String, Object>
+                entry.lineCount = (e.endLine as int) - (e.line as int) + 1
+                return entry
             }
         Map<String, Object> structResp = [action: 'structure', path: normalized, ext: result.ext,
                                           count: cappedEntries.size(), total_entries: totalEntries,

@@ -70,7 +70,8 @@ Read files and query filesystem metadata. Actions:
 - normalize(path): Windows/WSL path conversion
 - diff(path, options.compareTo): line-by-line diff of two files
 - checksum(path, options.algorithm=SHA-256): file hash
-- structure(path): code/markdown outline with line AND endLine per entry - FILE path only, NOT directory. options.compact=true returns methods only (no endLine, ~50% smaller)
+- list(path): directory listing [{name, type, size, lastModified}] — replaces Get-ChildItem. Dirs first, then files, both sorted alpha.
+- structure(path): code/markdown outline with line, endLine, lineCount per entry - FILE path only, NOT directory. options.compact=true returns methods only (~50% smaller, still includes lineCount). options.className=<Name> filters to one class subtree (returns error+availableClasses if not found).
 - get_method(path, options.method): returns complete named method body - FILE path only, NOT directory. Preferred over structure+range for editing
 - chunk_read(options.sessionId, options.chunkIndex): retrieve one chunk from a paged read
 - finalise_read(options.sessionId): free chunk session when all chunks consumed
@@ -88,7 +89,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                     action : [type: 'string',
                               enum: ['read','head','tail','range','grep','multi','info','summary',
                                      'exists','project_root','allowed_dirs','normalize',
-                                     'diff','checksum','structure','get_method','chunk_read','finalise_read']],
+                                     'diff','checksum','list','structure','get_method','chunk_read','finalise_read']],
                     path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
@@ -109,7 +110,8 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
                                   compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (structure: methods only, no endLine)'],
                                   knownHash   : [type: 'string',  description: 'Pass file_content_hash from a previous read of this file. If file unchanged, returns {unchanged:true, file_content_hash} with NO content - saves all tokens. Use on every re-read.'],
-                                  force       : [type: 'boolean', description: 'Pass force=true to override the >200 line refusal on action=read. Only use when you genuinely need the full file content.']
+                                  force       : [type: 'boolean', description: 'Pass force=true to override the >200 line refusal on action=read. Only use when you genuinely need the full file content.'],
+                                  className   : [type: 'string',  description: 'Filter structure output to a single named class subtree (returns error+availableClasses if not found)']
                               ]]
                 ],
                 required  : ['action']
@@ -164,6 +166,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 case 'normalize'    : return metaReader.doNormalize(path, requestId)
                 case 'diff'         : return metaReader.doDiff(path, options, requestId)
                 case 'checksum'     : return metaReader.doChecksum(path, options, requestId)
+                case 'list'         : return metaReader.doList(path, requestId)
                 case 'structure'    : return structureReader.doStructure(path, options, requestId)
                 case 'get_method'   : return structureReader.doGetMethod(path, options, requestId)
                 case 'chunk_read'   : return responseHelper.doChunkRead(options, requestId)
