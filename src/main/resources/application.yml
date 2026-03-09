@@ -106,6 +106,8 @@ mcp:
     enable-powershell: true
     enable-groovy: true
     enable-cmd: true
+    enable-python: false
+    python-home: ${PYTHON_HOME:}
 
     # Command whitelists - blocked list takes precedence over allowed
     whitelist:

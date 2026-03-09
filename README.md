@@ -1,8 +1,37 @@
-# mcp-groovy-filesystem-server v0.7.56
+# mcp-groovy-filesystem-server v0.8.0
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.8.0
+
+**Python execution support via `PYTHON_HOME` environment variable**
+
+- **New `execute action=python`:** Run inline Python scripts directly from Claude. Uses `PYTHON_HOME`
+  system environment variable (Machine scope, HKLM) to locate `python.exe` — same semantics as
+  `JAVA_HOME`. Separator-normalised at runtime so both `C:\Python314` and `C:/Python314` work.
+
+- **Opt-in by default:** `mcp.script.enable-python=false` in `application.yml`. Must explicitly
+  enable to activate. Safe default for machines without Python.
+
+- **PATH fallback:** If `PYTHON_HOME` is not set, server warns and falls back to `python` on PATH.
+  Clear error message if the exe is missing at the configured path.
+
+- **`application.yml` additions:**
+  ```yaml
+  enable-python: false
+  python-home: ${PYTHON_HOME:}
+  ```
+  `PYTHON_HOME` confirmed at `C:\Python314` on Will's machine (Python 3.14.3).
+
+- **Smoke test (after restart + enable):**
+  ```
+  execute action=python script="import sys; print(f'Python {sys.version} at {sys.executable}')"
+  ```
+  Expected: `Python 3.14.3 ... at C:\Python314\python.exe`
 
 ---
 

@@ -48,6 +48,12 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     @Value('${mcp.script.enable-cmd:true}')
     boolean enableCmd
 
+    @Value('${mcp.script.enable-python:false}')
+    boolean enablePython
+
+    @Value('${mcp.script.python-home:}')
+    String pythonHome
+
     ExecuteService(PathService pathService) {
         super(pathService)
     }
@@ -60,11 +66,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'execute',
-            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.',
+            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.',
             inputSchema: [
                 type      : 'object',
                 properties: [
-                    action : [type: 'string', enum: ['bash', 'powershell', 'groovy', 'cmd'],
+                    action : [type: 'string', enum: ['bash', 'powershell', 'groovy', 'cmd', 'python'],
                               description: 'Execution environment'],
                     script : [type: 'string', description: 'Script or command to execute'],
                     options: [type: 'object', description: 'workingDir (string), timeout (int seconds), args (list), env (map), verbose (bool). IMPORTANT: maxStdout (int chars, default 50000 ~12K tokens): cap stdout in response - set lower to save context window. maxStdout (int chars, default 50000 ~12K tokens), maxStderr (int chars, default 5000 ~1.2K tokens)',
@@ -113,6 +119,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 case 'powershell': return doPowershell(script, workingDir, timeout, envOverrides, options, requestId)
                 case 'groovy'    : return doGroovy(script, workingDir, timeout, options, requestId)
                 case 'cmd'       : return doCmd(script, workingDir, timeout, envOverrides, options, requestId)
+                case 'python'    : return doPython(script, workingDir, timeout, envOverrides, options, requestId)
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown execute action: ${action}")
             }
@@ -171,6 +178,37 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         }
         List<String> cmd = ['cmd', '/c', script]
         return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides, options)
+    }
+
+    private McpResponse doPython(String script, String workingDir, int timeout,
+                                  Map<String, String> envOverrides, Map<String, Object> options,
+                                  Object requestId) {
+        if (!enablePython) {
+            return McpResponse.error(requestId, -32603,
+                'Python execution is disabled. Set mcp.script.enable-python=true and ensure PYTHON_HOME is configured.')
+        }
+
+        // Resolve interpreter from PYTHON_HOME (env var, set at Machine scope on Windows)
+        String interpreter
+        if (pythonHome) {
+            // Normalise separators — Spring may deliver with backslashes or forward slashes
+            String home = pythonHome.replace('\\', '/')
+            interpreter = "${home}/python.exe"
+            File exe = new File(interpreter)
+            if (!exe.exists()) {
+                return McpResponse.error(requestId, -32603,
+                    "Python interpreter not found at PYTHON_HOME: ${sanitize(pythonHome)}. " +
+                    "Expected: ${sanitize(interpreter)}")
+            }
+        } else {
+            // No PYTHON_HOME — warn but attempt PATH fallback
+            log.warn('PYTHON_HOME not set; attempting PATH fallback for python. ' +
+                     'Set PYTHON_HOME for reliable resolution.')
+            interpreter = 'python'
+        }
+
+        List<String> cmd = [interpreter, '-c', script]
+        return runProcess(cmd, workingDir, timeout, 'python', requestId, envOverrides, options)
     }
 
     private McpResponse doGroovy(String script, String workingDir, int timeout,
