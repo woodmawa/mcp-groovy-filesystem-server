@@ -27,11 +27,17 @@ Eight parameterised tools replace what would otherwise be 30+ individual tools, 
   ```
   `PYTHON_HOME` confirmed at `C:\Python314` on Will's machine (Python 3.14.3).
 
+- **Script via temp file (not `-c`):** Python scripts are written to a temp `.py` file and
+  executed as `python <tempfile.py>`. Avoids curly-brace mangling when passing scripts via
+  `-c` through ProcessBuilder on Windows (same pattern as the existing PowerShell `-File` fix).
+  Supports f-strings, dict literals, set comprehensions, and all `{}` syntax without escaping.
+
 - **Smoke test (after restart + enable):**
   ```
-  execute action=python script="import sys; print(f'Python {sys.version} at {sys.executable}')"
+  execute action=python
+  script: import sys; print(sys.version)
   ```
-  Expected: `Python 3.14.3 ... at C:\Python314\python.exe`
+  Expected: `3.14.3 (tags/v3.14.3:...) [MSC v.1944 64 bit (AMD64)]`
 
 ---
 
@@ -716,6 +722,7 @@ server_lifecycle action=status
 ## Version History
 | Version | Highlights |
 |---------|-----------|
+| **0.8.0** | Python execution via `PYTHON_HOME`; temp-file script execution (fixes `{}` mangling via `-c` on Windows); `mcp.script.enable-python` opt-in |
 | **0.7.37** | multi hash short-circuit (knownHashes); file_content_hash on all multi results; unchanged_count in response; re-read guidance in description |
 | **0.7.36** | CommandWhitelistConfig hardened; ToolsService git-status cap consistent; UsageTracker WAL per-op; stdio profile yml cleanup |
 | **0.7.35** | FS-2 duplicate maxLines guard removed; FS-4 git status cap 2K in doProjectScan |

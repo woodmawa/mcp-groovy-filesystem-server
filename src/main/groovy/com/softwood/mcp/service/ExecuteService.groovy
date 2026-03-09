@@ -207,8 +207,19 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             interpreter = 'python'
         }
 
-        List<String> cmd = [interpreter, '-c', script]
-        return runProcess(cmd, workingDir, timeout, 'python', requestId, envOverrides, options)
+        // Always write script to a temp .py file and invoke via the file path.
+        // Passing scripts via '-c' mangles curly braces and other shell-special characters
+        // during ProcessBuilder argument passing on Windows (Groovy GString / shell escaping).
+        // Writing to a temp file bypasses all quoting issues: Python reads the file directly.
+        File tempScript = null
+        try {
+            tempScript = File.createTempFile('mcp-py-', '.py')
+            tempScript.text = script
+            List<String> cmd = [interpreter, tempScript.absolutePath]
+            return runProcess(cmd, workingDir, timeout, 'python', requestId, envOverrides, options)
+        } finally {
+            tempScript?.delete()
+        }
     }
 
     private McpResponse doGroovy(String script, String workingDir, int timeout,
