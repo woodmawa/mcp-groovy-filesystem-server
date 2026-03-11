@@ -108,12 +108,12 @@ class FileTransformService extends AbstractFileService {
             }
 
             String newHash = WriteUtils.fileHash(Paths.get(normalized))
-            return McpResponse.success(requestId, ([
+            return textResponse(requestId, [
                 success       : true,
                 content_hash  : newHash,
                 lines_affected: result.linesAffected,
                 message       : result.message
-            ] as Map<String, Object>))
+            ])
 
         } catch (Exception e) {
             log.error('server_transform error: {}', e.message)

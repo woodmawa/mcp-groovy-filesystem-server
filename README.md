@@ -1,8 +1,42 @@
-# mcp-groovy-filesystem-server v0.8.1
+# mcp-groovy-filesystem-server v0.8.2
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.8.2
+
+**`server_transform` — 5 named server-side transforms, zero context cost**
+
+New `file_write action=server_transform` performs named edits entirely on the server.
+File content never crosses the MCP context boundary — only `{success, content_hash,
+lines_affected, message}` is returned. Saves ~500–2000 context tokens per edit compared
+to read → patch workflows.
+
+All transforms require `options.expectedHash` (mandatory drift guard).
+
+| Transform | Description | Key options |
+|---|---|---|
+| `replace_method` | Replace a named method body in a Groovy/Java file. Driven by method name, not line numbers — stable across edits. Uses StructureCache to locate bounds without reading file content. | `method`, `newBody`, `fuzzy` |
+| `replace_section` | Replace the body of a markdown/text section delimited by headings. Heading line is preserved. | `heading`, `newContent`, `headingStyle` |
+| `insert_after_heading` | Insert lines immediately after a heading. Purely additive — does not replace existing content. | `heading`, `content`, `headingStyle` |
+| `replace_between` | Replace all lines between two unique anchor strings. Anchor lines are preserved. | `startAnchor`, `endAnchor`, `newContent` |
+| `append_section` | Append a new heading + body at the end of the file. | `heading`, `content`, `headingDepth` |
+
+**When to use `server_transform` vs `patch`:**
+- Use `server_transform` when the target is a named method or named section — you only need the
+  current `content_hash` (from any prior read), not the line numbers.
+- Use `patch` when you need precise line-range control, or for structural edits outside
+  a named method/section boundary.
+- `replace_method` not-found errors include a hint listing all method names in the file.
+- `replace_section` / `insert_after_heading` not-found errors include a hint listing all headings.
+
+**Bug fixed in v0.8.2:** `server_transform` previously returned a silent empty response
+(all transforms functioned correctly but Claude received no confirmation). Fixed by switching
+`FileTransformService.applyTransform` from `McpResponse.success()` to the `textResponse()`
+envelope used by all other handlers.
 
 ---
 

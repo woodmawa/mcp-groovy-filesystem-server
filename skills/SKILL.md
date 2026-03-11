@@ -201,6 +201,62 @@ leaves the file in a broken state (duplicate lines, orphaned code, missing closu
 
 ---
 
+## Pattern 4: Server-side transform (v0.8.2+) — PREFER for named method/section edits
+
+When you need to replace a named method or markdown section, use `server_transform`.
+File content **never** crosses the context boundary — only the hash and result come back.
+Saves ~500–2000 tokens vs read → patch.
+
+```
+# Replace a method — name-driven, no line numbers needed
+file_write action=server_transform  path=<file>
+           options.transform=replace_method
+           options.method=<methodName>
+           options.newBody="    ReturnType methodName(...) {\n        // new body\n    }"
+           options.expectedHash=<hash from any prior read>
+
+# Replace a markdown section body (heading is preserved)
+file_write action=server_transform  path=<file>
+           options.transform=replace_section
+           options.heading="Section Title"      # without # prefix
+           options.newContent="new body text"
+           options.expectedHash=<hash>
+
+# Insert after a heading (additive)
+file_write action=server_transform  path=<file>
+           options.transform=insert_after_heading
+           options.heading="Section Title"
+           options.content="lines to insert"
+           options.expectedHash=<hash>
+
+# Replace lines between two unique anchors (anchors preserved)
+file_write action=server_transform  path=<file>
+           options.transform=replace_between
+           options.startAnchor="// BEGIN GENERATED"
+           options.endAnchor="// END GENERATED"
+           options.newContent="new content"
+           options.expectedHash=<hash>
+
+# Append new heading + body at EOF
+file_write action=server_transform  path=<file>
+           options.transform=append_section
+           options.heading="New Section"
+           options.content="body text"
+           options.headingDepth=2        # optional, default 2
+           options.expectedHash=<hash>
+```
+
+**Decision rule:**
+- Named method edit → always try `replace_method` first (no line lookup needed)
+- Named markdown section → `replace_section` or `insert_after_heading`
+- Need exact line-range control, or edit spans outside a named boundary → use `patch`
+- Not-found errors always include a hint listing available methods/headings
+
+**Returns:** `{success, content_hash, lines_affected, message}` — use `content_hash` as
+`expectedHash` for any subsequent edit to the same file.
+
+---
+
 ## Quick Reference
 
 | Situation | Action |
@@ -214,6 +270,11 @@ leaves the file in a broken state (duplicate lines, orphaned code, missing closu
 | List directory contents | `file_read action=list` (not `execute powershell Get-ChildItem`) |
 | Gauge method size before reading | Check `lineCount` in `structure` response (v0.8.1+) |
 | Multi-class file, only need one class | `file_read action=structure options.className=Foo` |
+| Replace a named method (server-side, zero context cost) | `file_write action=server_transform options.transform=replace_method options.method=<name> options.newBody=<body> options.expectedHash=<hash>` |
+| Replace a markdown section body | `file_write action=server_transform options.transform=replace_section options.heading=<text> options.newContent=<body> options.expectedHash=<hash>` |
+| Insert lines after a heading | `file_write action=server_transform options.transform=insert_after_heading options.heading=<text> options.content=<lines> options.expectedHash=<hash>` |
+| Replace lines between two anchors | `file_write action=server_transform options.transform=replace_between options.startAnchor=<text> options.endAnchor=<text> options.newContent=<body> options.expectedHash=<hash>` |
+| Append new section at EOF | `file_write action=server_transform options.transform=append_section options.heading=<text> options.content=<body> options.expectedHash=<hash>` |
 
 ---
 
