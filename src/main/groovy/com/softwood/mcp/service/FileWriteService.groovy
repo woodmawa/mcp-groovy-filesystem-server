@@ -4,6 +4,7 @@ import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.service.write.FileChunkWriter
 import com.softwood.mcp.service.write.FileContentWriter
 import com.softwood.mcp.service.write.FilePatchService
+import com.softwood.mcp.service.transform.FileTransformService
 import com.softwood.mcp.service.write.FileReplaceService
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
@@ -32,11 +33,12 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     @Autowired FileReplaceService replaceService
     @Autowired FilePatchService   patchService
     @Autowired FileChunkWriter    chunkWriter
+    @Autowired FileTransformService fileTransformService
     @Autowired StructureCache     structureCache
     @Autowired(required = false) ContextServerClient contextServerClient
 
     private static final Set<String> MUTATING_ACTIONS =
-        ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write'] as Set
+        ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write', 'server_transform'] as Set
 
     FileWriteService(PathService pathService) {
         super(pathService)
@@ -59,6 +61,7 @@ Write, append, or modify file content. Actions:
 - replace(path, options): replace ONE unique string. REQUIRED params IN options object: options.oldText (string to find, must appear exactly once), options.newText (replacement). Do NOT pass oldText/newText at top level \u2014 they must be inside the options object. CRITICAL: always check response for success:false or error field - not-found returns McpError with nearest_match hint; duplicate returns line numbers. NOTE: prefer patch for multi-line replacements.
 - patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed, both startLine AND endLine required. ALWAYS read exact lines first.
 - multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
+- server_transform(path, options): server-side named transformation — file content never crosses the context boundary. Returns {success, content_hash, lines_affected, message}. REQUIRED: options.expectedHash (mandatory drift guard — rejected without it). options.transform: replace_section, replace_method, replace_between, insert_after_heading, append_section. Use server_transform whenever you would otherwise read a file just to immediately patch it — saves ~500–2000 context tokens per edit.
 - chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
 All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.
 
@@ -72,7 +75,7 @@ SKILL: For worked examples read:
                 properties: [
                     action : [type: 'string',
                               enum: ['write', 'append', 'replace', 'patch', 'multi_replace',
-                                     'chunk_write', 'finalise_write', 'abort_write']],
+                                     'chunk_write', 'finalise_write', 'abort_write', 'server_transform']],
                     path   : [type: 'string', description: 'Target file path (required for all actions except abort_write)'],
                     content: [type: 'string', description: 'Content for write/append/chunk_write'],
                     options: [type: 'object', description: 'Action-specific options',
@@ -135,6 +138,7 @@ SKILL: For worked examples read:
                 case 'chunk_write'   : response = chunkWriter.doChunkWrite(path, content, options, requestId); break
                 case 'finalise_write': response = chunkWriter.doFinaliseWrite(path, options, requestId); break
                 case 'abort_write'   : return chunkWriter.doAbortWrite(options, requestId)
+                case 'server_transform': response = fileTransformService.applyTransform(path, options, requestId); break
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown file_write action: ${action}")
             }
