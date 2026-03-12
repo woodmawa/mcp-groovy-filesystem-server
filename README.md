@@ -1,8 +1,46 @@
-# mcp-groovy-filesystem-server v0.8.2
+# mcp-groovy-filesystem-server v0.8.3
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.8.3
+
+**Token efficiency overhaul — compressed descriptions, new read actions, on-demand help, two new transforms**
+
+### Tool description compression (~50% token reduction)
+
+All tool descriptions are now served in **compact mode** by default (`mcp.tools.description-mode=compact` in `application.yml`). Compact descriptions list actions and key params without examples, prose warnings, or verbose guidance — reducing the filesystem server's contribution to the system prompt from ~1,500 tokens to ~400 tokens. Switch to `verbose` if a model needs the fuller descriptions.
+
+The session-start sequence has been removed from the `file_read` description entirely — it belongs in `CLAUDE.md`, not in every session's tool schema.
+
+### `file_read action=stat` — metadata without content
+
+Returns file metadata (path, exists, type, size, lines, lastModified, language, encoding) without reading any content. Language is auto-detected from the file extension. Token cost: ~30 tokens vs ~2,000 for a full read of a 500-line file. Useful for checking whether a file exists and how large it is before deciding how to read it.
+
+### `file_read action=help` — on-demand usage guide
+
+```
+file_read action=help options.topic=file_write
+file_read action=help options.topic=all
+```
+
+Returns detailed guidance from a server-side `USAGE.md` classpath resource. Topics: `file_read`, `file_write`, `file_list`, `file_search`, `file_lifecycle`, `execute`, `server_lifecycle`. All the verbose examples and patterns that were stripped from the compact descriptions are now retrievable on demand — they no longer occupy the system prompt in sessions where they're not needed.
+
+### Two new `server_transform` transforms
+
+| Transform | Description | Key options |
+|---|---|---|
+| `add_method` | Insert a new method into a Groovy/Java class. Uses StructureCache to find the insertion point — no file read needed. Default: insert before last `}`. | `method` (name), `body` (full text), `after` or `before` (anchor method) |
+| `add_import` | Add an import statement if not already present. Idempotent — returns success with no-op note if import exists. Inserts after the last existing `import` line. | `import` (class or full statement) |
+
+Both eliminate the read round-trip previously needed to locate the insertion point.
+
+### Tree depth default lowered
+
+`file_list action=tree` default `maxDepth` reduced from 5 to 2. Deep trees on large projects were returning hundreds of entries before the caller even specified what they were looking for. Pass `options.maxDepth=N` to go deeper.
 
 ---
 
@@ -780,6 +818,9 @@ server_lifecycle action=status
 ## Version History
 | Version | Highlights |
 |---------|-----------|
+| **0.8.3** | Token efficiency overhaul: compressed descriptions (compact/verbose toggle), `file_read action=stat` (metadata only), `file_read action=help` (on-demand USAGE.md), `add_method`/`add_import` server_transform transforms, tree maxDepth default 5→2 |
+| **0.8.2** | `server_transform` silent-response bug fixed; `file_read` description cleaned up |
+| **0.8.1** | `file_read action=list`; `structure` lineCount per entry; `structure` className filter; `replace` multi-edit hint |
 | **0.8.0** | Python execution via `PYTHON_HOME`; temp-file script execution (fixes `{}` mangling via `-c` on Windows); `mcp.script.enable-python` opt-in |
 | **0.7.37** | multi hash short-circuit (knownHashes); file_content_hash on all multi results; unchanged_count in response; re-read guidance in description |
 | **0.7.36** | CommandWhitelistConfig hardened; ToolsService git-status cap consistent; UsageTracker WAL per-op; stdio profile yml cleanup |
