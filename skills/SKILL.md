@@ -345,6 +345,44 @@ file_write action=server_transform  path=<file>
 
 ---
 
+## Toolchain (git / gradle) — Required Params
+
+`groovy-filesystem:tools` always requires **both** `action` and `subcommand` for git/gradle.
+Omitting `subcommand` gives: `MCP error -32602: subcommand required for git`.
+
+```
+# CORRECT
+mcp__groovy-filesystem__tools
+  action=git
+  subcommand=commit
+  options.workingDir=<path>
+  options.message="commit message"    ← required for commit or process hangs
+
+mcp__groovy-filesystem__tools
+  action=git
+  subcommand=add
+  args=["-A"]
+  options.workingDir=<path>
+
+mcp__groovy-filesystem__tools
+  action=gradle
+  subcommand=bootJar
+  options.workingDir=<path>
+
+# WRONG — missing subcommand
+mcp__groovy-filesystem__tools
+  action=git
+  command="add -A && git commit -m ..."   ← no compound commands, no subcommand=
+```
+
+Allowed git subcommands: `status | log | diff | add | commit | push | pull | branch | stash | clone | fetch | checkout | merge | show | tag | remote | reset | revert`
+
+Allowed gradle subcommands: `build | test | clean | compileGroovy | compileJava | bootRun | bootJar | jar | dependencies | tasks | check | assemble | publish | wrapper`
+
+**git commit ALWAYS needs `options.message`** — without it the process hangs waiting for an editor.
+
+---
+
 ## How to Read This File
 
 From any Claude session with groovy-filesystem access:
