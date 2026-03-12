@@ -1,8 +1,22 @@
-# mcp-groovy-filesystem-server v0.8.3
+# mcp-groovy-filesystem-server v0.8.4
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via HTTP/SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.8.4
+
+**Hotfix: all groovy-filesystem tools missing from Claude Desktop after v0.8.3**
+
+The v0.8.3 description compression accidentally removed `type: 'object'` from the `file_list` tool's `inputSchema`. Claude Desktop's MCP SDK validates all tool schemas on receipt; one invalid schema causes the entire server's tool list to be silently dropped — so all 7 filesystem tools disappeared despite the server running and connecting normally.
+
+Two secondary fixes included:
+- `FileReadService`: duplicate `return` statement in switch default case (dead code, harmless)
+- `AddMethodTransformer`: added explicit `import java.util.Arrays` (Groovy auto-imports cover it but explicit is correct under `@CompileStatic`)
+
+All v0.8.3 features (stat, help, add_method, add_import, compact descriptions) remain fully intact.
 
 ---
 
