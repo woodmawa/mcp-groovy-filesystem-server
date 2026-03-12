@@ -42,14 +42,10 @@ class FileListService extends AbstractFileService implements ToolHandler {
         return [[
             name       : 'file_list',
             description: '''\
-List directory contents. Actions:
-- children(path): immediate children only - cheapest
-- list(path, options): filtered listing; options.recursive for full walk
-- tree(path, options.maxDepth=5, options.maxResults=200): recursive JSON tree
-- sizes(path): children sorted by size desc
-All require a directory path.''',
+List directory contents.
+Actions: children|list|tree|sizes
+Key params: path (dir, required), options.maxDepth (tree, default 2), options.pattern (filename filter), options.recursive (list), options.compact (minimal output).''',
             inputSchema: [
-                type      : 'object',
                 properties: [
                     action : [type: 'string', enum: ['children', 'list', 'tree', 'sizes'],
                               description: 'Listing mode'],

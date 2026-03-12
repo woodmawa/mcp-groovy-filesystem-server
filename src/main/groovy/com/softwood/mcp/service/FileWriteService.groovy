@@ -50,26 +50,26 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 
     @Override
     List<Map<String, Object>> getToolDefinitions() {
-        String root      = pathService.activeProjectRoot?.replace('\\', '/') ?: ''
-        String skillPath = root ? (root + '/skills/SKILL.md') : 'skills/SKILL.md'
         return [[\
             name       : 'file_write',
-            description: ("""\
-Write, append, or modify file content. Actions:
+            description: isDescriptionCompact() ? '''\
+Write/modify files.
+Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write
+Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating — required).
+server_transform transforms: replace_section|replace_method|replace_between|insert_after_heading|append_section|add_method|add_import
+Returns content_hash. Use file_read action=help topic=file_write for safe editing workflow.''' : '''\
+Write/modify files.
+Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write
 - write(path, content): overwrite entire file
 - append(path, content): append to end
-- replace(path, options): replace ONE unique string. REQUIRED params IN options object: options.oldText (string to find, must appear exactly once), options.newText (replacement). Do NOT pass oldText/newText at top level \u2014 they must be inside the options object. CRITICAL: always check response for success:false or error field - not-found returns McpError with nearest_match hint; duplicate returns line numbers. NOTE: prefer patch for multi-line replacements.
-- patch(path, options.replacements[]): line-range edits [{startLine,endLine,newText}], 1-indexed, both startLine AND endLine required. ALWAYS read exact lines first.
-- multi_replace(path, options.replacements[]): ordered [{oldText,newText}] swaps. Pre-validates ALL before writing.
-- server_transform(path, options): server-side named transformation — file content never crosses the context boundary. Returns {success, content_hash, lines_affected, message}. REQUIRED: options.expectedHash (mandatory drift guard — rejected without it). options.transform: replace_section, replace_method, replace_between, insert_after_heading, append_section. Use server_transform whenever you would otherwise read a file just to immediately patch it — saves ~500–2000 context tokens per edit.
-- chunk_write/finalise_write/abort_write: chunked large-file writes (see options).
-All mutating actions return content_hash. Pass options.expectedHash to reject edits if file changed since last read.
-
-SAFE EDITING: always pass expectedHash (hash from last read). For targeted code edits: get_method -> patch. For unique string replacements: grep to confirm uniqueness -> replace. For multiple changes to same file: multi_replace. NEVER sequential replace calls without re-reading.
-PATCH SAFETY: get_method/range IMMEDIATELY before every patch. Verify startLine/endLine covers the ENTIRE block including closing braces. After any patch, re-read before the next patch (line numbers shift). Never patch from memory.
-CRITICAL: replace failure (oldText not found) returns a JSON-RPC error - STOP and read the error detail before retrying. Do NOT fall through to patch silently.
-SKILL: For worked examples read:
-  file_read action=read path=${skillPath}""").toString(),
+- replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated — check error detail.
+- patch: line-range edits. options.replacements=[{startLine,endLine,newText}] 1-indexed. ALWAYS get_method immediately before patching.
+- multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Use for multiple changes to one file.
+- server_transform: server-side transform — file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_after_heading|append_section|add_method|add_import
+- chunk_write/finalise_write/abort_write: large-file chunked writes.
+All mutating actions return content_hash. Pass options.expectedHash to reject if file changed since last read.
+SAFE EDITING: expectedHash always. get_method -> patch for code. grep -> replace for unique strings. multi_replace for multiple changes. Never sequential replaces without re-reading between them.
+CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — read it before retrying. Do NOT fall through to patch.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -82,12 +82,12 @@ SKILL: For worked examples read:
                               properties: [
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
-                                  expectedHash: [type: 'string',  description: 'Optional 12-char SHA-256 prefix from a prior read/write content_hash. Rejects the edit if the file has changed since last read.'],
+                                  expectedHash: [type: 'string',  description: '12-char SHA-256 prefix from prior read/write. Rejects edit if file changed.'],
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
                                   sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
                                   totalChunks : [type: 'integer', description: 'Total chunks (required for finalise_write)'],
-                                  oldText     : [type: 'string',  description: 'Unique string to replace (required for replace - must appear exactly once)'],
+                                  oldText     : [type: 'string',  description: 'Unique string to replace (required for replace — must appear exactly once)'],
                                   newText     : [type: 'string',  description: 'Replacement string (required for replace)'],
                                   replacements: [type: 'array',
                                                  description: 'patch: [{startLine,endLine,newText}] 1-indexed; multi_replace: [{oldText,newText}]',
@@ -97,8 +97,8 @@ SKILL: For worked examples read:
                                                      startLine: [type: 'integer'],
                                                      endLine  : [type: 'integer']
                                                  ]]],
-                                  compact     : [type: 'boolean', description: 'Minimal response - returns only success+content_hash (default: true for all write actions)'],
-                                  verbose     : [type: 'boolean', description: 'Set verbose:true to get full response with action/path/size/diagnostics (overrides compact default)']
+                                  compact     : [type: 'boolean', description: 'Minimal response (default: true for all write actions)'],
+                                  verbose     : [type: 'boolean', description: 'Full response with action/path/size/diagnostics']
                               ]]
                 ],
                 required  : ['action', 'path']

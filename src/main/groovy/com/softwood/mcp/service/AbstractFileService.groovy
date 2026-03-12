@@ -49,6 +49,12 @@ abstract class AbstractFileService {
     @Value('${mcp.filesystem.active-project-root:}')
     String activeProjectRoot
 
+    /** compact = minimal tool descriptions (~50% fewer tokens); verbose = full guidance */
+    @Value('${mcp.tools.description-mode:compact}')
+    String toolDescriptionMode
+
+    protected boolean isDescriptionCompact() { toolDescriptionMode != 'verbose' }
+
     @Value('${mcp.filesystem.max-list-results:100}')
     int maxListResults
 

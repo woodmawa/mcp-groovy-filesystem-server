@@ -45,52 +45,34 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[\
             name       : 'file_read',
-            description: '''\
-SESSION START SEQUENCE (every conversation, in order):
-  0. context_lifecycle action=start  (ALWAYS FIRST - auto-generates session ID)
-  1. context_read scope=project action=context groupId=<group>  (stable tier, prompt cache target)
-  2. context_read scope=session action=resume  (dynamic delta <150 tokens)
-
-Read files and query filesystem metadata. Actions:
-- read(path): full file content. FILES >60KB AUTO-CHUNK. REFUSED if file >200 lines (use structure/get_method/range instead). options.force=true overrides refusal. options.knownHash=<hash> returns {unchanged:true} instantly if file unchanged - USE THIS on any re-read within same session.
-- head(path, options.lines=50): first N lines
-- tail(path, options.lines=50): last N lines
-- range(path, options.startLine, options.maxLines=100): line slice, 1-indexed
-- grep(path, options.pattern, options.maxMatches=10, options.contextLines=0): regex matches; FILE path only, NOT directory. set contextLines>0 for before/after context
-- multi(options.paths[]): read up to 10 files in parallel.
-  CONTEXT-EFFICIENCY: pass options.knownHashes {"path"->"12-char-hash"} from prior reads.
-  Server returns {unchanged:true, file_content_hash} for any file whose hash still matches.
-  NOTE: aggregate content capped at 24000 chars (~6K tokens) across all files. Use only for small files.
-  NOTE: Prefer get_method/range/grep over multi for targeted lookups within files already read.
-- info(path): file/dir metadata
-- summary(path): line count + size only - NO content, cheapest existence check
-- exists(path): boolean exists + type
-- project_root: active project root path
-- allowed_dirs: list of permitted directories
-- normalize(path): Windows/WSL path conversion
-- diff(path, options.compareTo): line-by-line diff of two files
-- checksum(path, options.algorithm=SHA-256): file hash
-- list(path): directory listing [{name, type, size, lastModified}] — replaces Get-ChildItem. Dirs first, then files, both sorted alpha.
-- structure(path): code/markdown outline with line, endLine, lineCount per entry - FILE path only, NOT directory. options.compact=true returns methods only (~50% smaller, still includes lineCount). options.className=<Name> filters to one class subtree (returns error+availableClasses if not found).
-- get_method(path, options.method): returns complete named method body - FILE path only, NOT directory. Preferred over structure+range for editing
-- chunk_read(options.sessionId, options.chunkIndex): retrieve one chunk from a paged read
-- finalise_read(options.sessionId): free chunk session when all chunks consumed
-CRITICAL CONTEXT EFFICIENCY - follow these rules to avoid session resets:
-  1. NEVER use action=read on files you have already read this session unless you know they changed.
-  2. For editing: use structure -> get_method (NOT read of whole file).
-  3. For searching: use grep or file_search (NOT read then scan).
-  4. Use summary first on unknown files to check size before reading.
-  5. Use knownHashes on multi to skip unchanged files entirely.
-NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char SHA-256 of whole file).
-      Pass this as options.expectedHash on patch/replace/multi_replace to guard against drift.''',
+            description: isDescriptionCompact() ? '''\
+Read files/directories.
+Actions: read|head|tail|range|grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
+Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (skip unchanged — zero cost), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
+All read actions return file_content_hash. Use options.expectedHash on writes to guard drift.''' : '''\
+Read files/directories.
+Actions: read|head|tail|range|grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
+- read: full content. >200 lines refused — use structure/get_method/range. force=true overrides. knownHash=<hash> returns {unchanged:true} instantly.
+- head/tail: first/last N lines (default 50). options.lines=N.
+- range: line slice. options.startLine (1-indexed), options.maxLines (default 100).
+- grep: regex in FILE (not dir). options.pattern required. options.contextLines for surrounding lines.
+- multi: up to 10 files parallel. options.paths[]. options.knownHashes {path->hash} skips unchanged. Cap: 24000 chars.
+- stat: metadata only — path, exists, size, lines, lastModified, language. Cheapest existence check.
+- summary: line count + size only.
+- structure: code outline per entry (line/endLine/lineCount). compact=true = methods only. className=Foo filters.
+- get_method: complete named method body. Preferred over structure+range for editing.
+- list: directory listing [{name,type,size,lastModified}]. Dirs first, alpha sorted.
+- help: detailed usage guide. options.topic=<tool|all>.
+- chunk_read/finalise_read: chunked large-file paging.
+All read actions return file_content_hash (12-char SHA-256). Pass as options.expectedHash on writes.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
                     action : [type: 'string',
-                              enum: ['read','head','tail','range','grep','multi','info','summary',
+                              enum: ['read','head','tail','range','grep','multi','info','summary','stat',
                                      'exists','project_root','allowed_dirs','normalize',
-                                     'diff','checksum','list','structure','get_method','chunk_read','finalise_read']],
-                    path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read)'],
+                                     'diff','checksum','list','structure','get_method','chunk_read','finalise_read','help']],
+                    path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read/help)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
                                   lines       : [type: 'integer', description: 'Lines for head/tail (default 50)'],
@@ -103,15 +85,16 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                                   fuzzy       : [type: 'boolean', description: 'If true, match method name as substring (for get_method)'],
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   paths       : [type: 'array', items: [type: 'string'], description: 'File paths for multi (required for multi, max 10)'],
-                                  knownHashes : [type: 'object', description: 'Map of {path -> 12-char hash} from prior reads. Files whose hash still matches return {unchanged:true, file_content_hash} with no content - saves tokens on re-reads.'],
+                                  knownHashes : [type: 'object', description: 'Map of {path->12-char-hash} from prior reads. Files matching hash return {unchanged:true} with no content.'],
                                   compareTo   : [type: 'string',  description: 'Second file for diff (required for diff)'],
                                   algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
-                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (structure: methods only, no endLine)'],
-                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from a previous read of this file. If file unchanged, returns {unchanged:true, file_content_hash} with NO content - saves all tokens. Use on every re-read.'],
-                                  force       : [type: 'boolean', description: 'Pass force=true to override the >200 line refusal on action=read. Only use when you genuinely need the full file content.'],
-                                  className   : [type: 'string',  description: 'Filter structure output to a single named class subtree (returns error+availableClasses if not found)']
+                                  compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (methods only, no endLine)'],
+                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from prior read. If unchanged, returns {unchanged:true} with no content — saves all tokens.'],
+                                  force       : [type: 'boolean', description: 'Override >200-line refusal on action=read.'],
+                                  className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
+                                  topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)']
                               ]]
                 ],
                 required  : ['action']
@@ -130,7 +113,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
             Map<String, Object> options = normaliseOptions(arguments.options)
 
             // Guard: most actions require a valid path
-            if (!path && !(action in ['multi', 'project_root', 'allowed_dirs', 'chunk_read', 'finalise_read'])) {
+            if (!path && !(action in ['multi', 'project_root', 'allowed_dirs', 'chunk_read', 'finalise_read', 'help'])) {
                 return McpResponse.error(requestId, -32602,
                     "file_read '${action}' requires a 'path' parameter (received null).")
             }
@@ -160,6 +143,7 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 case 'multi'        : return contentReader.doMulti(options, requestId)
                 case 'info'         : return metaReader.doInfo(path, requestId)
                 case 'summary'      : return metaReader.doSummary(path, requestId)
+                case 'stat'         : return metaReader.doStat(path, requestId)
                 case 'exists'       : return metaReader.doExists(path, requestId)
                 case 'project_root' : return metaReader.doProjectRoot(requestId)
                 case 'allowed_dirs' : return metaReader.doAllowedDirs(requestId)
@@ -171,7 +155,9 @@ NOTE: read/head/tail/range/grep/get_method all return file_content_hash (12-char
                 case 'get_method'   : return structureReader.doGetMethod(path, options, requestId)
                 case 'chunk_read'   : return responseHelper.doChunkRead(options, requestId)
                 case 'finalise_read': return responseHelper.doFinaliseRead(options, requestId)
+                case 'help'         : return metaReader.doHelp(options, requestId)
                 default:
+                    return McpResponse.error(requestId, -32602, "Unknown file_read action: ${action}")
                     return McpResponse.error(requestId, -32602, "Unknown file_read action: ${action}")
             }
         } catch (SecurityException e) {

@@ -45,6 +45,59 @@ class FileMetaReader extends AbstractFileService {
         return textResponse(requestId, result)
     }
 
+    /** Detect language from file extension */
+    private static String detectLanguage(String path) {
+        String ext = path.contains('.') ? path.substring(path.lastIndexOf('.') + 1).toLowerCase() : ''
+        switch (ext) {
+            case 'groovy': return 'groovy'
+            case 'java'  : return 'java'
+            case 'py'    : return 'python'
+            case 'js'    : return 'javascript'
+            case 'ts'    : return 'typescript'
+            case ['kt','kts']: return 'kotlin'
+            case 'md'    : return 'markdown'
+            case 'json'  : return 'json'
+            case ['yml','yaml']: return 'yaml'
+            case 'xml'   : return 'xml'
+            case 'gradle': return 'groovy/gradle'
+            case 'txt'   : return 'text'
+            default      : return ext ?: 'unknown'
+        }
+    }
+
+    /**
+     * stat - file metadata without content: path, exists, size, lines, lastModified, language, encoding.
+     * Cheaper than info (no symlink/permissions overhead), richer than summary.
+     * v0.8.3
+     */
+    McpResponse doStat(String path, Object requestId) {
+        String normalized = validateFilePath(path)
+        Path p = Paths.get(normalized)
+        if (!Files.exists(p)) {
+            return textResponse(requestId, [action: 'stat', path: normalized, exists: false])
+        }
+        BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes.class)
+        boolean isFile = attrs.isRegularFile()
+        long lineCount = 0L
+        if (isFile) {
+            try {
+                java.util.stream.Stream<String> ls = Files.lines(p)
+                ls.withCloseable { lineCount = it.count() }
+            } catch (Exception ignored) {}
+        }
+        return textResponse(requestId, ([
+            action      : 'stat',
+            path        : normalized,
+            exists      : true,
+            type        : isFile ? 'file' : (attrs.isDirectory() ? 'directory' : 'other'),
+            size        : attrs.size(),
+            lines       : isFile ? (int) lineCount : 0,
+            lastModified: new java.util.Date(attrs.lastModifiedTime().toMillis()).toInstant().toString(),
+            language    : isFile ? detectLanguage(normalized) : null,
+            encoding    : isFile ? 'UTF-8' : null
+        ] as Map<String, Object>).findAll { it.value != null } as Map<String, Object>)
+    }
+
     McpResponse doSummary(String path, Object requestId) {
         String normalized = validateFilePath(path)
         Path p = Paths.get(normalized)
@@ -188,5 +241,54 @@ class FileMetaReader extends AbstractFileService {
 
         return textResponse(requestId, ([action: 'list', path: normalized,
                                          entries: entries, count: entries.size()] as Map<String, Object>))
+    }
+
+    /**
+     * help - return section(s) from classpath USAGE.md.
+     * options.topic = tool name (file_read|file_write|file_list|file_search|file_lifecycle|execute|server_lifecycle)
+     * or 'all' for full document. Defaults to 'all'.
+     * v0.8.3
+     */
+    McpResponse doHelp(Map<String, Object> options, Object requestId) {
+        String topic = (options?.topic as String)?.trim()?.toLowerCase() ?: 'all'
+        String content
+        try {
+            InputStream is = getClass().classLoader.getResourceAsStream('USAGE.md')
+            if (!is) {
+                return McpResponse.error(requestId, -32603, 'USAGE.md not found in classpath')
+            }
+            content = is.withCloseable { it.text }
+        } catch (Exception e) {
+            return McpResponse.error(requestId, -32603, "Failed to read USAGE.md: ${e.message}")
+        }
+
+        if (topic == 'all') {
+            return textResponse(requestId, [action: 'help', topic: 'all', content: content])
+        }
+
+        // Find the section heading matching the topic (e.g. "## file_read")
+        String heading = "## ${topic}"
+        int start = content.indexOf(heading)
+        if (start < 0) {
+            // Try partial match
+            String partial = content.split('\n').find { String line ->
+                line.startsWith('## ') && line.toLowerCase().contains(topic)
+            }
+            if (partial) {
+                start = content.indexOf(partial)
+                heading = partial.trim()
+            }
+        }
+        if (start < 0) {
+            List<String> topics = content.split('\n').findAll { it.startsWith('## ') }.collect { it.substring(3).trim() }
+            return McpResponse.error(requestId, -32602,
+                "Topic '${topic}' not found. Available: ${topics.join(', ')}")
+        }
+
+        // Extract from this heading to the next same-level heading
+        int nextHeading = content.indexOf('\n## ', start + 1)
+        String section = nextHeading > 0 ? content.substring(start, nextHeading) : content.substring(start)
+
+        return textResponse(requestId, [action: 'help', topic: topic, content: section.trim()])
     }
 }
