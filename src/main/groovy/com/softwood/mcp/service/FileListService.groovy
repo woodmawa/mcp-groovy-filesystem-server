@@ -46,6 +46,7 @@ List directory contents.
 Actions: children|list|tree|sizes
 Key params: path (dir, required), options.maxDepth (tree, default 2), options.pattern (filename filter), options.recursive (list), options.compact (minimal output).''',
             inputSchema: [
+                type      : 'object',
                 properties: [
                     action : [type: 'string', enum: ['children', 'list', 'tree', 'sizes'],
                               description: 'Listing mode'],

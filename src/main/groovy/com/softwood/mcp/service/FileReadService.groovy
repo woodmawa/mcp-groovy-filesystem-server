@@ -158,7 +158,6 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                 case 'help'         : return metaReader.doHelp(options, requestId)
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown file_read action: ${action}")
-                    return McpResponse.error(requestId, -32602, "Unknown file_read action: ${action}")
             }
         } catch (SecurityException e) {
             return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")

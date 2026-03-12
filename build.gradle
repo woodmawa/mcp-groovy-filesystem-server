@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.3'   // v0.8.3: token efficiency overhaul — compressed descriptions, stat action, help action, add_method/add_import transforms
+version = '0.8.4'   // v0.8.4: fix file_list inputSchema missing type:object — caused Claude Desktop to drop all filesystem tools
 // v0.7.50: Fix sanitize() stripping non-ASCII Unicode (em-dashes, smart quotes, accented chars) - removed \p{Print} filter that only matched ASCII; added NFC normalization fallback in replace/multi_replace; normalized oldText line endings in doReplace
 // v0.7.49: ContextServerClient postToContextServer+postWithTimeout endpoint / -> /mcp (fixes 404 on file-structure registry calls)
 
