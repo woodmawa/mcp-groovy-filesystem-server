@@ -5,16 +5,18 @@
         ==============================================
         CANONICAL PATTERN FOR ALL MCP STDIO SERVERS:
 
-        - STDERR ONLY. No file appender.
-          Claude Desktop captures stderr from each MCP server process and writes it to:
-          %APPDATA%/Roaming/Claude/logs/mcp-server-{name}.log
-          That IS the log file. Do not create separate rolling file appenders.
+        - STDERR appender: always present.
+          * Claude Desktop captures child stderr → %APPDATA%/Roaming/Claude/logs/mcp-server-groovy-filesystem.log
+          * start-mcp-services.ps1 captures HTTP server stderr → claude-sync/logs/filesystem-err.log
+          * Claude Code discards STDIO child stderr (not captured to any file)
+
+        - FILE appender: canonical log location for ALL invocation modes.
+          Writes to claude-sync/logs/mcp-filesystem.log regardless of whether the
+          process was spawned by Claude Desktop, Claude Code, or the HTTP start script.
+          This is the single log location that works consistently across DT and CC.
 
         - STDOUT is reserved exclusively for MCP JSON-RPC messages.
-          Never write to stdout. Always use System.err target.
-
-        - claude-sync/logs/ is for Syncthing jar distribution only. No logs there.
-        - ~/.mcp-logs/ is ABOLISHED. Do not write there.
+          Never write to stdout. Always use System.err target for console.
     -->
 
     <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
@@ -24,8 +26,20 @@
         </encoder>
     </appender>
 
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>C:/Users/willw/claude-sync/logs/mcp-filesystem.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>C:/Users/willw/claude-sync/logs/mcp-filesystem.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>7</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
     <root level="INFO">
         <appender-ref ref="STDERR"/>
+        <appender-ref ref="FILE"/>
     </root>
 
     <logger name="com.softwood.mcp" level="DEBUG"/>
