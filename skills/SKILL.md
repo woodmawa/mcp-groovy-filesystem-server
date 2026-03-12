@@ -85,6 +85,61 @@ blind `replace` calls without hash guards, or sequential edits without re-readin
 
 ---
 
+## Pre-Edit Guards — Check Before ANY Edit
+
+### Guard 1: Package path (cross-project editing)
+
+Each server has a **different** package root. Using the wrong one gives `File not found` with no further hint.
+Always verify before constructing paths from memory.
+
+| Server | Package root | Path segment |
+|--------|-------------|-------------|
+| filesystem-server | `com.softwood.mcp` | `.../mcp-groovy-filesystem-server/src/main/groovy/com/softwood/mcp/` |
+| context-server | `com.woodmawa.mcp.context` | `.../mcp-groovy-context-server/src/main/groovy/com/woodmawa/mcp/context/` |
+| llm-orchestrator | `com.woodmawa.mcp.orchestrator` | `.../mcp-llm-orchestrator/src/main/groovy/com/woodmawa/mcp/orchestrator/` |
+| agentic-workflow | `com.woodmawa.mcp.workflow` | `.../mcp-agentic-workflow/src/main/groovy/com/woodmawa/mcp/workflow/` |
+
+**Rule:** When editing a server other than the one in your current working directory,
+do a `file_read action=exists` on one known file first to confirm the path root is correct.
+
+---
+
+### Guard 2: Triple-quoted strings in multi_replace
+
+Before including a method in a `multi_replace` `oldText` entry, check:
+> Does the method body contain Groovy `'''` triple-quoted strings?
+
+- **YES** → use `server_transform replace_method` with `options.newBody` for that method
+  (do not include it in multi_replace at all)
+- **NO** → safe to include in multi_replace
+
+The failure mode: JSON `\n` ≠ Groovy literal newline inside `'''` blocks — match silently fails,
+file is NOT modified, error says `oldText not found`.
+
+---
+
+### Guard 3: server_transform replace_method parameter name
+
+The new body parameter is `options.newBody` — **not** `content`.
+`content` is a top-level param for `write`/`append` only.
+
+```
+# CORRECT
+file_write action=server_transform path=<file>
+           options.transform=replace_method
+           options.method=<methodName>
+           options.newBody="    ReturnType method(...) {\n        ...\n    }"
+           options.expectedHash=<hash>
+
+# WRONG — gives: "options.newBody is required for replace_method"
+file_write action=server_transform path=<file>
+           options.transform=replace_method
+           options.method=<methodName>
+           content="..."              ← WRONG PARAM NAME
+```
+
+---
+
 ## The Three Safe Patterns
 
 ### Pattern 1: Edit a method body (PREFERRED for any method-level change)
@@ -137,6 +192,11 @@ file_write action=multi_replace  path=<file>
 NEVER make sequential `replace` calls to the same file. Each call changes the hash;
 the next call writes blind against stale context.
 
+**Triple-quoted string warning:** If ANY entry in `replacements` targets a method that
+contains Groovy `'''` triple-quoted strings, `multi_replace` will fail (JSON `\n` ≠
+Groovy literal newline inside `'''`). Use `server_transform replace_method` for those
+methods instead, and `multi_replace` only for the entries that don't contain `''']`.
+
 ---
 
 ## Critical Rules
@@ -161,6 +221,8 @@ the next call writes blind against stale context.
 | `patch` with wrong line range | Duplicates code or orphans lines | **Always** `get_method` or `range` immediately before patching |
 | `patch` that doesn't cover the full old block | Leaves stale lines above/below | Verify startLine/endLine span the **entire** block being replaced |
 | Multiple sequential `patch` calls | Line numbers shift after first patch | Re-read between patches, or combine into single patch with multiple replacements |
+| `multi_replace` when `oldText` contains Groovy triple-quoted strings (`'''`) | JSON `\n` ≠ Groovy `\<newline>` — match fails silently; file unchanged | Use `server_transform replace_method` for any method whose body contains `'''` strings |
+| `server_transform replace_method` with `content` param | Returns "options.newBody is required for replace_method" | Param is `options.newBody`, not `content` — always |
 
 ---
 
@@ -251,6 +313,11 @@ file_write action=server_transform  path=<file>
 - Named markdown section → `replace_section` or `insert_after_heading`
 - Need exact line-range control, or edit spans outside a named boundary → use `patch`
 - Not-found errors always include a hint listing available methods/headings
+
+**Common `replace_method` mistakes:**
+- `content` is WRONG — the param is `options.newBody` ("options.newBody is required" error)
+- `options.method` must match the exact method name as it appears in `structure` output
+- If `replace_method` says method not found, check the structure listing for the exact name
 
 **Returns:** `{success, content_hash, lines_affected, message}` — use `content_hash` as
 `expectedHash` for any subsequent edit to the same file.

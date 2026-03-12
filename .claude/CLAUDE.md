@@ -44,6 +44,15 @@ src/main/groovy/com/softwood/mcp/
 skills/SKILL.md     ← Safe editing workflow (read every session)
 ```
 
+**Cross-project package roots** (critical — wrong package = silent "File not found"):
+
+| Server | Package | Path root |
+|--------|---------|----------|
+| **filesystem-server** (this project) | `com.softwood.mcp` | `...mcp-groovy-filesystem-server/.../com/softwood/mcp/` |
+| context-server | `com.woodmawa.mcp.context` | `...mcp-groovy-context-server/.../com/woodmawa/mcp/context/` |
+| llm-orchestrator | `com.woodmawa.mcp.orchestrator` | `...mcp-llm-orchestrator/.../com/woodmawa/mcp/orchestrator/` |
+| agentic-workflow | `com.woodmawa.mcp.workflow` | `...mcp-agentic-workflow/.../com/woodmawa/mcp/workflow/` |
+
 **ToolHandler auto-discovery:** all `@Component` classes implementing `ToolHandler` are
 automatically registered. Never manually wire a new tool handler — just annotate it.
 
