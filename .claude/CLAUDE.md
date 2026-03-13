@@ -95,6 +95,7 @@ Full workflow in `skills/SKILL.md`. Minimum rules:
 1. **Always pass `expectedHash`** on every write to any file > 100 lines.
 2. **`get_method` immediately before every `patch`** — not 3 calls ago.
 3. **`replace` only after `grep` confirms uniqueness** — duplicate oldText → wrong location edited.
+   **`file_read action=grep` requires a FILE path. For cross-file search use `file_search action=content path=<dir>`.**
 4. **Multiple changes to same file → `multi_replace`** — never sequential replace calls.
 5. **Range-read after every write** — verify brace balance before moving on.
 
