@@ -119,12 +119,12 @@ class HttpMcpController {
         }
 
         if (!sessionId) {
-            log.warn('Streamable HTTP: missing Mcp-Session-Id on {} request', request.method)
+            log.debug('Streamable HTTP: missing Mcp-Session-Id on {} request', request.method)
             return ResponseEntity.badRequest()
                 .body(McpResponse.error(request.id, -32600, 'Missing Mcp-Session-Id header'))
         }
         if (!knownSessions.contains(sessionId)) {
-            log.warn('Streamable HTTP: unknown Mcp-Session-Id {} on {} request', sessionId, request.method)
+            log.debug('Streamable HTTP: unknown Mcp-Session-Id {} on {} request', sessionId, request.method)
             return ResponseEntity.badRequest()
                 .body(McpResponse.error(request.id, -32600, 'Unknown Mcp-Session-Id'))
         }

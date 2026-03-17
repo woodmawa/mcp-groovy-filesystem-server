@@ -64,7 +64,7 @@ class StdioMcpServer implements CommandLineRunner {
 
         debugLog("Starting MCP stdio server v0.0.5...")
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in))
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in), 1024 * 1024)  // v0.8.6: 1MB buffer — default 8KB silently truncates large file_write requests
         int requestCount = 0
 
         // Log when server is ready for input

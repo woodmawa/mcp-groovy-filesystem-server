@@ -45,11 +45,9 @@ class WriteUtils {
      */
     static void atomicWrite(Path target, byte[] bytes) {
         Path parent = target.parent
-        if (parent && !Files.exists(parent)) {
-            throw new java.nio.file.NoSuchFileException(
-                parent.toString(), null,
-                "Parent directory does not exist: ${parent}")
-        }
+        // Note: callers (e.g. doWrite) are responsible for creating parent dirs via Files.createDirectories.
+        // Removed redundant Files.exists(parent) guard here — it was racing with createDirectories
+        // and causing false NoSuchFileException on newly-created directories.
         Path tmp = target.resolveSibling(target.fileName.toString() + '.tmp')
         try {
             Files.write(tmp, bytes)

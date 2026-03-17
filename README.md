@@ -1,8 +1,24 @@
-# mcp-groovy-filesystem-server v0.8.5
+# mcp-groovy-filesystem-server v0.8.8
 
 A Spring Boot MCP server providing filesystem and developer toolchain operations to Claude Desktop and Claude Code via Streamable HTTP and legacy SSE. Also supports STDIO transport for compatibility.
 
 Eight parameterised tools replace what would otherwise be 30+ individual tools, keeping the MCP schema compact and token-efficient.
+
+---
+
+## What's New in v0.8.8
+
+**mkdirs boolean cast fix under `@CompileStatic` (v0.8.8)**
+
+Fixed a `@CompileStatic` boolean cast issue in `WriteUtils` where `mkdirs` option was not being parsed correctly, causing silent failures when creating parent directories. Used `Boolean.valueOf(toString())` instead of `as boolean`.
+
+**`atomicWrite` race condition fix (v0.8.7)**
+
+Fixed a race condition in `WriteUtils.atomicWrite` where a redundant `!Files.exists()` guard raced with the subsequent `createDirectories()` call, causing intermittent failures on concurrent writes to new directories.
+
+**`BufferedReader` 8KB line limit fix (v0.8.6)**
+
+Fixed `StdioMcpServer` `BufferedReader` hard limit of 8KB per line — large MCP messages were silently truncated. Replaced with 1MB buffer.
 
 ---
 

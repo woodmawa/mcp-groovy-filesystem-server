@@ -26,14 +26,23 @@ class FileContentWriter extends AbstractFileService {
     }
 
     McpResponse doWrite(String path, String content, Map<String, Object> options, Object requestId) {
+        log.debug('doWrite: entry path={} options={}', path, options?.keySet())
         String normalized = normalizeAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
-        boolean backup    = options.backup as boolean ?: false
-        boolean mkdirs    = options.mkdirs as boolean ?: true
+        boolean backup    = options.get('backup')  ? Boolean.valueOf(options.get('backup').toString())  : false
+        boolean mkdirs    = options.get('mkdirs') != null ? Boolean.valueOf(options.get('mkdirs').toString()) : true
         String body       = content ?: ''
 
         Path target = Paths.get(normalized)
-        if (mkdirs && target.parent) Files.createDirectories(target.parent)
+        if (mkdirs && target.parent) {
+            try {
+                Files.createDirectories(target.parent)
+                log.debug('doWrite: ensured parent dirs for {}', target.parent)
+            } catch (IOException e) {
+                log.error('doWrite: failed to create parent directories for {}: {}', target.parent, e.message)
+                return textResponse(requestId, [success: false, error: "Failed to create parent directories: ${e.message}"] as Map<String, Object>)
+            }
+        }
         if (backup && Files.exists(target)) WriteUtils.makeBackup(target)
 
         String finalBody = WriteUtils.shouldNormaliseLf(target)
@@ -57,11 +66,18 @@ class FileContentWriter extends AbstractFileService {
     McpResponse doAppend(String path, String content, Map<String, Object> options, Object requestId) {
         String normalized = normalizeAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
-        boolean mkdirs    = options.mkdirs as boolean ?: true
+        boolean mkdirs    = options.get('mkdirs') != null ? Boolean.valueOf(options.get('mkdirs').toString()) : true
         byte[] bytes      = (content ?: '').getBytes(encoding)
 
         Path target = Paths.get(normalized)
-        if (mkdirs && target.parent) Files.createDirectories(target.parent)
+        if (mkdirs && target.parent) {
+            try {
+                Files.createDirectories(target.parent)
+            } catch (IOException e) {
+                log.error('doAppend: failed to create parent directories for {}: {}', target.parent, e.message)
+                return textResponse(requestId, [success: false, error: "Failed to create parent directories: ${e.message}"] as Map<String, Object>)
+            }
+        }
 
         new java.io.RandomAccessFile(normalized, 'rw').withCloseable { java.io.RandomAccessFile raf ->
             raf.channel.lock().withCloseable {
