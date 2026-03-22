@@ -8,6 +8,7 @@ import jakarta.annotation.PreDestroy
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
+import jakarta.annotation.PostConstruct
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -48,6 +49,60 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
 
     ServerLifecycleService(PathService pathService) {
         super(pathService)
+    }
+
+    /**
+     * Auto-start HTTP companion servers when the filesystem server starts in stdio mode.
+     *
+     * Servers marked autoHttpCompanion:true in mcp-http-servers.json are started as HTTP child
+     * processes so that agentic-workflow flows can reach them via mcp.tool_call serverPort=NNNN.
+     * This replaces the need to run start-mcp-services.ps1 manually.
+     *
+     * The companion processes are tracked in managedProcesses and are killed cleanly by
+     * stopAllOnShutdown() when DT or CC exits and the stdio filesystem server terminates.
+     *
+     * Note: the filesystem server itself (this process) can also be started as an HTTP companion
+     * on :8081 — the stdio instance has no port, so there is no conflict.
+     */
+    @PostConstruct
+    void autoStartHttpCompanions() {
+        try {
+            Map<String, Object> config = loadConfig()
+            List<Map> servers = config.servers as List<Map>
+            List<Map<String, Object>> started = []
+
+            servers.each { Map server ->
+                boolean isCompanion = server.autoHttpCompanion as Boolean
+                if (!isCompanion) return
+
+                String name = server.name as String
+                int port    = server.port as int
+
+                if (isPortListening(port)) {
+                    log.info('ServerLifecycleService: HTTP companion {} already on port {} — skipping', name, port)
+                    return
+                }
+
+                log.info('ServerLifecycleService: auto-starting HTTP companion: {} on port {}', name, port)
+                Map result = startServer(server)
+                started << result
+                if (result.started) {
+                    log.info('ServerLifecycleService: HTTP companion {} started (pid={})', name, result.pid)
+                } else {
+                    log.warn('ServerLifecycleService: HTTP companion {} failed to start: {}', name, result.error ?: result.reason)
+                }
+            }
+
+            if (started) {
+                writeRuntimeState()
+                log.info('ServerLifecycleService: {} HTTP companion(s) processed at startup', started.size())
+            } else {
+                log.debug('ServerLifecycleService: no autoHttpCompanion servers configured')
+            }
+        } catch (Exception e) {
+            // Non-fatal — companion startup failure must not prevent the filesystem server from serving Claude
+            log.warn('ServerLifecycleService: autoStartHttpCompanions failed (non-fatal): {}', e.message)
+        }
     }
 
     // -----------------------------------------------------------------------
