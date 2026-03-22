@@ -1,7 +1,6 @@
 package com.softwood.mcp.controller
 
 import com.softwood.mcp.model.McpRequest
-import com.softwood.mcp.model.McpRequest
 import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.service.FilesystemTelemetryService
 import com.softwood.mcp.service.ToolHandler

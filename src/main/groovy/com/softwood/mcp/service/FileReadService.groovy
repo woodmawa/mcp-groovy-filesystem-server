@@ -32,6 +32,7 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Autowired FileMetaReader       metaReader
     @Autowired ReadResponseHelper   responseHelper
     @Autowired(required = false) ContextServerClient  contextServerClient
+    @Autowired com.softwood.mcp.service.office.OfficeDocumentHandler officeHandler
 
     FileReadService(PathService pathService) {
         super(pathService)
@@ -71,7 +72,8 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                     action : [type: 'string',
                               enum: ['read','head','tail','range','grep','multi','info','summary','stat',
                                      'exists','project_root','allowed_dirs','normalize',
-                                     'diff','checksum','list','structure','get_method','chunk_read','finalise_read','help']],
+                                     'diff','checksum','list','structure','get_method','chunk_read','finalise_read','help',
+                                     'read_office']],
                     path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read/help)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
@@ -156,6 +158,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                 case 'chunk_read'   : return responseHelper.doChunkRead(options, requestId)
                 case 'finalise_read': return responseHelper.doFinaliseRead(options, requestId)
                 case 'help'         : return metaReader.doHelp(options, requestId)
+                case 'read_office'  : return officeHandler.readOffice(path, options, requestId)
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown file_read action: ${action}")
             }

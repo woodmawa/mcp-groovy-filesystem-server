@@ -36,9 +36,10 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     @Autowired FileTransformService fileTransformService
     @Autowired StructureCache     structureCache
     @Autowired(required = false) ContextServerClient contextServerClient
+    @Autowired com.softwood.mcp.service.office.OfficeDocumentHandler officeHandler
 
     private static final Set<String> MUTATING_ACTIONS =
-        ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write', 'server_transform'] as Set
+        ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write', 'server_transform', 'write_office'] as Set
 
     FileWriteService(PathService pathService) {
         super(pathService)
@@ -75,9 +76,10 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                 properties: [
                     action : [type: 'string',
                               enum: ['write', 'append', 'replace', 'patch', 'multi_replace',
-                                     'chunk_write', 'finalise_write', 'abort_write', 'server_transform']],
+                                     'chunk_write', 'finalise_write', 'abort_write', 'server_transform',
+                                     'write_office']],
                     path   : [type: 'string', description: 'Target file path (required for all actions except abort_write)'],
-                    content: [type: 'string', description: 'Content for write/append/chunk_write'],
+                    content: [type: 'string', description: 'Content for write/append/chunk_write (not used for write_office)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
@@ -139,6 +141,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                 case 'finalise_write': response = chunkWriter.doFinaliseWrite(path, options, requestId); break
                 case 'abort_write'   : return chunkWriter.doAbortWrite(options, requestId)
                 case 'server_transform': response = fileTransformService.applyTransform(path, options, requestId); break
+                case 'write_office'    : response = officeHandler.writeOffice(path, options, requestId); break
                 default:
                     return McpResponse.error(requestId, -32602, "Unknown file_write action: ${action}")
             }

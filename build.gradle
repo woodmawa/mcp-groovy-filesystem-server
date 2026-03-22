@@ -9,7 +9,8 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.10'
+version = '0.8.11'
+// v0.8.11: OfficeDocumentHandler - read_office/write_office actions for .xlsx/.docx/.pptx via Apache POI; wired into FileReadService + FileWriteService dispatch
 // v0.8.10: @PostConstruct autoStartHttpCompanions — servers with autoHttpCompanion:true in mcp-http-servers.json start as HTTP child processes when filesystem stdio server starts; killed cleanly on DT/CC exit via existing stopAllOnShutdown()
 // v0.8.9: CODE-DEFECT-004 ContextServerClient liveness guard (contextServerReachable flag, ConnectException silenced after first hit); SKILL-UPDATE-004 server_transform file-type guard with descriptive error for non-Groovy/Java targets
 // v0.8.8: Fix mkdirs boolean cast — Boolean.valueOf(toString()) not 'as boolean' under @CompileStatic
@@ -61,6 +62,11 @@ dependencies {
     
     // SQLite - shared persistence with context server
     implementation 'org.xerial:sqlite-jdbc:3.49.1.0'
+
+    // Apache POI - Office document read/write (.xlsx, .docx, .pptx)
+    // Used by OfficeDocumentHandler for read_office / write_office tool actions
+    implementation 'org.apache.poi:poi:5.3.0'
+    implementation 'org.apache.poi:poi-ooxml:5.3.0'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
