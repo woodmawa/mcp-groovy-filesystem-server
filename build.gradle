@@ -9,7 +9,8 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.10'  // v0.8.10: @PostConstruct autoStartHttpCompanions — servers with autoHttpCompanion:true in mcp-http-servers.json start as HTTP child processes when filesystem stdio server starts; killed cleanly on DT/CC exit via existing stopAllOnShutdown()
+version = '0.8.10'
+// v0.8.10: @PostConstruct autoStartHttpCompanions — servers with autoHttpCompanion:true in mcp-http-servers.json start as HTTP child processes when filesystem stdio server starts; killed cleanly on DT/CC exit via existing stopAllOnShutdown()
 // v0.8.9: CODE-DEFECT-004 ContextServerClient liveness guard (contextServerReachable flag, ConnectException silenced after first hit); SKILL-UPDATE-004 server_transform file-type guard with descriptive error for non-Groovy/Java targets
 // v0.8.8: Fix mkdirs boolean cast — Boolean.valueOf(toString()) not 'as boolean' under @CompileStatic
 // v0.8.7: Fix mkdirs silent failure — WriteUtils.atomicWrite redundant !Files.exists guard raced with createDirectories
