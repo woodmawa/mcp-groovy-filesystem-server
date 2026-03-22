@@ -98,6 +98,25 @@ class FileTransformService extends AbstractFileService {
                     "Unknown transform '${sanitize(transformName)}'. Available: ${available}")
             }
 
+            // Guard: server_transform is designed for Groovy/Java source files only.
+            // YAML, Python, JSON, Markdown etc. have no method boundaries or ## section headings
+            // — transforms will silently fail or produce wrong results on them.
+            // Use file_write action=multi_replace for arbitrary text swaps in non-code files.
+            String ext = normalized.contains('.') ? normalized.tokenize('.')?.last()?.toLowerCase() : ''
+            boolean isCodeFile = ext in ['groovy', 'java', 'kt', 'kts']
+            if (!isCodeFile) {
+                // Still allow append_section and insert_after_heading on .md/.adoc files as they genuinely have ## headings
+                boolean isMarkdown = ext in ['md', 'adoc', 'txt']
+                boolean isMarkdownSafeTransform = transformName in ['append_section', 'insert_after_heading', 'replace_section']
+                if (!(isMarkdown && isMarkdownSafeTransform)) {
+                    return McpResponse.error(requestId, -32602,
+                        "server_transform '${sanitize(transformName)}' requires a Groovy/Java source file (.groovy, .java). " +
+                        "Target file is '.${ext}' which is not supported. " +
+                        "Use file_write action=multi_replace for YAML, JSON, Python, or other non-code files. " +
+                        "(Markdown files support: append_section, insert_after_heading, replace_section only.)")
+                }
+            }
+
             TransformResult result = transformer.apply(normalized, options)
 
             if (!result.success) {

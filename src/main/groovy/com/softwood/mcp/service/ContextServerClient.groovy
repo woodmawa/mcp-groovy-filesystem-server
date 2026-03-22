@@ -59,6 +59,14 @@ class ContextServerClient {
     // Active session ID — lazily resolved from context server, cached for session duration
     private volatile String activeSessionId = null
 
+    /**
+     * Liveness flag for context server HTTP endpoint.
+     * Tripped to false on first ConnectException (e.g. stdio-only sessions where port 8082 is not open).
+     * Logged once at INFO then all subsequent failures silently dropped at DEBUG.
+     * Reset to true only on server restart.
+     */
+    private volatile boolean contextServerReachable = true
+
     // -----------------------------------------------------------------------
     // In-memory directory listing cache (session-scoped, zero I/O)
     // -----------------------------------------------------------------------
@@ -80,9 +88,15 @@ class ContextServerClient {
      * Only fires when the StructureCache had a miss (wasCached=false).
      */
     void persistStructureAsync(String filePath, String fileHash, List<Map<String, Object>> entries) {
-        if (!structurePersistEnabled) return
+        if (!structurePersistEnabled || !contextServerReachable) return
         asyncWriter.submit {
             try { doPersistStructure(filePath, fileHash, entries) }
+            catch (ConnectException e) {
+                if (contextServerReachable) {
+                    contextServerReachable = false
+                    log.info('ContextServerClient: context server unreachable at {} — structure persistence disabled for this session', contextServerUrl)
+                }
+            }
             catch (Exception e) { log.debug('ContextServerClient: structure persist failed (non-fatal): {}', e.message) }
         }
     }
@@ -236,7 +250,7 @@ class ContextServerClient {
      * Never blocks — failures are silently logged at DEBUG.
      */
     void upsertFileRegistryAsync(String normalizedPath, String contentHash, int lineCount, long lastModified) {
-        if (!structurePersistEnabled || !contentHash) return
+        if (!structurePersistEnabled || !contentHash || !contextServerReachable) return
         String path = normalizedPath
         String hash = contentHash
         int lc = lineCount
@@ -270,6 +284,12 @@ class ContextServerClient {
                         log.debug('upsertFileRegistry: context server returned {} for {}', status, pathTail)
                     }
                 } finally { conn.disconnect() }
+            } catch (ConnectException e) {
+                if (contextServerReachable) {
+                    contextServerReachable = false
+                    log.info('ContextServerClient: context server unreachable at {} — file registry updates disabled for this session (stdio-only mode?)', contextServerUrl)
+                }
+                // Subsequent failures are silent — flag already tripped
             } catch (Exception e) {
                 log.debug('upsertFileRegistry async failed for {}: {}', path, e.message)
             }
