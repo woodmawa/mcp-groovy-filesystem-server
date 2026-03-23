@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.12
+# mcp-groovy-filesystem-server v0.8.13
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,21 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.13 — Port-conflict race fix + log noise (2026-03-23)
+
+**`ServerLifecycleService` port-conflict race** (CODE-DEFECT-005) — `killStalePidIfPresent` now
+guards the kill on `!isPortListening(port)`. A stale PID that is alive but whose port is
+already listening (i.e., a legitimate companion) is left untouched. `isPortListening` gains
+a retry loop (3 attempts, 300ms delay) to survive transient socket timing gaps.
+
+Previously: second stdio instance killed the live HTTP companion, then raced to restart it,
+hitting "Port 8081 already in use" (TIME_WAIT). Now: companion is only killed if it is alive
+but its port is not responding.
+
+**`HttpMcpController`** session-ID poll noise already at DEBUG (confirmed pre-existing).
+
+---
 
 ### v0.8.12 — OfficeDocumentHandler DSL bridge (2026-03-23)
 
@@ -181,6 +196,7 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.13** | `ServerLifecycleService` port-conflict race fix — `killStalePidIfPresent` guards kill on `isPortListening` + retry loop |
 | **0.8.12** | `OfficeDocumentHandler` DSL bridge — `XlsxAdapter`/`DocxAdapter`/`PptxAdapter` via GCU; legacy paths preserved |
 | **0.8.11** | `OfficeDocumentHandler` — `read_office`/`write_office` for `.xlsx`/`.docx`/`.pptx` via Apache POI 5.3.0 |
 | **0.8.10** | `@PostConstruct autoStartHttpCompanions` — HTTP companion auto-start on stdio startup; clean shutdown via existing `@PreDestroy` |

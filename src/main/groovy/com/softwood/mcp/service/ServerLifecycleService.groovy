@@ -370,7 +370,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         result.put('jar', jar)
 
         // Kill any stale process from a previous session recorded in runtime state
-        killStalePidIfPresent(name)
+        killStalePidIfPresent(name, port)
 
         // Check if already listening - don't double-start
         if (isPortListening(port)) {
@@ -495,7 +495,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         synchronized (configLock) { configCache = null }
     }
 
-    private void killStalePidIfPresent(String name) {
+    private void killStalePidIfPresent(String name, int port) {
         try {
             File runtimeFile = new File("${claudeSyncPath}/${RUNTIME_FILENAME}")
             if (!runtimeFile.exists()) return
@@ -505,8 +505,9 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             if (!entry) return
             long pid = entry.pid as long
             Optional<ProcessHandle> ph = ProcessHandle.of(pid)
-            if (ph.isPresent() && ph.get().isAlive()) {
-                log.info("server_lifecycle: killing stale {} process PID {} from previous session", name, pid)
+            if (ph.isPresent() && ph.get().isAlive() && !isPortListening(port)) {
+                log.info("server_lifecycle: killing stale {} process PID {} (port {} not listening)",
+                         name, pid, port)
                 ph.get().destroyForcibly()
                 // brief pause to let OS reclaim port
                 Thread.sleep(500)
@@ -536,12 +537,16 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         }
     }
 
-    private static boolean isPortListening(int port) {
-        try {
-            new Socket('localhost', port).withCloseable { return true }
-        } catch (Exception ignored) {
-            return false
+    private static boolean isPortListening(int port, int retries = 3, long delayMs = 300) {
+        for (int i = 0; i < retries; i++) {
+            try {
+                new Socket('localhost', port).withCloseable {}
+                return true
+            } catch (Exception ignored) {
+                Thread.sleep(delayMs)
+            }
         }
+        return false
     }
 
     private static boolean waitForPort(int port, int timeoutSeconds) {
