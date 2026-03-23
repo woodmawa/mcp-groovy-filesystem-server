@@ -18,6 +18,8 @@ import org.apache.poi.xslf.usermodel.XMLSlideShow
 import org.apache.poi.xslf.usermodel.XSLFSlide
 import org.apache.poi.xslf.usermodel.XSLFSlideLayout
 import org.apache.poi.xslf.usermodel.XSLFSlideMaster
+import org.apache.poi.xslf.usermodel.XSLFTextShape
+import org.apache.poi.sl.usermodel.Placeholder
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 
@@ -411,17 +413,27 @@ class OfficeDocumentHandler {
                 String title = ''
                 try { title = slide.title ?: '' } catch (Exception ignored) {}
 
+                // Collect body text from all text-capable shapes, excluding the title
                 List<String> bodyText = []
                 slide.shapes.each { shape ->
+                    if (!(shape instanceof XSLFTextShape)) return
                     try {
-                        String t = shape.hasProperty('text') ? shape.text?.trim() : null
+                        String t = shape.text?.trim()
                         if (t && t != title) bodyText << t
                     } catch (Exception ignored) {}
                 }
 
+                // Notes: filter shapes on notes slide to XSLFTextShape, find BODY placeholder
                 String notes = ''
                 try {
-                    notes = slide.notes?.placeholders?.find { it.identifier == 1 }?.text?.trim() ?: ''
+                    List<XSLFTextShape> notePhs = (slide.notes?.shapes ?: [])
+                        .findAll { it instanceof XSLFTextShape }
+                        .collect { it as XSLFTextShape }
+                    XSLFTextShape notesPh = notePhs.find {
+                        try { it.placeholderDetails?.placeholder == Placeholder.BODY }
+                        catch (Exception e) { false }
+                    } ?: notePhs.find { true }
+                    notes = notesPh?.text?.trim() ?: ''
                 } catch (Exception ignored) {}
 
                 slides << ([slideIndex: idx, title: title, content: bodyText.join('\n'), notes: notes] as Map<String, Object>)
@@ -463,33 +475,53 @@ class OfficeDocumentHandler {
             XSLFSlideMaster master = ppt.slideMasters[0]
 
             slides?.each { Map<String, Object> spec ->
-                String layoutName       = (spec.layout ?: 'TITLE_AND_CONTENT') as String
-                XSLFSlideLayout layout  = master.slideLayouts.find {
+                String layoutName = (spec.layout ?: 'TITLE_AND_CONTENT') as String
+                XSLFSlideLayout layout = master.slideLayouts.find {
                     it.name?.toUpperCase()?.replace(' ', '_') == layoutName.toUpperCase()
                 } ?: master.slideLayouts[0]
 
                 XSLFSlide slide = ppt.createSlide(layout)
 
-                // Title placeholder (identifier 0)
-                def titlePh = slide.placeholders.find { it.identifier == 0 }
-                if (titlePh && spec.title) {
-                    try { titlePh.text = spec.title as String } catch (Exception ignored) {}
+                // slide.placeholders can include XSLFAutoShape (no placeholderDetails) — filter to XSLFTextShape only
+                List<XSLFTextShape> phs = slide.shapes
+                    .findAll { it instanceof XSLFTextShape }
+                    .collect { it as XSLFTextShape }
+
+                // Classify each shape: check placeholderDetails safely
+                Closure<Placeholder> getType = { XSLFTextShape sh ->
+                    try { sh.placeholderDetails?.placeholder } catch (Exception e) { null }
                 }
 
-                // Body/content placeholder (identifier 1)
-                def bodyPh = slide.placeholders.find { it.identifier == 1 }
+                // Title: TITLE or CENTER_TITLE
+                XSLFTextShape titlePh = phs.find { XSLFTextShape sh ->
+                    def p = getType(sh)
+                    p == Placeholder.TITLE || p == Placeholder.CENTERED_TITLE
+                }
+                if (titlePh && spec.title) {
+                    try { titlePh.setText(spec.title as String) } catch (Exception ignored) {}
+                }
+
+                // Body: BODY placeholder, or first non-title text shape
+                XSLFTextShape bodyPh = phs.find { XSLFTextShape sh ->
+                    getType(sh) == Placeholder.BODY
+                } ?: phs.find { it != titlePh }
                 if (bodyPh && spec.content) {
                     try {
                         def body = spec.content
-                        bodyPh.text = body instanceof List ? (body as List).join('\n') : body.toString()
+                        bodyPh.setText(body instanceof List ? (body as List).join('\n') : body.toString())
                     } catch (Exception ignored) {}
                 }
 
                 // Speaker notes
                 if (spec.notes) {
                     try {
-                        def notesPh = slide.notes?.placeholders?.find { it.identifier == 1 }
-                        if (notesPh) notesPh.text = spec.notes as String
+                        List<XSLFTextShape> notePhs = (slide.notes?.shapes ?: [])
+                            .findAll { it instanceof XSLFTextShape }
+                            .collect { it as XSLFTextShape }
+                        XSLFTextShape notesPh = notePhs.find {
+                            getType(it) == Placeholder.BODY
+                        } ?: notePhs.find { true }
+                        if (notesPh) notesPh.setText(spec.notes as String)
                     } catch (Exception ignored) {}
                 }
             }

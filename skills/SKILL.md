@@ -68,6 +68,7 @@ Ontology CAN answer:
 | `file_list:children` on multiple dirs to orient | Chain of expensive calls | One `file-map` call covers the whole cluster |
 | `execute powershell Get-ChildItem` to list a dir | Full execute round-trip ~800-1200 bytes | `file_read action=list` — compact JSON, ~300-500 bytes |
 | `file_read:structure` without `className` on multi-class file | Returns entire file outline | Add `options.className=Foo` to get just that class subtree |
+| `file_read:grep` with a directory path | Hard error: "Path is not a file" | `grep` requires a FILE path — use `file_search action=content` to search across a directory |
 
 ---
 
@@ -161,6 +162,11 @@ in large Groovy files where patterns like `] as Map<String,Object>)` repeat.
 ---
 
 ### Pattern 2: Small unique insertion
+
+> **CRITICAL: `grep` requires a FILE path, not a directory.**
+> Passing a directory gives: `IllegalArgumentException: Path is not a file`.
+> To search across multiple files in a directory, use `file_search action=content` instead.
+> Only use `file_read action=grep` once you already have the exact file path.
 
 ```
 # 1. Confirm exactly ONE match exists
@@ -346,6 +352,53 @@ file_write action=server_transform  path=<file>
 ---
 
 ## Toolchain (git / gradle) — Required Params
+
+---
+
+## Groovy Gotchas — Language-Level Traps
+
+### Fully-qualified class names fail inside closures
+
+**Rule:** Never use fully-qualified class names inline in Groovy source — especially inside closure bodies or static helper methods. Groovy's compiler treats a dotted name like `org.apache.poi.xssf.usermodel.XSSFWorkbook` as a property-access chain, not a type reference, and fails to resolve it.
+
+**This affects all POI/ooxml namespaces:**
+- `org.apache.poi.ss.usermodel.*` (CellType, BorderStyle, FillPatternType, HorizontalAlignment…)
+- `org.apache.poi.xssf.usermodel.*` (XSSFWorkbook, XSSFCell, XSSFCellStyle…)
+- `org.apache.poi.xwpf.usermodel.*` (XWPFDocument, XWPFParagraph, XWPFRun…)
+- `org.apache.poi.xslf.usermodel.*` (XMLSlideShow, XSLFSlide, XSLFTextShape…)
+- `org.openxmlformats.schemas.*` (CTPageMar, CTPageSz, STPageOrientation, CTTransition…)
+
+**Fix:** Add an explicit named `import` at the top of the file for every class used anywhere — including inside closures, nested methods, and static helpers. Do not rely on wildcard imports; they can mask missing types at Groovy compile time.
+
+**Pattern — when writing any POI adapter file:**
+1. List every POI/ooxml class you intend to use anywhere in the file
+2. Write ALL imports first at the top, before any class/method bodies
+3. Only then write method and closure bodies using short names
+
+```groovy
+// CORRECT
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageMar
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageSz
+import org.openxmlformats.schemas.wordprocessingml.x2006.main.STPageOrientation
+
+class DocxAdapter {
+    static void applyPage(def sectPr, PageSpec page) {
+        CTPageSz pgSz = sectPr.addNewPgSz()   // works — short name, import present
+    }
+}
+
+// WRONG — fails inside closure / static context
+class DocxAdapter {
+    static void applyPage(def sectPr, PageSpec page) {
+        org.openxmlformats.schemas.wordprocessingml.x2006.main.CTPageSz pgSz = ...  // compile error
+    }
+}
+```
+
+**Caught in:** DocxAdapter.groovy — `CTPageMar`, `CTPageSz`, `STPageOrientation` used without imports in `applyPageSettings()`. Required a fix pass after `compileGroovy` failed.
+
+---
+
 
 `groovy-filesystem:tools` always requires **both** `action` and `subcommand` for git/gradle.
 Omitting `subcommand` gives: `MCP error -32602: subcommand required for git`.
