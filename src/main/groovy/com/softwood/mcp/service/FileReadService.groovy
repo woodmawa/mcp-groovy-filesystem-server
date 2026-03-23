@@ -5,6 +5,9 @@ import com.softwood.mcp.service.read.FileContentReader
 import com.softwood.mcp.service.read.FileMetaReader
 import com.softwood.mcp.service.read.FileStructureReader
 import com.softwood.mcp.service.read.ReadResponseHelper
+import com.woodmawa.mcp.toon.ToonEncoder
+import com.woodmawa.mcp.toon.ToonOptions
+import groovy.json.JsonSlurper
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Autowired
@@ -96,7 +99,8 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                                   knownHash   : [type: 'string',  description: 'Pass file_content_hash from prior read. If unchanged, returns {unchanged:true} with no content — saves all tokens.'],
                                   force       : [type: 'boolean', description: 'Override >200-line refusal on action=read.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
-                                  topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)']
+                                  topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
+                                  toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.']
                               ]]
                 ],
                 required  : ['action']
@@ -152,7 +156,30 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                 case 'normalize'    : return metaReader.doNormalize(path, requestId)
                 case 'diff'         : return metaReader.doDiff(path, options, requestId)
                 case 'checksum'     : return metaReader.doChecksum(path, options, requestId)
-                case 'list'         : return metaReader.doList(path, requestId)
+                case 'list'         : {
+                    McpResponse listResp = metaReader.doList(path, requestId)
+                    boolean toon = options.get('toon') as boolean
+                    if (toon && listResp.result != null) {
+                        // Extract the entries list from the JSON text response and Toon-encode it
+                        try {
+                            List content = listResp.result.get('content') as List
+                            if (content) {
+                                String text = (content[0] as Map)?.get('text') as String
+                                if (text) {
+                                    Map data = (Map) new JsonSlurper().parseText(text)
+                                    List<Map<String, Object>> entries = (List<Map<String, Object>>) data.get('entries')
+                                    if (entries) {
+                                        String toonBlock = ToonEncoder.encodeFileListing(entries, ToonOptions.fileListingOnly())
+                                        data.put('entries', toonBlock)
+                                        data.put('toon_encoded', true)
+                                        return textResponse(requestId, data)
+                                    }
+                                }
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                    return listResp
+                }
                 case 'structure'    : return structureReader.doStructure(path, options, requestId)
                 case 'get_method'   : return structureReader.doGetMethod(path, options, requestId)
                 case 'chunk_read'   : return responseHelper.doChunkRead(options, requestId)

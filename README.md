@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.17
+# mcp-groovy-filesystem-server v0.8.18
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,22 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.18 — Toon encoding on `file_read action=list` (2026-03-23)
+
+**`toon=true` option on `file_read action=list`** — pass `options.toon=true` to receive directory
+entries in compact Toon columnar notation instead of JSON. Reduces listing token cost by ~38% on
+typical directories (45-entry test: 731 → 455 tokens). Uses the shared `mcp-toon-service` library
+(`com.woodmawa.mcp.toon:mcp-toon-service:1.0-SNAPSHOT`).
+
+Format: `§files` section header, `@cols name,type,size,lastModified` column row, then one
+`¬`-separated data row per entry. `toon_encoded:true` flag present in response when encoding fired.
+
+```
+file_read action=list path=C:/Users/willw/IdeaProjects options={toon:true}
+```
+
+---
 
 ### v0.8.17 — `stop`/`ensure` race fix + `mcp-deploy:1.5` (2026-03-23)
 
@@ -208,9 +224,9 @@ Located at `C:/Users/willw/claude-sync/mcp-http-servers.json`.
 ```powershell
 cd C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
 ./gradlew.bat bootJar
-# Output: build/libs/mcp-groovy-filesystem-server-0.8.17.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.8.18.jar
 
-# Use the mcp-deploy:1.5 flow template instead (handles all 5 config updates + restart)
+# Use the mcp-deploy:1.6 flow template instead (handles all 5 config updates + restart)
 ```
 
 Update all five configs on every version bump (five-config rule):
@@ -226,6 +242,7 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.18** | Toon encoding on `file_read action=list` (`options.toon=true`) — ~38% token saving on directory listings |
 | **0.8.17** | `stopOneServer` post-kill `waitForPortFree` + `killByPort` netstat fallback; `killStalePidIfPresent` inverted-logic fix; `mcp-deploy:1.5` |
 | **0.8.16** | `ServerLifecycleService` `killByPort`/`waitForPortFree` helpers added |
 | **0.8.15** | `OfficeDocumentHandler` pptx fix — `instanceof XSLFTextShape` filter + `Placeholder` enum; all office smoke tests passing |
