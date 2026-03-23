@@ -22,6 +22,12 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 
 import java.awt.Dimension
+import org.softwood.dag.task.xlsx.XlsxAdapter
+import org.softwood.dag.task.xlsx.WorkbookPlan
+import org.softwood.dag.task.docx.DocxAdapter
+import org.softwood.dag.task.docx.DocumentPlan
+import org.softwood.dag.task.pptx.PptxAdapter
+import org.softwood.dag.task.pptx.PresentationPlan
 
 /**
  * OfficeDocumentHandler - POI-backed read/write for .xlsx, .docx, .pptx files.
@@ -110,6 +116,12 @@ class OfficeDocumentHandler {
     // =========================================================================
 
     private McpResponse readXlsx(File file, Map options, Object requestId) {
+        // DSL query path — delegate to XlsxAdapter when options.queryPlan is present
+        if (options.queryPlan != null) {
+            Object qResult = XlsxAdapter.asFn().call('QUERY', [filePath: file.absolutePath, query: options.queryPlan])
+            return successJson(requestId, [format: 'xlsx', path: file.absolutePath, data: qResult])
+        }
+
         Workbook wb = new XSSFWorkbook(file)
         try {
             String sheetName   = options.sheet as String
@@ -229,6 +241,14 @@ class OfficeDocumentHandler {
     // =========================================================================
 
     private McpResponse writeXlsx(String path, Map options, Object requestId) {
+        // DSL generate path — delegate to XlsxAdapter when options.workbookPlan is present
+        if (options.workbookPlan != null) {
+            String xlAction = (options.action ?: 'GENERATE') as String
+            Object wResult = XlsxAdapter.asFn().call(xlAction.toUpperCase(), [filePath: path, plan: options.workbookPlan])
+            return successJson(requestId, [action: 'write_office', format: 'xlsx', path: path, result: wResult])
+        }
+
+        // Legacy flat-map path
         String sheetName = (options.sheet ?: 'Sheet1') as String
         List   headers   = options.headers as List
         List   rows      = options.rows as List
@@ -328,6 +348,13 @@ class OfficeDocumentHandler {
     // =========================================================================
 
     private McpResponse writeDocx(String path, Map options, Object requestId) {
+        // DSL generate path — delegate to DocxAdapter when options.documentPlan is present
+        if (options.documentPlan != null) {
+            Object dResult = DocxAdapter.asFn().call('GENERATE', [filePath: path, plan: options.documentPlan])
+            return successJson(requestId, [action: 'write_office', format: 'docx', path: path, result: dResult])
+        }
+
+        // Legacy flat-map path
         String templatePath             = options.templatePath as String
         Map<String, Object> content     = options.content as Map<String, Object>
 
@@ -418,6 +445,13 @@ class OfficeDocumentHandler {
     // =========================================================================
 
     private McpResponse writePptx(String path, Map options, Object requestId) {
+        // DSL generate path — delegate to PptxAdapter when options.presentationPlan is present
+        if (options.presentationPlan != null) {
+            Object pResult = PptxAdapter.asFn().call('GENERATE', [filePath: path, plan: options.presentationPlan])
+            return successJson(requestId, [action: 'write_office', format: 'pptx', path: path, result: pResult])
+        }
+
+        // Legacy flat-map path
         String templatePath                     = options.templatePath as String
         List<Map<String, Object>> slides        = options.slides as List<Map<String, Object>>
 

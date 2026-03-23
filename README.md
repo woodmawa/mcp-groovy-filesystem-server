@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.10
+# mcp-groovy-filesystem-server v0.8.12
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,29 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.12 — OfficeDocumentHandler DSL bridge (2026-03-23)
+
+**GCU adapter bridge** — `OfficeDocumentHandler` now delegates to `XlsxAdapter`, `DocxAdapter`,
+and `PptxAdapter` from GroovyConcurrentUtils when the caller passes a `workbookPlan`,
+`documentPlan`, or `presentationPlan` option. Legacy flat-map paths (`headers`/`rows`,
+`content`, `slides`) are fully preserved for backward compatibility.
+
+| New option | Method | Adapter action |
+|-----------|--------|----------------|
+| `options.queryPlan` | `read_office` xlsx | `QUERY` |
+| `options.workbookPlan` | `write_office` xlsx | `GENERATE` (or `options.action`) |
+| `options.documentPlan` | `write_office` docx | `GENERATE` |
+| `options.presentationPlan` | `write_office` pptx | `GENERATE` |
+
+---
+
+### v0.8.11 — OfficeDocumentHandler (2026-03-22)
+
+Initial `read_office` / `write_office` tool actions for `.xlsx`, `.docx`, `.pptx` via Apache POI 5.3.0.
+Flat-map API: `headers`/`rows` for xlsx, `content` map for docx, `slides` list for pptx.
+
+---
 
 ### v0.8.10 — Auto HTTP companion startup (2026-03-22)
 
@@ -158,6 +181,8 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.12** | `OfficeDocumentHandler` DSL bridge — `XlsxAdapter`/`DocxAdapter`/`PptxAdapter` via GCU; legacy paths preserved |
+| **0.8.11** | `OfficeDocumentHandler` — `read_office`/`write_office` for `.xlsx`/`.docx`/`.pptx` via Apache POI 5.3.0 |
 | **0.8.10** | `@PostConstruct autoStartHttpCompanions` — HTTP companion auto-start on stdio startup; clean shutdown via existing `@PreDestroy` |
 | **0.8.9** | `ContextServerClient` liveness guard (CODE-DEFECT-004); `server_transform` file-type validation (SKILL-UPDATE-004) |
 | **0.8.8** | `mkdirs` boolean cast fix under `@CompileStatic` |
