@@ -214,9 +214,24 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
      * Stop a single server by name. Tries managed process map first, then falls back
      * to killing by port - handles servers started externally (e.g. PowerShell launcher).
      */
+    /**
+     * Stop a single server by name. Tries managed process map first, then falls back
+     * to killing by port - handles servers started externally (e.g. PowerShell launcher).
+     * After every kill path, verifies the port is actually free and applies a Windows
+     * netstat-based force-kill if the port remains occupied.
+     */
     private Map<String, Object> stopOneServer(String name) {
         Map<String, Object> r = new LinkedHashMap<String, Object>()
         r.put('name', name)
+
+        // Resolve the port early so we can verify it's free after any kill path
+        int port = 0
+        try {
+            Map<String, Object> config = loadConfig()
+            List<Map> servers = config.servers as List<Map>
+            Map server = servers.find { (it.name as String) == name }
+            if (server) port = server.port as int
+        } catch (Exception ignored) {}
 
         // 1. Try managed process (started by this session)
         Process proc = managedProcesses.remove(name)
@@ -226,29 +241,39 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             if (proc.alive) proc.destroyForcibly()
             r.put('stopped', true)
             r.put('method', 'managed-process')
-            log.info("server_lifecycle: stopped {} via managed process", name)
+            log.info('server_lifecycle: stopped {} via managed process', name)
+
+            // Verify port is actually free; Windows TIME_WAIT can keep it occupied briefly
+            if (port > 0 && !waitForPortFree(port, 5)) {
+                log.warn('server_lifecycle: port {} still occupied after managed-process kill — applying force-kill', port)
+                boolean forceKilled = killByPort(port)
+                r.put('portForceKilled', forceKilled)
+                if (!forceKilled) r.put('warning', 'port ' + port + ' still occupied after force-kill')
+            }
             return r
         }
 
         // 2. Fall back: find port from config and kill by PID owning that port
         try {
-            Map<String, Object> config = loadConfig()
-            List<Map> servers = config.servers as List<Map>
-            Map server = servers.find { (it.name as String) == name }
-            if (server) {
-                int port = server.port as int
+            if (port > 0) {
                 if (isPortListening(port)) {
-                    // Use runtime state PID if available
+                    // Try runtime state PID first
                     boolean killed = killByRuntimePid(name)
                     if (!killed) {
-                        // Last resort: ask the server to shut itself down via actuator
+                        // Try actuator graceful shutdown
                         killed = requestActuatorShutdown(port)
                     }
-                    r.put('stopped', killed)
+                    if (!killed) {
+                        // Final fallback: Windows netstat force-kill
+                        killed = killByPort(port)
+                    }
+                    // Verify port freed
+                    boolean portFree = killed ? waitForPortFree(port, 5) : false
+                    r.put('stopped', killed || portFree)
                     r.put('method', 'port-kill')
                     r.put('port', port)
-                    if (!killed) r.put('warning', 'port still listening after kill attempt')
-                    log.info("server_lifecycle: stopped {} via port-kill (port {}), success={}", name, port, killed)
+                    if (!portFree) r.put('warning', 'port still listening after kill attempt')
+                    log.info('server_lifecycle: stopped {} via port-kill (port {}), portFree={}', name, port, portFree)
                 } else {
                     r.put('stopped', false)
                     r.put('reason', 'not running')
@@ -495,25 +520,52 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         synchronized (configLock) { configCache = null }
     }
 
+    /**
+     * Kill a stale process from a previous session if it is still holding the port.
+     * Called at the start of startServer() to evict orphaned processes before binding.
+     *
+     * Previous bug: guard was !isPortListening(port) — this only killed processes whose
+     * port was NOT listening (useless). Correct logic: kill if port IS listening and PID alive.
+     * Also adds Windows netstat fallback when runtime PID is unknown/expired.
+     */
     private void killStalePidIfPresent(String name, int port) {
+        if (!isPortListening(port)) return  // nothing on the port — nothing to evict
+
+        boolean killedByPid = false
         try {
             File runtimeFile = new File("${claudeSyncPath}/${RUNTIME_FILENAME}")
-            if (!runtimeFile.exists()) return
-            Map<String, Object> state = mapper.readValue(runtimeFile, Map)
-            List<Map> servers = state.managedServers as List<Map> ?: []
-            Map entry = servers.find { it.name == name }
-            if (!entry) return
-            long pid = entry.pid as long
-            Optional<ProcessHandle> ph = ProcessHandle.of(pid)
-            if (ph.isPresent() && ph.get().isAlive() && !isPortListening(port)) {
-                log.info("server_lifecycle: killing stale {} process PID {} (port {} not listening)",
-                         name, pid, port)
-                ph.get().destroyForcibly()
-                // brief pause to let OS reclaim port
-                Thread.sleep(500)
+            if (runtimeFile.exists()) {
+                Map<String, Object> state = mapper.readValue(runtimeFile, Map)
+                List<Map> servers = state.managedServers as List<Map> ?: []
+                Map entry = servers.find { it.name == name }
+                if (entry) {
+                    long pid = entry.pid as long
+                    Optional<ProcessHandle> ph = ProcessHandle.of(pid)
+                    if (ph.isPresent() && ph.get().isAlive()) {
+                        log.info('server_lifecycle: evicting stale {} process PID {} holding port {}',
+                                 name, pid, port)
+                        ph.get().destroyForcibly()
+                        Thread.sleep(800)
+                        killedByPid = !ph.get().isAlive()
+                    }
+                }
             }
         } catch (Exception e) {
-            log.warn("server_lifecycle: error checking stale pid for {}: {}", name, e.message)
+            log.warn('server_lifecycle: error checking runtime pid for {}: {}', name, e.message)
+        }
+
+        // If port still occupied after PID kill (or PID unknown), apply Windows netstat fallback
+        if (!killedByPid || isPortListening(port)) {
+            if (isPortListening(port)) {
+                log.info('server_lifecycle: port {} still occupied — applying netstat force-kill for {}', port, name)
+                boolean forceKilled = killByPort(port)
+                if (forceKilled) {
+                    Thread.sleep(500)
+                    log.info('server_lifecycle: netstat force-kill on port {} succeeded', port)
+                } else {
+                    log.warn('server_lifecycle: could not evict process on port {} for {}', port, name)
+                }
+            }
         }
     }
 
@@ -537,13 +589,72 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         }
     }
 
+    /**
+     * Kill all processes listening on the given port using Windows netstat + taskkill.
+     * Falls back to ProcessHandle enumeration on non-Windows or if netstat unavailable.
+     * Returns true if the port is free after the kill attempt.
+     */
+    private boolean killByPort(int port) {
+        try {
+            // Windows: netstat -ano | findstr :<port> | extract PID | taskkill
+            String findCmd = "netstat -ano"
+            Process findProc = ["cmd", "/c", findCmd].execute()
+            String netstatOut = findProc.text
+            findProc.waitFor(5, TimeUnit.SECONDS)
+
+            List<Long> pids = []
+            netstatOut.eachLine { String line ->
+                if (line.contains(":${port} ") && (line.contains('LISTENING') || line.contains('ESTABLISHED'))) {
+                    String[] parts = line.trim().split('\\s+')
+                    try { pids << Long.parseLong(parts[-1]) } catch (Exception ignored) {}
+                }
+            }
+            pids = pids.unique()
+
+            if (!pids) {
+                log.warn('server_lifecycle: killByPort({}) — no PIDs found via netstat', port)
+                return false
+            }
+
+            pids.each { long pid ->
+                try {
+                    Optional<ProcessHandle> ph = ProcessHandle.of(pid)
+                    if (ph.isPresent() && ph.get().isAlive()) {
+                        log.info('server_lifecycle: killByPort({}) — destroying PID {}', port, pid)
+                        ph.get().destroyForcibly()
+                    }
+                } catch (Exception e) {
+                    log.warn('server_lifecycle: killByPort({}) PID {} error: {}', port, pid, e.message)
+                }
+            }
+            Thread.sleep(1000)
+            return !isPortListening(port, 1, 0)
+        } catch (Exception e) {
+            log.warn('server_lifecycle: killByPort({}) failed: {}', port, e.message)
+            return false
+        }
+    }
+
+    /**
+     * Wait up to timeoutSeconds for the port to stop being listened on.
+     * Returns true if the port is free before timeout, false if still occupied.
+     */
+    private static boolean waitForPortFree(int port, int timeoutSeconds) {
+        long deadline = System.currentTimeMillis() + (timeoutSeconds * 1000L)
+        while (System.currentTimeMillis() < deadline) {
+            if (!isPortListening(port, 1, 0)) return true
+            Thread.sleep(300)
+        }
+        return !isPortListening(port, 1, 0)
+    }
+
     private static boolean isPortListening(int port, int retries = 3, long delayMs = 300) {
         for (int i = 0; i < retries; i++) {
             try {
                 new Socket('localhost', port).withCloseable {}
                 return true
             } catch (Exception ignored) {
-                Thread.sleep(delayMs)
+                if (delayMs > 0) Thread.sleep(delayMs)
             }
         }
         return false

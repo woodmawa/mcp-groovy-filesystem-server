@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.15'
+version = '0.8.17'
 // v0.8.13: ServerLifecycleService port-conflict race fix — killStalePidIfPresent guards on isPortListening + retry loop; HttpMcpController session-id poll noise already at DEBUG
 // v0.8.12: OfficeDocumentHandler DSL bridge — XlsxAdapter/DocxAdapter/PptxAdapter via GCU; legacy flat-map paths preserved
 // v0.8.11: OfficeDocumentHandler - read_office/write_office actions for .xlsx/.docx/.pptx via Apache POI; wired into FileReadService + FileWriteService dispatch

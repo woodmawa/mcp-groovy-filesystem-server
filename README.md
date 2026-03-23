@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.13
+# mcp-groovy-filesystem-server v0.8.17
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -20,7 +20,38 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 
 ## What's New
 
-### v0.8.13 — Port-conflict race fix + log noise (2026-03-23)
+### v0.8.17 — `stop`/`ensure` race fix + `mcp-deploy:1.5` (2026-03-23)
+
+**`stopOneServer` post-kill port verification** (CODE-DEFECT-007) — after any kill path (managed-process,
+runtime-PID, or actuator), `stopOneServer` now calls `waitForPortFree(5s)` and applies a Windows
+`killByPort()` netstat fallback if the port remains occupied. Eliminates the scenario where a killed
+process lingers in TIME_WAIT and blocks the subsequent `ensure`.
+
+**`killStalePidIfPresent` logic corrected** — previously only killed when port was NOT listening
+(inverted). Now kills when port IS listening and PID is alive (correct orphan-eviction semantics).
+Adds `killByPort()` netstat fallback when runtime PID is unknown.
+
+**New helpers** — `killByPort(int port)` (netstat PID extraction + `ProcessHandle.destroyForcibly()`)
+and `waitForPortFree(int port, int timeoutSeconds)` (polls until port free).
+
+**`mcp-deploy:1.5` flow template** — adds `wait-for-stop` node (polls port free up to 8s)
+between `stop-server` and `ensure-server`, eliminating the stop/ensure race in the deploy flow.
+
+---
+
+### v0.8.15–0.8.16 — pptx `write_office` / `read_office` fix (2026-03-23)
+
+**`OfficeDocumentHandler` pptx** (CODE-DEFECT was `XSLFAutoShape MissingPropertyException`) —
+`slide.shapes` / `slide.placeholders` can return `XSLFAutoShape` objects mixed with `XSLFTextShape`.
+`XSLFAutoShape` has no `placeholderDetails` property; Groovy generic type annotations do not enforce
+this at runtime. Fix: `.findAll { it instanceof XSLFTextShape }` filter applied before any placeholder
+lookup. Uses `Placeholder` enum (`TITLE`, `CENTERED_TITLE`, `BODY`) from
+`org.apache.poi.sl.usermodel.Placeholder` for type-safe classification. Applied to both
+`writePptx` and `readPptx` (notes placeholder). Smoke-tested: 3-slide write + read round-trip passing.
+
+---
+
+### v0.8.13–0.8.14 — Port-conflict race fix + log noise (2026-03-23)
 
 **`ServerLifecycleService` port-conflict race** (CODE-DEFECT-005) — `killStalePidIfPresent` now
 guards the kill on `!isPortListening(port)`. A stale PID that is alive but whose port is
@@ -177,10 +208,9 @@ Located at `C:/Users/willw/claude-sync/mcp-http-servers.json`.
 ```powershell
 cd C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
 ./gradlew.bat bootJar
-# Output: build/libs/mcp-groovy-filesystem-server-0.8.10.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.8.17.jar
 
-copy build\libs\mcp-groovy-filesystem-server-0.8.10.jar C:\Users\willw\claude-sync\jars\
-copy build\libs\mcp-groovy-filesystem-server-0.8.10.jar C:\Users\willw\claude-sync\
+# Use the mcp-deploy:1.5 flow template instead (handles all 5 config updates + restart)
 ```
 
 Update all five configs on every version bump (five-config rule):
@@ -196,6 +226,10 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.17** | `stopOneServer` post-kill `waitForPortFree` + `killByPort` netstat fallback; `killStalePidIfPresent` inverted-logic fix; `mcp-deploy:1.5` |
+| **0.8.16** | `ServerLifecycleService` `killByPort`/`waitForPortFree` helpers added |
+| **0.8.15** | `OfficeDocumentHandler` pptx fix — `instanceof XSLFTextShape` filter + `Placeholder` enum; all office smoke tests passing |
+| **0.8.14** | pptx intermediate fix (partial — superseded by 0.8.15) |
 | **0.8.13** | `ServerLifecycleService` port-conflict race fix — `killStalePidIfPresent` guards kill on `isPortListening` + retry loop |
 | **0.8.12** | `OfficeDocumentHandler` DSL bridge — `XlsxAdapter`/`DocxAdapter`/`PptxAdapter` via GCU; legacy paths preserved |
 | **0.8.11** | `OfficeDocumentHandler` — `read_office`/`write_office` for `.xlsx`/`.docx`/`.pptx` via Apache POI 5.3.0 |
