@@ -180,15 +180,34 @@ Key params: path (dir, required), options.maxDepth (tree, default 2), options.pa
         Pattern compiled = pattern ? safeCompilePattern(pattern) : null
 
         List<Map<String, Object>> results = []
+        boolean fromCache = false
 
-        // Fix: wrap in withCloseable to ensure stream is closed after iteration
-        // FIX-10: use filter+limit so stream genuinely short-circuits at max
-        Stream<Path> stream = recursive ? Files.walk(Paths.get(path)) : Files.list(Paths.get(path))
-        stream.withCloseable { Stream<Path> s ->
-            s.filter { Path p ->
-                compiled == null || (p.fileName.toString() =~ compiled)
-            }.limit(max).each { Path p ->
-                results << pathToMap(p)
+        // Cache check: only when no pattern/recursive filter (cache stores raw flat listing)
+        if (compiled == null && !recursive && contextServerClient != null) {
+            ContextServerClient.CachedListing cached = contextServerClient.getDirectoryListing(path)
+            if (cached != null) {
+                results = (cached.entries.size() > max ? cached.entries.take(max) : cached.entries) as List<Map<String, Object>>
+                fromCache = true
+                log.debug('file_list list: cache HIT ({} entries) for {}', results.size(), path)
+            }
+        }
+
+        if (!fromCache) {
+            // Fix: wrap in withCloseable to ensure stream is closed after iteration
+            // FIX-10: use filter+limit so stream genuinely short-circuits at max
+            Stream<Path> stream = recursive ? Files.walk(Paths.get(path)) : Files.list(Paths.get(path))
+            stream.withCloseable { Stream<Path> s ->
+                s.filter { Path p ->
+                    compiled == null || (p.fileName.toString() =~ compiled)
+                }.limit(max).each { Path p ->
+                    results << pathToMap(p)
+                }
+            }
+            // Persist unfiltered flat results to cache
+            if (compiled == null && !recursive && contextServerClient != null) {
+                long dirMtime = new File(path).lastModified()
+                String hash = ContextServerClient.computeListingHash(results)
+                contextServerClient.persistDirectoryListingAsync(path, results, hash, dirMtime)
             }
         }
 
@@ -203,7 +222,7 @@ Key params: path (dir, required), options.maxDepth (tree, default 2), options.pa
             }
         }
 
-        log.debug("file_list list: {} entries from {}", results.size(), path)
+        log.debug('file_list list: {} entries from {} (cache={})', results.size(), path, fromCache)
         // FIX-D: cap response size
         int totalList = results.size()
         boolean listCapped = false
@@ -217,7 +236,8 @@ Key params: path (dir, required), options.maxDepth (tree, default 2), options.pa
             }
             results = trimmed
         }
-        Map<String, Object> listResp = [action: 'list', path: path, count: results.size(), total_available: totalList, entries: results] as Map<String, Object>
+        Map<String, Object> listResp = [action: 'list', path: path, count: results.size(),
+                                         total_available: totalList, entries: results] as Map<String, Object>
         if (listCapped) listResp._sizeCapped = true
         return textResponse(requestId, listResp)
     }

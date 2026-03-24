@@ -387,6 +387,89 @@ class FileContentReader extends AbstractFileService {
     }
 
     // -----------------------------------------------------------------------
+    // multi-path grep
+    // -----------------------------------------------------------------------
+
+    /**
+     * doMultiGrep — run one pattern across a list of files in a single call.
+     *
+     * options.paths    : List<String>  — file paths to grep (max 20)
+     * options.pattern  : String        — regex pattern (required)
+     * options.maxMatches : int         — per-file match cap (default 5)
+     * options.contextLines : int       — before/after lines per match (default 0)
+     *
+     * Returns: {action:'multi_grep', pattern, fileCount, matchingFiles, results:[{path, matchCount, matches:[...]}]}
+     * Only files with at least one match are included in results.
+     * Files with no match contribute to fileCount but not matchingFiles or results.
+     */
+    McpResponse doMultiGrep(Map<String, Object> options, Object requestId) {
+        List<String> paths = (options.paths as List<String>) ?: []
+        if (!paths) return McpResponse.error(requestId, -32602, 'options.paths required for multi_grep')
+        if (paths.size() > 20) paths = paths.take(20)
+
+        String patternStr = options.pattern as String
+        if (!patternStr) return McpResponse.error(requestId, -32602, 'options.pattern required for multi_grep')
+
+        int maxMatchesPerFile = (options.maxMatches as Integer) ?: 5
+        int contextLines      = (options.contextLines as Integer) ?: 0
+        String encoding       = options.encoding as String ?: 'UTF-8'
+        Pattern compiled      = safeCompilePattern(patternStr)
+
+        List<Map<String, Object>> results = []
+        int totalMatchingFiles = 0
+        int totalMatches = 0
+
+        for (String rawPath : paths) {
+            try {
+                String normalized = validateFilePath(rawPath)
+                List<Map<String, Object>> matches = []
+                int lineNum = 0
+                ArrayDeque<String> beforeBuf = contextLines > 0 ? new ArrayDeque<>(contextLines + 1) : null
+
+                new File(normalized).withReader(encoding) { Reader r ->
+                    BufferedReader br = new BufferedReader(r)
+                    String line
+                    while ((line = br.readLine()) != null && matches.size() < maxMatchesPerFile) {
+                        lineNum++
+                        if (compiled.matcher(line).find()) {
+                            String sanitized = truncateAndSanitize(line)
+                            Map<String, Object> entry = [line: lineNum, content: sanitized] as Map<String, Object>
+                            if (contextLines > 0 && beforeBuf != null) {
+                                entry.before = new ArrayList<>(beforeBuf as Collection<String>)
+                            }
+                            matches << entry
+                            totalMatches++
+                        }
+                        if (contextLines > 0 && beforeBuf != null) {
+                            beforeBuf.addLast(truncateAndSanitize(line))
+                            if (beforeBuf.size() > contextLines) beforeBuf.pollFirst()
+                        }
+                    }
+                }
+                if (matches) {
+                    totalMatchingFiles++
+                    results << ([path: normalized, matchCount: matches.size(), matches: matches] as Map<String, Object>)
+                }
+            } catch (SecurityException ignored) {
+                results << ([path: rawPath, error: 'path not allowed'] as Map<String, Object>)
+            } catch (FileNotFoundException ignored) {
+                results << ([path: rawPath, error: 'file not found'] as Map<String, Object>)
+            } catch (Exception e) {
+                results << ([path: rawPath, error: sanitize(e.message)] as Map<String, Object>)
+            }
+        }
+
+        return textResponse(requestId, [
+            action        : 'multi_grep',
+            pattern       : sanitize(patternStr),
+            fileCount     : paths.size(),
+            matchingFiles : totalMatchingFiles,
+            totalMatches  : totalMatches,
+            results       : results
+        ] as Map<String, Object>)
+    }
+
+    // -----------------------------------------------------------------------
     // multi
     // -----------------------------------------------------------------------
 

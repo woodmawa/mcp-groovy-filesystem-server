@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.20
+# mcp-groovy-filesystem-server v0.8.22
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,26 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.22 — `multi_grep` path-guard fix (2026-03-24)
+
+**`multi_grep` no longer requires a `path` param** — added `multi_grep` to the path-exempt action list alongside `multi`, so it can be called with only `options.paths[]` and `options.pattern` as intended.
+
+---
+
+### v0.8.21 — `action=list` listing hash + `multi_grep` (2026-03-24)
+
+**`file_read action=list` now returns `listing_hash`** — a 12-char SHA-256 of the directory contents (sorted name+type+mtime). Pass as `options.knownHash` on repeat calls; if the directory is unchanged, returns `{unchanged:true, listing_hash, count}` (~15 tokens) instead of the full entry payload. Saves 300–1,500 tokens per repeated directory read in typical sessions.
+
+**`file_read action=multi_grep`** — new action: grep one regex pattern across a list of files in a single call. `options.paths[]` (up to 20 files), `options.pattern` (required), `options.maxMatches` (default 5 per file), `options.contextLines`. Returns only files with matches — collapses the common “scan these N files for this import/class/pattern” into one tool call.
+
+```
+file_read action=multi_grep options={pattern:"import org.softwood", paths:["File1.groovy","File2.groovy"]}
+```
+
+**`file_list action=list` wired to listing cache** — the `FileListService.doList` path (used by `file_list` tool) now checks and populates the in-process directory cache the same way `file_list action=children` already did.
+
+---
 
 ### v0.8.20 — `server_transform` relaxed file-type guard (2026-03-24)
 
@@ -234,7 +254,7 @@ Located at `C:/Users/willw/claude-sync/mcp-http-servers.json`.
 ```powershell
 cd C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
 ./gradlew.bat bootJar
-# Output: build/libs/mcp-groovy-filesystem-server-0.8.20.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.8.22.jar
 
 # Use the mcp-deploy:1.6 flow template instead (handles all 5 config updates + restart)
 ```
@@ -252,6 +272,8 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.22** | `multi_grep` path-guard fix — no `path` param required |
+| **0.8.21** | `file_read action=list` listing hash + `knownHash` short-circuit; `multi_grep` action; `file_list` cache aligned |
 | **0.8.20** | `server_transform` file-type guard relaxed — `replace_between` on any file; section transforms accept `.yml`/`.yaml`/`.toml` |
 | **0.8.19** | (intermediate) |
 | **0.8.18** | Toon encoding on `file_read action=list` (`options.toon=true`) — ~38% token saving on directory listings |

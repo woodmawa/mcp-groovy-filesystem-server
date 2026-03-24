@@ -197,7 +197,7 @@ class FileMetaReader extends AbstractFileService {
     }
 
     // v0.8.1: directory listing - replaces execute powershell Get-ChildItem
-    McpResponse doList(String path, Object requestId) {
+    McpResponse doList(String path, Object requestId, Map<String, Object> options = [:]) {
         String normalized = pathService.normalizePath(path)
         if (!isPathAllowed(normalized)) throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
 
@@ -239,8 +239,39 @@ class FileMetaReader extends AbstractFileService {
         files.sort(byName)
         List<Map<String, Object>> entries = (dirs + files) as List<Map<String, Object>>
 
-        return textResponse(requestId, ([action: 'list', path: normalized,
-                                         entries: entries, count: entries.size()] as Map<String, Object>))
+        // Compute listing hash over sorted name+type+mtime for cache validation
+        String listingHash = computeListingHash(entries)
+
+        // knownHash short-circuit: if caller passes the prior listing_hash and it matches, skip payload
+        String knownHash = options?.knownHash as String
+        if (knownHash && knownHash == listingHash) {
+            log.debug('file_read list hash-gate HIT: {} unchanged ({})', normalized, listingHash)
+            return textResponse(requestId, [
+                unchanged    : true,
+                listing_hash : listingHash,
+                count        : entries.size(),
+                _note        : 'Directory unchanged since last list — reuse entries from previous response.'
+            ] as Map<String, Object>)
+        }
+
+        Map<String, Object> resp = [action: 'list', path: normalized,
+                                    entries: entries, count: entries.size(),
+                                    listing_hash: listingHash] as Map<String, Object>
+        return textResponse(requestId, resp)
+    }
+
+    /** Compute a stable hash over sorted entry names+types+mtimes for listing cache validation. */
+    private static String computeListingHash(List<Map<String, Object>> entries) {
+        String key = entries.collect { Map<String, Object> e ->
+            "${e.name}|${e.type}|${e.lastModified}"
+        }.join('\n')
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance('SHA-256')
+            byte[] digest = md.digest(key.bytes)
+            return digest.encodeHex().toString().take(12)
+        } catch (Exception ignored) {
+            return Integer.toHexString(key.hashCode())
+        }
     }
 
     /**

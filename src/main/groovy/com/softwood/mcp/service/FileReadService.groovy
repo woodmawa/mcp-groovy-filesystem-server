@@ -51,8 +51,10 @@ class FileReadService extends AbstractFileService implements ToolHandler {
             name       : 'file_read',
             description: isDescriptionCompact() ? '''\
 Read files/directories.
-Actions: read|head|tail|range|grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
+Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
 Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (skip unchanged — zero cost), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
+action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
+action=multi_grep: grep one pattern across options.paths[] in one call — returns only files with matches.
 All read actions return file_content_hash. Use options.expectedHash on writes to guard drift.''' : '''\
 Read files/directories.
 Actions: read|head|tail|range|grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
@@ -60,12 +62,13 @@ Actions: read|head|tail|range|grep|multi|info|summary|stat|exists|project_root|a
 - head/tail: first/last N lines (default 50). options.lines=N.
 - range: line slice. options.startLine (1-indexed), options.maxLines (default 100).
 - grep: regex in FILE (not dir). options.pattern required. options.contextLines for surrounding lines.
+- multi_grep: grep one pattern across multiple files. options.paths[] (max 20), options.pattern required, options.maxMatches (default 5 per file). Returns only files with matches. No path param needed.
 - multi: up to 10 files parallel. options.paths[]. options.knownHashes {path->hash} skips unchanged. Cap: 24000 chars.
 - stat: metadata only — path, exists, size, lines, lastModified, language. Cheapest existence check.
 - summary: line count + size only.
 - structure: code outline per entry (line/endLine/lineCount). compact=true = methods only. className=Foo filters.
 - get_method: complete named method body. Preferred over structure+range for editing.
-- list: directory listing [{name,type,size,lastModified}]. Dirs first, alpha sorted.
+- list: directory listing [{name,type,size,lastModified}]. Dirs first, alpha sorted. Returns listing_hash. Pass as options.knownHash on repeat calls — returns {unchanged:true, listing_hash, count} (~15 tokens) when directory unmodified.
 - help: detailed usage guide. options.topic=<tool|all>.
 - chunk_read/finalise_read: chunked large-file paging.
 All read actions return file_content_hash (12-char SHA-256). Pass as options.expectedHash on writes.''',
@@ -73,7 +76,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                 type      : 'object',
                 properties: [
                     action : [type: 'string',
-                              enum: ['read','head','tail','range','grep','multi','info','summary','stat',
+                              enum: ['read','head','tail','range','grep','multi_grep','multi','info','summary','stat',
                                      'exists','project_root','allowed_dirs','normalize',
                                      'diff','checksum','list','structure','get_method','chunk_read','finalise_read','help',
                                      'read_office']],
@@ -89,7 +92,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                                   method      : [type: 'string',  description: 'Method name for get_method (required for get_method)'],
                                   fuzzy       : [type: 'boolean', description: 'If true, match method name as substring (for get_method)'],
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
-                                  paths       : [type: 'array', items: [type: 'string'], description: 'File paths for multi (required for multi, max 10)'],
+                                  paths       : [type: 'array', items: [type: 'string'], description: 'File paths for multi/multi_grep (required for multi max 10, multi_grep max 20)'],
                                   knownHashes : [type: 'object', description: 'Map of {path->12-char-hash} from prior reads. Files matching hash return {unchanged:true} with no content.'],
                                   compareTo   : [type: 'string',  description: 'Second file for diff (required for diff)'],
                                   algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],
@@ -119,7 +122,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
             Map<String, Object> options = normaliseOptions(arguments.options)
 
             // Guard: most actions require a valid path
-            if (!path && !(action in ['multi', 'project_root', 'allowed_dirs', 'chunk_read', 'finalise_read', 'help'])) {
+            if (!path && !(action in ['multi', 'multi_grep', 'project_root', 'allowed_dirs', 'chunk_read', 'finalise_read', 'help'])) {
                 return McpResponse.error(requestId, -32602,
                     "file_read '${action}' requires a 'path' parameter (received null).")
             }
@@ -146,6 +149,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                     return r
                 }
                 case 'grep'         : return contentReader.doGrep(path, options, requestId)
+                case 'multi_grep'   : return contentReader.doMultiGrep(options, requestId)
                 case 'multi'        : return contentReader.doMulti(options, requestId)
                 case 'info'         : return metaReader.doInfo(path, requestId)
                 case 'summary'      : return metaReader.doSummary(path, requestId)
@@ -157,7 +161,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                 case 'diff'         : return metaReader.doDiff(path, options, requestId)
                 case 'checksum'     : return metaReader.doChecksum(path, options, requestId)
                 case 'list'         : {
-                    McpResponse listResp = metaReader.doList(path, requestId)
+                    McpResponse listResp = metaReader.doList(path, requestId, options)
                     boolean toon = options.get('toon') as boolean
                     if (toon && listResp.result != null) {
                         // Extract the entries list from the JSON text response and Toon-encode it
