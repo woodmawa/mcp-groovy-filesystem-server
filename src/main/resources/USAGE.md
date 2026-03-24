@@ -22,7 +22,13 @@ _Retrieve this with: `file_read action=help topic=<tool>` or `topic=all`_
 
 **range** — line slice: `options.startLine` (1-indexed), `options.maxLines` (default 100).
 
-**grep** — regex search within a file (FILE path only, not directory). `options.pattern` required. `options.contextLines=N` for surrounding context.
+**grep** — regex search within a **FILE** path only (hard error on directory path). `options.pattern` required. `options.contextLines=N` for surrounding context. For directory-wide search use `file_search action=content`.
+
+**multi_grep** — grep one pattern across multiple files in one call. No `path` param. `options.paths[]` (up to 20, required), `options.pattern` (required), `options.maxMatches` (default 5 per file). Returns only files with matches. Use instead of repeated `grep` calls.
+```
+file_read action=multi_grep options={pattern:"import org.softwood",paths:["A.groovy","B.groovy"]}
+→ {fileCount, matchingFiles, totalMatches, results:[{path,matchCount,matches:[{line,content}]}]}
+```
 
 **multi** — read up to 10 files in parallel. Pass `options.paths[]`. Pass `options.knownHashes {path->hash}` to skip unchanged files — zero cost.
 
@@ -32,14 +38,18 @@ _Retrieve this with: `file_read action=help topic=<tool>` or `topic=all`_
 
 **get_method** — returns complete named method body. Always call immediately before patching. Preferred over structure+range for editing.
 
-**list** — directory listing: name, type, size, lastModified. Replaces PowerShell Get-ChildItem.
+**list** — directory listing: name, type, size, lastModified. Always returns `listing_hash`. Pass as `options.knownHash` on repeat calls — returns `{unchanged:true, listing_hash, count}` (~15 tokens) if directory unchanged. Replaces PowerShell Get-ChildItem.
+```
+file_read action=list path=<dir>                          → {entries:[...], listing_hash:"abc123"}
+file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:true, count:N}
+```
 
 **diff** — line-by-line diff of two files. `options.compareTo` required.
 
 **help** — this document. `options.topic=<tool|all>`.
 
 ### Context efficiency rules
-1. Never re-read a file you've already read this session unless it changed. Pass `options.knownHash`.
+1. Never re-read a file or directory listing unless it changed. Pass `options.knownHash` (files use `file_content_hash`; directories use `listing_hash`).
 2. For editing: structure → get_method (never read whole file).
 3. For searching: grep or file_search (never read-then-scan).
 4. Use stat/summary first on unknown files to check size.
@@ -62,13 +72,15 @@ _Retrieve this with: `file_read action=help topic=<tool>` or `topic=all`_
 **multi_replace** — ordered list of `[{oldText, newText}]` swaps. Pre-validates ALL before writing. Preferred for multiple changes to same file.
 
 **server_transform** — server-side named transformation. File content never crosses context boundary. REQUIRED: `options.expectedHash`. `options.transform`:
-- `replace_section` — replace a named markdown section
-- `replace_method` — replace method by name (use `options.method`, `options.newBody`)
-- `replace_between` — replace content between two marker strings
-- `insert_after_heading` — insert content after a markdown heading
-- `append_section` — append a new section at end of file
-- `add_method` — insert new method into a class (use `options.method`, `options.body`, `options.after` or `options.before`)
-- `add_import` — add import statement if not present (use `options.import`)
+- `replace_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
+- `add_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
+- `add_import` — Groovy/Java only. Params: `options.importStatement` (full import line)
+- `replace_section` — Markdown/yml/yaml/toml only. Params: `options.heading`, `options.newContent`
+- `insert_after_heading` — Markdown/yml/yaml/toml. Params: `options.heading`, `options.content`
+- `append_section` — Markdown/yml/yaml/toml. Params: `options.heading`, `options.content`
+- `replace_between` — **any file type**. Params: `options.startAnchor`, `options.endAnchor`, `options.newContent`
+
+**Param name summary:** body → `newBody`; section/between content → `newContent`; insert/append content → `content`; import → `importStatement`. NEVER use top-level `content=` for server_transform.
 
 ### Safe editing workflow
 ```

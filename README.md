@@ -11,7 +11,7 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 
 | Tool | Description |
 |------|-------------|
-| `file_read` | Read files/directories: read, head, tail, range, grep, multi, structure, get_method, info, checksum, diff |
+| `file_read` | Read files/directories: read, head, tail, range, grep, multi_grep, multi, structure, get_method, info, checksum, diff, list (with listing_hash + knownHash short-circuit) |
 | `file_write` | Write/modify files: write, append, replace, patch, multi_replace, server_transform, chunk_write |
 | `file_search` | Search file contents (regex) or filenames across directories |
 | `server_lifecycle` | Manage HTTP companion server processes: start_eager, ensure, stop, status, reload |
@@ -195,7 +195,7 @@ The filesystem server runs as a stdio subprocess. All Claude tool calls go throu
       "-Dspring.profiles.active=stdio",
       "-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects, ...",
       "-Dmcp.script.enable-python=true",
-      "-jar", "C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-0.8.10.jar"
+      "-jar", "C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-0.8.22.jar"
     ]
   }
 }
@@ -214,21 +214,21 @@ This allows `mcp-agentic-workflow` flow nodes to call:
 
 ---
 
-## server_transform — .groovy/.java source only
+## server_transform — file-type rules (v0.8.20+)
 
-`file_write action=server_transform` operates on Groovy and Java source files **only**. Available transforms:
+`file_write action=server_transform` available transforms and file-type constraints:
 
-| Transform | Description |
-|-----------|-------------|
-| `replace_method` | Replace a named method body |
-| `replace_section` | Replace a `##` markdown section |
-| `replace_between` | Replace content between two exact marker strings |
-| `insert_after_heading` | Insert content after a markdown heading |
-| `append_section` | Append a new `##` section |
-| `add_method` | Add a new method to a class |
-| `add_import` | Add an import statement |
+| Transform | File types | Key option |
+|-----------|-----------|------------|
+| `replace_method` | `.groovy`, `.java` only | `options.method`, `options.newBody` |
+| `add_method` | `.groovy`, `.java` only | `options.method`, `options.newBody` |
+| `add_import` | `.groovy`, `.java` only | `options.importStatement` |
+| `replace_section` | `.md`, `.yml`, `.yaml`, `.toml` | `options.heading`, `options.newContent` |
+| `insert_after_heading` | `.md`, `.yml`, `.yaml`, `.toml` | `options.heading`, `options.content` |
+| `append_section` | `.md`, `.yml`, `.yaml`, `.toml` | `options.heading`, `options.content` |
+| `replace_between` | **any file type** | `options.startAnchor`, `options.endAnchor`, `options.newContent` |
 
-For YAML, JSON, Python, or any other file type: use `file_write action=multi_replace`.
+All transforms require `options.expectedHash`. For arbitrary text swaps in any file: use `file_write action=multi_replace`.
 
 ---
 
