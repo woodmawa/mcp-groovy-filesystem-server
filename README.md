@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.18
+# mcp-groovy-filesystem-server v0.8.20
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,16 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.20 — `server_transform` relaxed file-type guard (2026-03-24)
+
+**`replace_between` now works on any file type** — previously `server_transform` blocked all non-Groovy/Java files. The guard is now relaxed: `replace_between` is permitted on any file type (YAML, TOML, JSON, Markdown, etc.), while the structural transforms (`replace_method`, `add_method`, `add_import`) remain Groovy/Java-only. Section transforms (`replace_section`, `insert_after_heading`, `append_section`) now also accept `.yml`, `.yaml`, and `.toml` files in addition to Markdown.
+
+---
+
+### v0.8.19 — (intermediate, superseded by 0.8.20)
+
+---
 
 ### v0.8.18 — Toon encoding on `file_read action=list` (2026-03-23)
 
@@ -224,7 +234,7 @@ Located at `C:/Users/willw/claude-sync/mcp-http-servers.json`.
 ```powershell
 cd C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
 ./gradlew.bat bootJar
-# Output: build/libs/mcp-groovy-filesystem-server-0.8.18.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.8.20.jar
 
 # Use the mcp-deploy:1.6 flow template instead (handles all 5 config updates + restart)
 ```
@@ -242,6 +252,8 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.20** | `server_transform` file-type guard relaxed — `replace_between` on any file; section transforms accept `.yml`/`.yaml`/`.toml` |
+| **0.8.19** | (intermediate) |
 | **0.8.18** | Toon encoding on `file_read action=list` (`options.toon=true`) — ~38% token saving on directory listings |
 | **0.8.17** | `stopOneServer` post-kill `waitForPortFree` + `killByPort` netstat fallback; `killStalePidIfPresent` inverted-logic fix; `mcp-deploy:1.5` |
 | **0.8.16** | `ServerLifecycleService` `killByPort`/`waitForPortFree` helpers added |

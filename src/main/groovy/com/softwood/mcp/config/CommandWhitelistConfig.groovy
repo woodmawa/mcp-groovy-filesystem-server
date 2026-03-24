@@ -4,6 +4,7 @@ import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.context.annotation.Configuration
+import jakarta.annotation.PostConstruct
 
 import java.util.regex.Pattern
 
@@ -24,57 +25,39 @@ class CommandWhitelistConfig {
     List<String> cmdAllowed = []
     List<String> cmdBlocked = []
     
-    // Compiled patterns for better performance
-    private List<Pattern> powershellAllowedPatterns = null
-    private List<Pattern> powershellBlockedPatterns = null
-    private List<Pattern> bashAllowedPatterns = null
-    private List<Pattern> bashBlockedPatterns = null
-    private List<Pattern> cmdAllowedPatterns = null
-    private List<Pattern> cmdBlockedPatterns = null
-    
+    // Compiled patterns — populated eagerly by @PostConstruct after Spring binds the lists.
+    // Do NOT use lazy null-check init here: @CompileStatic field access can bypass getters
+    // and see null even after binding, causing isPowershellAllowed() to always return false.
+    private List<Pattern> powershellAllowedPatterns = []
+    private List<Pattern> powershellBlockedPatterns = []
+    private List<Pattern> bashAllowedPatterns = []
+    private List<Pattern> bashBlockedPatterns = []
+    private List<Pattern> cmdAllowedPatterns = []
+    private List<Pattern> cmdBlockedPatterns = []
+
     /**
-     * Get compiled PowerShell allowed patterns (lazy initialization)
+     * Compile all patterns once after Spring has finished binding the string lists.
+     * Fixes CODE-DEFECT-010: lazy null-check init under @CompileStatic was unreliable —
+     * powershellAllowed was bound but powershellAllowedPatterns remained [] at check time.
      */
-    List<Pattern> getPowershellAllowedPatterns() {
-        if (powershellAllowedPatterns == null) {
-            powershellAllowedPatterns = powershellAllowed.collect { Pattern.compile(it) }
-            log.info("Loaded ${powershellAllowedPatterns.size()} PowerShell allowed patterns")
-        }
-        return powershellAllowedPatterns
+    @PostConstruct
+    void initPatterns() {
+        powershellAllowedPatterns = powershellAllowed.collect { Pattern.compile(it) }
+        powershellBlockedPatterns = powershellBlocked.collect { Pattern.compile(it) }
+        bashAllowedPatterns       = bashAllowed.collect { Pattern.compile(it) }
+        bashBlockedPatterns       = bashBlocked.collect { Pattern.compile(it) }
+        cmdAllowedPatterns        = cmdAllowed.collect { Pattern.compile(it) }
+        cmdBlockedPatterns        = cmdBlocked.collect { Pattern.compile(it) }
+        log.info('CommandWhitelistConfig patterns compiled: ps-allowed={} ps-blocked={} bash-allowed={} bash-blocked={} cmd-allowed={} cmd-blocked={}',
+            powershellAllowedPatterns.size(), powershellBlockedPatterns.size(),
+            bashAllowedPatterns.size(), bashBlockedPatterns.size(),
+            cmdAllowedPatterns.size(), cmdBlockedPatterns.size())
     }
-    
-    /**
-     * Get compiled PowerShell blocked patterns (lazy initialization)
-     */
-    List<Pattern> getPowershellBlockedPatterns() {
-        if (powershellBlockedPatterns == null) {
-            powershellBlockedPatterns = powershellBlocked.collect { Pattern.compile(it) }
-            log.info("Loaded ${powershellBlockedPatterns.size()} PowerShell blocked patterns")
-        }
-        return powershellBlockedPatterns
-    }
-    
-    /**
-     * Get compiled Bash allowed patterns (lazy initialization)
-     */
-    List<Pattern> getBashAllowedPatterns() {
-        if (bashAllowedPatterns == null) {
-            bashAllowedPatterns = bashAllowed.collect { Pattern.compile(it) }
-            log.info("Loaded ${bashAllowedPatterns.size()} Bash allowed patterns")
-        }
-        return bashAllowedPatterns
-    }
-    
-    /**
-     * Get compiled Bash blocked patterns (lazy initialization)
-     */
-    List<Pattern> getBashBlockedPatterns() {
-        if (bashBlockedPatterns == null) {
-            bashBlockedPatterns = bashBlocked.collect { Pattern.compile(it) }
-            log.info("Loaded ${bashBlockedPatterns.size()} Bash blocked patterns")
-        }
-        return bashBlockedPatterns
-    }
+
+    List<Pattern> getPowershellAllowedPatterns() { powershellAllowedPatterns }
+    List<Pattern> getPowershellBlockedPatterns() { powershellBlockedPatterns }
+    List<Pattern> getBashAllowedPatterns()       { bashAllowedPatterns }
+    List<Pattern> getBashBlockedPatterns()       { bashBlockedPatterns }
     
     /**
      * Check if a PowerShell command is allowed.
@@ -122,21 +105,8 @@ class CommandWhitelistConfig {
         return allowed
     }
 
-    List<Pattern> getCmdAllowedPatterns() {
-        if (cmdAllowedPatterns == null) {
-            cmdAllowedPatterns = cmdAllowed.collect { Pattern.compile(it) }
-            log.info("Loaded ${cmdAllowedPatterns.size()} CMD allowed patterns")
-        }
-        return cmdAllowedPatterns
-    }
-
-    List<Pattern> getCmdBlockedPatterns() {
-        if (cmdBlockedPatterns == null) {
-            cmdBlockedPatterns = cmdBlocked.collect { Pattern.compile(it) }
-            log.info("Loaded ${cmdBlockedPatterns.size()} CMD blocked patterns")
-        }
-        return cmdBlockedPatterns
-    }
+    List<Pattern> getCmdAllowedPatterns() { cmdAllowedPatterns }
+    List<Pattern> getCmdBlockedPatterns() { cmdBlockedPatterns }
 
     /**
      * Check if a CMD command is allowed.

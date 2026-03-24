@@ -98,23 +98,34 @@ class FileTransformService extends AbstractFileService {
                     "Unknown transform '${sanitize(transformName)}'. Available: ${available}")
             }
 
-            // Guard: server_transform is designed for Groovy/Java source files only.
-            // YAML, Python, JSON, Markdown etc. have no method boundaries or ## section headings
-            // — transforms will silently fail or produce wrong results on them.
-            // Use file_write action=multi_replace for arbitrary text swaps in non-code files.
+            // Per-transform file-type guard (v0.8.20).
+            // Each transform declares which extensions it supports.
+            // replace_between is format-agnostic (anchor-string only) — allowed on any file.
+            // AST-based transforms (replace_method, add_method, add_import) require .groovy/.java/.kt/.kts.
+            // Section/heading transforms also work on .yml/.yaml/.toml and .md/.adoc/.txt.
             String ext = normalized.contains('.') ? normalized.tokenize('.')?.last()?.toLowerCase() : ''
-            boolean isCodeFile = ext in ['groovy', 'java', 'kt', 'kts']
-            if (!isCodeFile) {
-                // Still allow append_section and insert_after_heading on .md/.adoc files as they genuinely have ## headings
-                boolean isMarkdown = ext in ['md', 'adoc', 'txt']
-                boolean isMarkdownSafeTransform = transformName in ['append_section', 'insert_after_heading', 'replace_section']
-                if (!(isMarkdown && isMarkdownSafeTransform)) {
-                    return McpResponse.error(requestId, -32602,
-                        "server_transform '${sanitize(transformName)}' requires a Groovy/Java source file (.groovy, .java). " +
-                        "Target file is '.${ext}' which is not supported. " +
-                        "Use file_write action=multi_replace for YAML, JSON, Python, or other non-code files. " +
-                        "(Markdown files support: append_section, insert_after_heading, replace_section only.)")
-                }
+
+            // Per-transform allowed extension sets. null = any file type allowed.
+            Map<String, List<String>> transformAllowedExts = [
+                'replace_between'     : null,   // anchor-string-based, file-format-agnostic
+                'replace_method'      : ['groovy', 'java', 'kt', 'kts'],
+                'add_method'          : ['groovy', 'java', 'kt', 'kts'],
+                'add_import'          : ['groovy', 'java', 'kt', 'kts'],
+                'replace_section'     : ['groovy', 'java', 'kt', 'kts', 'md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
+                'append_section'      : ['groovy', 'java', 'kt', 'kts', 'md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
+                'insert_after_heading': ['groovy', 'java', 'kt', 'kts', 'md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
+            ] as Map<String, List<String>>
+
+            List<String> allowedExts = transformAllowedExts.containsKey(transformName)
+                ? transformAllowedExts[transformName]
+                : ['groovy', 'java', 'kt', 'kts']  // default: code files only for unknown transforms
+
+            if (allowedExts != null && !(ext in allowedExts)) {
+                String allowed = allowedExts.collect { ".$it" }.join(', ')
+                return McpResponse.error(requestId, -32602,
+                    "server_transform '${sanitize(transformName)}' does not support '.${ext}' files. " +
+                    "Supported: ${allowed}. " +
+                    "Use file_write action=multi_replace for arbitrary text swaps in unsupported file types.")
             }
 
             TransformResult result = transformer.apply(normalized, options)

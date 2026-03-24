@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.18'
+version = '0.8.20'   // v0.8.20: server_transform file-type guard relaxed — replace_between on any file, section transforms on yml/yaml/toml
 // v0.8.18: Toon encoding support on file_read action=list (toon=true in options)
 // v0.8.13: ServerLifecycleService port-conflict race fix — killStalePidIfPresent guards on isPortListening + retry loop; HttpMcpController session-id poll noise already at DEBUG
 // v0.8.12: OfficeDocumentHandler DSL bridge — XlsxAdapter/DocxAdapter/PptxAdapter via GCU; legacy flat-map paths preserved
