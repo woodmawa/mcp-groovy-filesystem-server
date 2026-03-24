@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.22
+# mcp-groovy-filesystem-server v0.8.23
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,12 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.23 — `file_list action=list` listing hash parity (2026-03-24)
+
+**`file_list action=list` now returns `listing_hash` and supports `options.knownHash`** — previously only `file_read action=list` had this short-circuit. Now both tools behave identically: pass `listing_hash` back as `options.knownHash` on repeat calls to get `{unchanged:true, listing_hash, count}` (~15 tokens) instead of the full payload. Tool schema updated with `knownHash` option.
+
+---
 
 ### v0.8.22 — `multi_grep` path-guard fix (2026-03-24)
 
@@ -254,7 +260,7 @@ Located at `C:/Users/willw/claude-sync/mcp-http-servers.json`.
 ```powershell
 cd C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
 ./gradlew.bat bootJar
-# Output: build/libs/mcp-groovy-filesystem-server-0.8.22.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.8.23.jar
 
 # Use the mcp-deploy:1.6 flow template instead (handles all 5 config updates + restart)
 ```
@@ -272,6 +278,7 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.23** | `file_list action=list` listing hash + `knownHash` short-circuit (parity with `file_read action=list`) |
 | **0.8.22** | `multi_grep` path-guard fix — no `path` param required |
 | **0.8.21** | `file_read action=list` listing hash + `knownHash` short-circuit; `multi_grep` action; `file_list` cache aligned |
 | **0.8.20** | `server_transform` file-type guard relaxed — `replace_between` on any file; section transforms accept `.yml`/`.yaml`/`.toml` |

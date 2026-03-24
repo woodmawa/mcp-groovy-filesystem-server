@@ -44,7 +44,8 @@ class FileListService extends AbstractFileService implements ToolHandler {
             description: '''\
 List directory contents.
 Actions: children|list|tree|sizes
-Key params: path (dir, required), options.maxDepth (tree, default 2), options.pattern (filename filter), options.recursive (list), options.compact (minimal output).''',
+Key params: path (dir, required), options.maxDepth (tree, default 2), options.pattern (filename filter), options.recursive (list), options.compact (minimal output).
+action=list returns listing_hash. Pass as options.knownHash on repeat calls to get {unchanged:true} (~15 tokens) when directory is unmodified.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -59,7 +60,8 @@ Key params: path (dir, required), options.maxDepth (tree, default 2), options.pa
                                   maxDepth       : [type: 'integer'],
                                   sortBy         : [type: 'string', enum: ['name', 'size']],
                                   excludePatterns: [type: 'array', items: [type: 'string']],
-                                  compact        : [type: 'boolean', description: 'Minimal response - omits action/path echo, trims metadata (children action only)']
+                                  compact        : [type: 'boolean', description: 'Minimal response - omits action/path echo, trims metadata (children action only)'],
+                                  knownHash      : [type: 'string', description: 'listing_hash from prior action=list call. Returns {unchanged:true, listing_hash, count} (~15 tokens) if directory unchanged. Only applies to action=list.']
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -236,8 +238,22 @@ Key params: path (dir, required), options.maxDepth (tree, default 2), options.pa
             }
             results = trimmed
         }
+        // Compute listing_hash and check knownHash short-circuit
+        String listingHash = ContextServerClient.computeListingHash(results)
+        String knownHash = options?.knownHash as String
+        if (knownHash && knownHash == listingHash) {
+            log.debug('file_list list hash-gate HIT: {} unchanged ({})', path, listingHash)
+            return textResponse(requestId, [
+                unchanged    : true,
+                listing_hash : listingHash,
+                count        : results.size(),
+                _note        : 'Directory unchanged since last list — reuse entries from previous response.'
+            ] as Map<String, Object>)
+        }
+
         Map<String, Object> listResp = [action: 'list', path: path, count: results.size(),
-                                         total_available: totalList, entries: results] as Map<String, Object>
+                                         total_available: totalList, entries: results,
+                                         listing_hash: listingHash] as Map<String, Object>
         if (listCapped) listResp._sizeCapped = true
         return textResponse(requestId, listResp)
     }
