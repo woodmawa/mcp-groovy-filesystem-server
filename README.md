@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.28
+# mcp-groovy-filesystem-server v0.8.29
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,20 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.29 — `ServerLifecycleService` self-companion spawn fix (2026-03-26)
+
+**CRITICAL FIX: stdio process no longer crashes on startup** — `autoStartHttpCompanions` was spawning
+the filesystem server as its own HTTP companion on port 8081, then Spring Boot tried to bind the same
+port and failed with `Failed to start bean 'webServerStartStop'`. The stdio process crashed silently,
+causing all `file_write` calls to return `Tool execution failed` even though the write physically
+succeeded (served by the previous HTTP companion process still running on 8081).
+
+Fix: injected `@Value('${server.port:8081}') int ownPort` into `ServerLifecycleService`. The
+`autoStartHttpCompanions` loop now skips any entry whose port matches `ownPort` with a clear INFO log:
+`skipping self-companion filesystem on port 8081 (own port)`.
+
+---
 
 ### v0.8.28 — `execute options.grepPattern` stdout cap fix (2026-03-26)
 
@@ -319,6 +333,7 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.29** | CRITICAL: `ServerLifecycleService` self-companion spawn fix — stdio no longer crashes on port 8081 conflict |
 | **0.8.28** | `grepPattern` stdout cap fix — collection now bypasses cap when filter set; filter applied post-collection |
 | **0.8.27** | `execute options.grepPattern` — Java regex filter on stdout, replaces `findstr` OR workarounds |
 | **0.8.26** | `server_transform` file-type guard fix (CODE-DEFECT-016); `add_import` param corrected to `options.import` |

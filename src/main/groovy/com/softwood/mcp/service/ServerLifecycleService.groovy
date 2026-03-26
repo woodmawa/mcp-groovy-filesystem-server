@@ -38,6 +38,11 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
     @Value('${MCP_CONTEXT_STORAGE_PATH:C:/Users/willw/claude-sync}')
     String claudeSyncPath
 
+    // The HTTP port this process itself binds to (from server.port).
+    // Used to skip self-spawn in autoStartHttpCompanions.
+    @Value('${server.port:8081}')
+    int ownPort
+
     private final ObjectMapper mapper = new ObjectMapper()
 
     // Config cache - loaded once, invalidated only by reload action
@@ -77,6 +82,12 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
 
                 String name = server.name as String
                 int port    = server.port as int
+
+                // Never spawn ourselves as an HTTP companion — we are already binding this port.
+                if (port == ownPort) {
+                    log.info('ServerLifecycleService: skipping self-companion {} on port {} (own port)', name, port)
+                    return
+                }
 
                 if (isPortListening(port)) {
                     log.info('ServerLifecycleService: HTTP companion {} already on port {} — skipping', name, port)

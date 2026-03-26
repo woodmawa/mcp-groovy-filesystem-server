@@ -162,6 +162,10 @@ Use `action=powershell` for scripts: `script='C:/path/to/script.ps1'`
 
 ## server_lifecycle
 
+**v0.8.29 fix:** The filesystem stdio process no longer self-spawns as an HTTP companion.
+Previously `autoStartHttpCompanions` would launch `filesystem` on port 8081, then Spring Boot
+tried to bind the same port and the stdio process crashed silently. Now uses `ownPort` guard to skip self.
+
 ### Actions: start_eager | ensure | stop | status | reload
 
 Manages HTTP MCP server processes via `claude-sync/mcp-http-servers.json`.
