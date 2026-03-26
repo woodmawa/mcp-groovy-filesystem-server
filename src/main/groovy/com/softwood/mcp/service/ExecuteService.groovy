@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
 import java.util.concurrent.TimeUnit
+import java.util.regex.Pattern
 
 /**
  * ExecuteService — handles the execute tool.
@@ -80,8 +81,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                   args      : [type: 'array', items: [type: 'string']],
                                   env       : [type: 'object'],
                                   verbose   : [type: 'boolean', description: 'Set true for full response with action/durationMs. Default: compact (success/exitCode/stdout/stderr only)'],
-                                  maxStdout : [type: 'integer', description: 'Max chars of stdout to return (default 50000)'],
-                                  maxStderr : [type: 'integer', description: 'Max chars of stderr to return (default 5000)']
+                                  maxStdout   : [type: 'integer', description: 'Max chars of stdout to return (default 50000)'],
+                                  maxStderr   : [type: 'integer', description: 'Max chars of stderr to return (default 5000)'],
+                                  grepPattern : [type: 'string', description: 'Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including | alternation, e.g. "foo|bar", "RequestBuilder\\.class$".']
                               ]]
                 ],
                 required  : ['action', 'script']
@@ -274,9 +276,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                    String action, Object requestId,
                                    Map<String, String> envOverrides = null,
                                    Map<String, Object> options = null) {
-        int maxStdout = (options?.maxStdout as Integer) ?: 50000
-        int maxStderr = (options?.maxStderr as Integer) ?: 5000
-        boolean compact = isWriteCompact(options ?: ([:] as Map<String, Object>))
+        int maxStdout        = (options?.maxStdout as Integer) ?: 50000
+        int maxStderr        = (options?.maxStderr as Integer) ?: 5000
+        String grepPattern   = options?.grepPattern as String
+        boolean compact      = isWriteCompact(options ?: ([:] as Map<String, Object>))
 
         long start = System.currentTimeMillis()
         Process process = null
@@ -296,7 +299,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             int capturedErr = 0
             Thread stdoutThread = Thread.ofVirtual().start({
                 process.inputStream.eachLine { String line ->
-                    if (capturedOut < maxStdout) {
+                    // When grepPattern is set, bypass the cap during collection so the filter
+                    // sees all lines. The filtered result is capped after filtering below.
+                    // When no grepPattern, cap during collection to prevent heap fill on huge output.
+                    if (grepPattern || capturedOut < maxStdout) {
                         String s = sanitize(line)
                         stdout.append(s).append('\n')
                         capturedOut += s.length() + 1
@@ -334,8 +340,18 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             // FIX-6: already capped in loop above - no .take() needed
             // FIX-H: add truncation flags so caller knows output was cut
             String stdoutStr = stdout.toString()
+            // Apply grepPattern filter if specified — full Java regex, supports | alternation.
+            // Collection was uncapped when grepPattern set, so cap the filtered result here.
+            if (grepPattern) {
+                Pattern gp = Pattern.compile(grepPattern)
+                stdoutStr = stdoutStr.readLines().findAll { gp.matcher(it).find() }.join('\n')
+                if (stdoutStr) stdoutStr += '\n'
+                capturedOut = stdoutStr.length()
+            }
+            // Cap filtered (or raw) output to maxStdout for response
+            boolean stdoutTruncated = stdoutStr.length() > maxStdout
+            if (stdoutTruncated) stdoutStr = stdoutStr.take(maxStdout)
             String stderrStr = stderr.toString()
-            boolean stdoutTruncated = capturedOut >= maxStdout
             boolean stderrTruncated = capturedErr >= maxStderr
 
             if (compact) {

@@ -45,12 +45,25 @@ class WriteUtils {
      */
     static void atomicWrite(Path target, byte[] bytes) {
         Path parent = target.parent
-        // Note: callers (e.g. doWrite) are responsible for creating parent dirs via Files.createDirectories.
-        // Removed redundant Files.exists(parent) guard here — it was racing with createDirectories
-        // and causing false NoSuchFileException on newly-created directories.
+        if (parent) {
+            Files.createDirectories(parent)
+            // On Windows, NTFS directory creation may not be immediately visible
+            // even after createDirectories returns. Poll until the directory is
+            // actually visible to the filesystem before attempting any write.
+            int waited = 0
+            while (!Files.exists(parent) && waited < 2000) {
+                Thread.sleep(100)
+                waited += 100
+            }
+            if (!Files.exists(parent)) {
+                throw new IOException("Directory still does not exist after 2s: ${parent}")
+            }
+        }
         Path tmp = target.resolveSibling(target.fileName.toString() + '.tmp')
         try {
-            Files.write(tmp, bytes)
+            // Use legacy IO (FileOutputStream) rather than NIO Files.write —
+            // avoids NIO path resolution issues on freshly-created Windows dirs.
+            tmp.toFile().withOutputStream { it.write(bytes) }
             try {
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING,
                                         StandardCopyOption.ATOMIC_MOVE)

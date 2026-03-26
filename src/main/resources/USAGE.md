@@ -74,13 +74,13 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 **server_transform** — server-side named transformation. File content never crosses context boundary. REQUIRED: `options.expectedHash`. `options.transform`:
 - `replace_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
 - `add_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
-- `add_import` — Groovy/Java only. Params: `options.importStatement` (full import line)
+- `add_import` — Groovy/Java only. Params: `options.import` (full import line e.g. `'import com.example.Foo'` or just `'com.example.Foo'` — `import ` prefix added automatically if absent)
 - `replace_section` — Markdown/yml/yaml/toml only. Params: `options.heading`, `options.newContent`
 - `insert_after_heading` — Markdown/yml/yaml/toml. Params: `options.heading`, `options.content`
 - `append_section` — Markdown/yml/yaml/toml. Params: `options.heading`, `options.content`
 - `replace_between` — **any file type**. Params: `options.startAnchor`, `options.endAnchor`, `options.newContent`
 
-**Param name summary:** body → `newBody`; section/between content → `newContent`; insert/append content → `content`; import → `importStatement`. NEVER use top-level `content=` for server_transform.
+**Param name summary:** body → `newBody`; section/between content → `newContent`; insert/append content → `content`; import → `options.import` (NOT `importStatement`). NEVER use top-level `content=` for server_transform.
 
 ### Safe editing workflow
 ```
@@ -152,6 +152,7 @@ Key options:
 - `options.timeout` — seconds (default 60)
 - `options.maxStdout` — chars to return (default 50000 ~12K tokens). Set lower to save context window.
 - `options.maxStderr` — chars to return (default 5000)
+- `options.grepPattern` — Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including `|` alternation (unlike Windows `findstr`). Example: `"MessagesRequestBuilder\\.class$|EventsRequestBuilder\\.class$"`. Use this instead of piping to findstr for any output filtering.
 
 ### Windows builds
 Use `action=cmd` for gradle: `script='gradlew.bat clean bootJar'`

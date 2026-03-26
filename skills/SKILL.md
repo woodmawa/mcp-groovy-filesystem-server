@@ -112,6 +112,14 @@ groovy-filesystem:execute action=cmd
   options={workingDir:"C:/Users/willw/IdeaProjects/<server>", timeout:120,
            maxStdout:2000, maxStderr:1000}
 
+# Filtering command output with Java regex — replaces findstr (which has NO regex OR operator)
+# options.grepPattern applies Java Pattern to stdout lines after execution
+# Supports full regex: | alternation, ^ $ anchors, \. escaping etc.
+groovy-filesystem:execute action=cmd
+  script="jar tf C:/path/to/some.jar"
+  options={grepPattern: "users/item/(messages/MessagesRequestBuilder|calendar/events/EventsRequestBuilder)\\.class$"}
+# Result: only matching lines returned in stdout. Use instead of piping to findstr.
+
 # Git operations via execute action=cmd
 groovy-filesystem:execute action=cmd
   script="git add -A && git commit -m \"message\" && git tag v1.2.3 && git push --tags"

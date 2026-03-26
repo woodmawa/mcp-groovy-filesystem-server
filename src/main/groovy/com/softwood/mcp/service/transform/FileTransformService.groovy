@@ -111,9 +111,9 @@ class FileTransformService extends AbstractFileService {
                 'replace_method'      : ['groovy', 'java', 'kt', 'kts'],
                 'add_method'          : ['groovy', 'java', 'kt', 'kts'],
                 'add_import'          : ['groovy', 'java', 'kt', 'kts'],
-                'replace_section'     : ['groovy', 'java', 'kt', 'kts', 'md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
-                'append_section'      : ['groovy', 'java', 'kt', 'kts', 'md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
-                'insert_after_heading': ['groovy', 'java', 'kt', 'kts', 'md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
+                'replace_section'     : ['md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
+                'append_section'      : ['md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
+                'insert_after_heading': ['md', 'adoc', 'txt', 'yml', 'yaml', 'toml'],
             ] as Map<String, List<String>>
 
             List<String> allowedExts = transformAllowedExts.containsKey(transformName)

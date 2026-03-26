@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.23
+# mcp-groovy-filesystem-server v0.8.28
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,47 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.28 — `execute options.grepPattern` stdout cap fix (2026-03-26)
+
+**`grepPattern` collection-phase cap bug fixed** — v0.8.27 applied the `maxStdout` byte cap during
+stdout streaming, so `grepPattern` received an empty or truncated string on large command outputs
+(e.g. `jar tf` on a 6MB jar). Fixed: when `grepPattern` is set, the collection loop now bypasses the
+cap and streams all lines; the Java Pattern filter is applied post-collection; the filtered result
+is then capped to `maxStdout` for the response. Smoke-tested against `microsoft-graph-6.62.0.jar`
+— 3 exact class matches returned from a 6MB jar listing.
+
+---
+
+### v0.8.27 — `execute options.grepPattern` (2026-03-26)
+
+**`options.grepPattern`** added to all `execute` action variants (`cmd`, `bash`, `powershell`, `python`).
+Java `Pattern` filter applied to stdout lines after process completion. Supports full Java regex
+including `|` alternation, lookaheads, anchors — unlike Windows `findstr` which has no `|` operator.
+Eliminates the need to pipe output to `findstr` or Python for OR-pattern filtering.
+
+```
+execute action=cmd
+  script="jar tf C:/path/to/some.jar"
+  options={grepPattern: "users/item/(messages/MessagesRequestBuilder|calendar/events/EventsRequestBuilder)\\.class$"}
+```
+
+---
+
+### v0.8.26 — `server_transform` file-type guard fix (CODE-DEFECT-016) (2026-03-25)
+
+**`replace_method`, `add_method`, `add_import` now correctly restricted to `.groovy`/`.java` only** —
+previously these transforms could be applied to non-source files, silently injecting literal
+`## Heading` markdown syntax into source files. Guard is now enforced. `add_import` param
+corrected: key is `options.import` (not `options.importStatement`).
+
+---
+
+### v0.8.24–0.8.25 — stability and tooling fixes (2026-03-24–25)
+
+Minor stability improvements, USAGE.md corrections, session-start doc updates.
+
+---
 
 ### v0.8.23 — `file_list action=list` listing hash parity (2026-03-24)
 
@@ -228,7 +269,7 @@ This allows `mcp-agentic-workflow` flow nodes to call:
 |-----------|-----------|------------|
 | `replace_method` | `.groovy`, `.java` only | `options.method`, `options.newBody` |
 | `add_method` | `.groovy`, `.java` only | `options.method`, `options.newBody` |
-| `add_import` | `.groovy`, `.java` only | `options.importStatement` |
+| `add_import` | `.groovy`, `.java` only | `options.import` (bare class or full `import com.example.Foo`) |
 | `replace_section` | `.md`, `.yml`, `.yaml`, `.toml` | `options.heading`, `options.newContent` |
 | `insert_after_heading` | `.md`, `.yml`, `.yaml`, `.toml` | `options.heading`, `options.content` |
 | `append_section` | `.md`, `.yml`, `.yaml`, `.toml` | `options.heading`, `options.content` |
@@ -278,6 +319,10 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.28** | `grepPattern` stdout cap fix — collection now bypasses cap when filter set; filter applied post-collection |
+| **0.8.27** | `execute options.grepPattern` — Java regex filter on stdout, replaces `findstr` OR workarounds |
+| **0.8.26** | `server_transform` file-type guard fix (CODE-DEFECT-016); `add_import` param corrected to `options.import` |
+| **0.8.24–25** | Stability and tooling fixes |
 | **0.8.23** | `file_list action=list` listing hash + `knownHash` short-circuit (parity with `file_read action=list`) |
 | **0.8.22** | `multi_grep` path-guard fix — no `path` param required |
 | **0.8.21** | `file_read action=list` listing hash + `knownHash` short-circuit; `multi_grep` action; `file_list` cache aligned |

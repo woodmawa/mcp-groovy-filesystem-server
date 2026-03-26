@@ -9,7 +9,8 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.23'
+version = '0.8.28'
+// v0.8.25 fixed the create directory under missing parent problem
 // v0.8.23: file_list action=list returns listing_hash + knownHash short-circuit (parity with file_read action=list)
 // v0.8.22: fix multi_grep path guard; SKILL.md/CLAUDE.md/USAGE.md/README doc sync
 // v0.8.22: fix multi_grep path guard — add multi_grep to path-exempt action list so it works without a path param

@@ -34,12 +34,15 @@ class FileContentWriter extends AbstractFileService {
         String body       = content ?: ''
 
         Path target = Paths.get(normalized)
-        if (mkdirs && target.parent) {
+        // createDirectories is also called inside WriteUtils.atomicWrite for reliability on Windows.
+        // Keeping it here too so log.debug confirms the intent before the write.
+        Path parentDir = target.parent
+        if (mkdirs && parentDir != null) {
             try {
-                Files.createDirectories(target.parent)
-                log.debug('doWrite: ensured parent dirs for {}', target.parent)
+                Files.createDirectories(parentDir)
+                log.debug('doWrite: ensured parent dirs for {}', parentDir)
             } catch (IOException e) {
-                log.error('doWrite: failed to create parent directories for {}: {}', target.parent, e.message)
+                log.error('doWrite: failed to create parent directories for {}: {}', parentDir, e.message)
                 return textResponse(requestId, [success: false, error: "Failed to create parent directories: ${e.message}"] as Map<String, Object>)
             }
         }
