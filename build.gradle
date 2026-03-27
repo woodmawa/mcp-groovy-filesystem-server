@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.32'   // v0.8.32: uplift GCU dep 1.1.0 -> 1.1.1 (P4 TaskBinding.getPage + getFiltered)
+version = '0.8.33'   // v0.8.33: replace_section headingStyle=text for arbitrary anchor matching in source files
 // v0.8.31: BUGFIX ServerLifecycleService.startServer() now passes -Dspring.profiles.active=http + -DMCP_MODE=http to ProcessBuilder cmd. Without these, HTTP companion processes inherited/defaulted to stdio profile, binding no port and running as useless duplicate stdio processes.
 // v0.8.25 fixed the create directory under missing parent problem
 // v0.8.23: file_list action=list returns listing_hash + knownHash short-circuit (parity with file_read action=list)

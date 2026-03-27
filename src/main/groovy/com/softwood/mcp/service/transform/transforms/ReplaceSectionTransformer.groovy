@@ -17,15 +17,19 @@ import java.util.regex.Matcher
  *   newContent   — replacement body text (heading line is preserved, not replaced)
  *
  * Optional options:
- *   headingStyle — 'markdown' (default, matches ## Heading) or 'plain' (exact line match)
+ *   headingStyle — 'markdown' (default, matches ## Heading) |
+ *                   'plain'    (exact full-line match) |
+ *                   'text'     (any line containing the anchor string — works on source files,
+ *                               comment blocks, arbitrary text markers)
  *
  * Behaviour:
- *   Finds the heading line, replaces all lines from heading+1 up to (but not including)
- *   the next heading of equal or lesser depth, or EOF.
+ *   Finds the heading/anchor line, replaces all lines from anchor+1 up to (but not including)
+ *   the next heading of equal or lesser depth (markdown), the next occurrence of any
+ *   anchor-style line (plain/text), or EOF.
  *
- * On not-found: hint lists all headings found in the file.
+ * On not-found: hint lists all headings/candidate lines found in the file.
  *
- * v0.8.2
+ * v0.8.2 initial. v0.8.33: added headingStyle=text for arbitrary anchor matching.
  */
 @Component
 @CompileStatic
@@ -51,7 +55,7 @@ class ReplaceSectionTransformer implements FileTransformer {
 
         List<String> lines = new File(normalizedPath).readLines('UTF-8')
 
-        // --- Find the heading line ---
+        // --- Find the heading/anchor line ---
         int headingIdx   = -1
         int headingDepth = 0
         for (int i = 0; i < lines.size(); i++) {
@@ -63,7 +67,14 @@ class ReplaceSectionTransformer implements FileTransformer {
                     headingDepth = m.group(1).length()
                     break
                 }
+            } else if (style == 'text') {
+                // text: any line containing the anchor string (case-sensitive)
+                if (line.contains(heading)) {
+                    headingIdx = i
+                    break
+                }
             } else {
+                // plain: exact full-line match
                 if (line.trim() == heading.trim()) {
                     headingIdx = i
                     break
@@ -75,23 +86,35 @@ class ReplaceSectionTransformer implements FileTransformer {
             List<String> found = []
             for (String line : lines) {
                 Matcher m = (line =~ /^(#+)\s+(.+)$/)
-                if (m.find()) {
-                    found << "${m.group(1)} ${m.group(2).trim()}".toString()
-                }
+                if (m.find()) found << "${m.group(1)} ${m.group(2).trim()}".toString()
             }
             String hint = found
                 ? "Available headings: ${found.join(' | ')}"
-                : 'No headings found in file'
+                : 'No markdown headings found. Try headingStyle=text with a unique anchor string present in the file.'
             return new TransformResult(success: false,
-                error: "Heading '${heading}' not found", hint: hint)
+                error: "Heading/anchor '${heading}' not found (style=${style})", hint: hint)
         }
 
-        // --- Find end of section: next heading of equal/lesser depth, or EOF ---
+        // --- Find end of section ---
         int sectionEnd = lines.size()
         if (style == 'markdown' && headingDepth > 0) {
+            // markdown: next heading of equal or lesser depth
             for (int i = headingIdx + 1; i < lines.size(); i++) {
                 Matcher m = (lines[i] =~ /^(#+)\s/)
                 if (m.find() && m.group(1).length() <= headingDepth) {
+                    sectionEnd = i
+                    break
+                }
+            }
+        } else if (style == 'text' || style == 'plain') {
+            // text/plain: next line that also matches the anchor pattern, or EOF
+            // This lets callers use repeated sentinel comments as section delimiters
+            for (int i = headingIdx + 1; i < lines.size(); i++) {
+                String line = lines[i]
+                boolean nextAnchor = (style == 'text')
+                    ? line.contains(heading)
+                    : (line.trim() == heading.trim())
+                if (nextAnchor) {
                     sectionEnd = i
                     break
                 }
