@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.32
+# mcp-groovy-filesystem-server v0.8.33
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -19,6 +19,18 @@ to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP 
 ---
 
 ## What's New
+
+### v0.8.33 — `replace_section headingStyle=text` (2026-03-27)
+
+**Arbitrary anchor matching added to `replace_section`** — `headingStyle=text` matches any line *containing* the anchor string, enabling section replacement in Groovy/Java source files, comment blocks, and any non-markdown file. Section end is the next line also containing the anchor (sentinel pattern) or EOF. `headingStyle=plain` (exact full-line match) and `headingStyle=markdown` (default, `##` headings only) unchanged.
+
+```
+file_write action=server_transform transform=replace_section
+  heading="// SECTION:my-block"
+  headingStyle=text
+  newContent="..."
+```
+
 
 ### v0.8.29 — `ServerLifecycleService` self-companion spawn fix (2026-03-26)
 
