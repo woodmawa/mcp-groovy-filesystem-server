@@ -12,6 +12,7 @@ import jakarta.annotation.PostConstruct
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import org.springframework.beans.factory.annotation.Autowired
 
 /**
  * ServerLifecycleService - manages HTTP MCP server processes.
@@ -49,8 +50,12 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
     private Map<String, Object> configCache = null
     private final Object configLock = new Object()
 
-    // name -> Process (only processes WE started this session)
-    private final Map<String, Process> managedProcesses = new ConcurrentHashMap<>()
+    @Autowired
+    ServerRegistry registry
+
+    // Kept for backward-compat reference only — registry is the authority
+    @Deprecated
+    private Map<String, Process> getManagedProcesses() { registry.ownedProcesses as Map<String, Process> }
 
     ServerLifecycleService(PathService pathService) {
         super(pathService)
@@ -154,7 +159,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             switch (action) {
                 case 'start_eager': return doStartEager(requestId)
                 case 'ensure'     : return doEnsure(name, requestId)
-                case 'stop'       : return doStop(name, requestId)
+                case 'stop'       : return doStop(name, arguments.force as boolean ?: false, requestId)
                 case 'status'     : return doStatus(arguments, requestId)
                 case 'reload'     : return doReload(requestId)
                 default:
@@ -204,17 +209,17 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         return textResponse(requestId, [action: 'ensure', result: result])
     }
 
-    private McpResponse doStop(String name, Object requestId) {
+    private McpResponse doStop(String name, boolean force, Object requestId) {
         List<Map<String, Object>> results = []
 
         if (name) {
-            results << stopOneServer(name)
+            results << stopOneServer(name, force)
         } else {
-            // Stop all - managed processes first, then any externally-started ones
+            // Stop all — force=true means DT is doing a controlled full shutdown
             Map<String, Object> config = loadConfig()
             List<String> allNames = (config.servers as List<Map>)*.name as List<String>
             // Reverse order: agentic -> orchestrator -> context -> filesystem
-            allNames.reverse().each { String n -> results << stopOneServer(n) }
+            allNames.reverse().each { String n -> results << stopOneServer(n, force) }
         }
 
         writeRuntimeState()
@@ -231,7 +236,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
      * After every kill path, verifies the port is actually free and applies a Windows
      * netstat-based force-kill if the port remains occupied.
      */
-    private Map<String, Object> stopOneServer(String name) {
+    private Map<String, Object> stopOneServer(String name, boolean force = false) {
         Map<String, Object> r = new LinkedHashMap<String, Object>()
         r.put('name', name)
 
@@ -244,9 +249,20 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             if (server) port = server.port as int
         } catch (Exception ignored) {}
 
-        // 1. Try managed process (started by this session)
-        Process proc = managedProcesses.remove(name)
+        // ── Adopted-server guard ────────────────────────────────────────────────
+        // If this session adopted (but did NOT start) the server, refuse unless force=true.
+        // force=true is only set by DT for controlled full-shutdown, never by CC.
+        if (port > 0 && registry.isAdopted(port) && !force) {
+            log.warn('server_lifecycle: stop {} refused — port {} is adopted (owned by another session). Use force=true for full shutdown.', name, port)
+            r.put('stopped', false)
+            r.put('reason', 'adopted-by-other-session — this server was not started by this session; stop it from the owning session (DT) or use force=true')
+            return r
+        }
+
+        // 1. Try managed process (started by THIS session)
+        Process proc = registry.ownedProcesses.get(name) as Process
         if (proc) {
+            registry.unregister(name)
             proc.destroy()
             proc.waitFor(5, TimeUnit.SECONDS)
             if (proc.alive) proc.destroyForcibly()
@@ -264,39 +280,29 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             return r
         }
 
-        // 2. Fall back: find port from config and kill by PID owning that port
-        try {
-            if (port > 0) {
-                if (isPortListening(port)) {
-                    // Try runtime state PID first
-                    boolean killed = killByRuntimePid(name)
-                    if (!killed) {
-                        // Try actuator graceful shutdown
-                        killed = requestActuatorShutdown(port)
-                    }
-                    if (!killed) {
-                        // Final fallback: Windows netstat force-kill
-                        killed = killByPort(port)
-                    }
-                    // Verify port freed
-                    boolean portFree = killed ? waitForPortFree(port, 5) : false
-                    r.put('stopped', killed || portFree)
-                    r.put('method', 'port-kill')
-                    r.put('port', port)
-                    if (!portFree) r.put('warning', 'port still listening after kill attempt')
-                    log.info('server_lifecycle: stopped {} via port-kill (port {}), portFree={}', name, port, portFree)
-                } else {
-                    r.put('stopped', false)
-                    r.put('reason', 'not running')
-                }
-            } else {
+        // 2. Not owned, not adopted — server is unknown to this session.
+        // Refuse unless force=true (DT controlled shutdown).
+        if (port > 0 && isPortListening(port)) {
+            if (!force) {
+                log.warn('server_lifecycle: stop {} refused — port {} is live but not owned by this session', name, port)
                 r.put('stopped', false)
-                r.put('reason', 'unknown server name')
+                r.put('reason', 'not-owned — server on port ' + port + ' was not started by this session; use force=true to override')
+                return r
             }
-        } catch (Exception e) {
-            r.put('stopped', false)
-            r.put('error', sanitize(e.message) as String)
+            // force=true: kill by port (DT shutdown path)
+            log.info('server_lifecycle: force-stopping {} on port {} (not owned but force=true)', name, port)
+            boolean killed = killByPort(port)
+            boolean portFree = killed ? waitForPortFree(port, 5) : false
+            r.put('stopped', killed || portFree)
+            r.put('method', 'force-port-kill')
+            r.put('port', port)
+            if (!portFree) r.put('warning', 'port still listening after force-kill')
+            return r
         }
+
+        // 3. Port not listening — nothing to stop
+        r.put('stopped', false)
+        r.put('reason', 'not running')
         return r
     }
 
@@ -354,8 +360,8 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             boolean portOpen = isPortListening(port)
 
             if (verbose) {
-                boolean managed = managedProcesses.containsKey(serverName)
-                boolean alive   = managed && (managedProcesses[serverName]?.alive ?: false)
+                boolean managed = registry.isOwned(serverName) || registry.isAdopted(port)
+                boolean alive   = registry.isOwned(serverName)
                 Map<String, Object> status = new LinkedHashMap<String, Object>()
                 status.put('name', serverName)
                 status.put('port', port)
@@ -432,6 +438,8 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             cmd.add(javaCmd)
             cmd.add('--enable-native-access=ALL-UNNAMED')
             cmd.add('-XX:+IgnoreUnrecognizedVMOptions')
+            cmd.add('-Dspring.profiles.active=http')   // CRITICAL: must be http not stdio — companion runs as HTTP server
+            cmd.add('-DMCP_MODE=http')                 // belt-and-braces: application.yml reads MCP_MODE env var too
             cmd.add(('-DMCP_HTTP_PORT=' + port) as String)
             cmd.add('-jar')
             cmd.add(jarPath)
@@ -460,7 +468,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             }
 
             Process proc = pb.start()
-            managedProcesses[name] = proc
+            registry.register(name, port, proc)
 
             // Wait up to 10s for port to open
             boolean ready = waitForPort(port, 10)
@@ -488,9 +496,13 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
 
     @PreDestroy
     void stopAllOnShutdown() {
-        if (!managedProcesses.isEmpty()) {
-            log.info("server_lifecycle: stopping {} managed server(s) on shutdown", managedProcesses.size())
-            managedProcesses.each { String name, Process proc ->
+        // Only destroy servers WE started (registry.ownedProcesses).
+        // Adopted servers belong to another session (e.g. DT) and must not be killed here.
+        // This means CC @PreDestroy is always a no-op for DT-owned servers. ✓
+        Map<String, Process> owned = new LinkedHashMap<>(registry.ownedProcesses)
+        if (!owned.isEmpty()) {
+            log.info("server_lifecycle: stopping {} owned server(s) on shutdown", owned.size())
+            owned.each { String name, Process proc ->
                 try {
                     proc.destroy()
                     proc.waitFor(5, TimeUnit.SECONDS)
@@ -500,8 +512,10 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
                     log.warn("server_lifecycle: error stopping {} on shutdown: {}", name, e.message)
                 }
             }
-            managedProcesses.clear()
+            registry.clearOwned()   // clear only owned; leave adopted metadata
             writeRuntimeState()
+        } else {
+            log.debug('server_lifecycle: @PreDestroy — no owned servers to stop (CC session or clean state)')
         }
     }
 
@@ -542,6 +556,25 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
     private void killStalePidIfPresent(String name, int port) {
         if (!isPortListening(port)) return  // nothing on the port — nothing to evict
 
+        // ── ServerRegistry guard ──────────────────────────────────────────────
+        // If this session owns or has adopted the process on this port, it is NOT
+        // stale — it is the live server. Do NOT kill it.
+        if (registry.isKnown(name, port)) {
+            log.info('server_lifecycle: port {} is owned/adopted by registry for {} — skipping stale-kill', port, name)
+            return
+        }
+
+        // ── Port is live but NOT in registry — verify via MCP ping ───────────
+        // If it responds to MCP initialize it's a healthy foreign process we can adopt.
+        String sid = registry.pingMcp(port)
+        if (sid) {
+            log.info('server_lifecycle: port {} has healthy MCP server for {} — adopting (no kill)', port, name)
+            registry.adopt(name, port)
+            return
+        }
+
+        // ── Unhealthy process on port — evict it ──────────────────────────────
+        log.info('server_lifecycle: port {} has unresponsive process for {} — evicting', port, name)
         boolean killedByPid = false
         try {
             File runtimeFile = new File("${claudeSyncPath}/${RUNTIME_FILENAME}")
@@ -553,8 +586,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
                     long pid = entry.pid as long
                     Optional<ProcessHandle> ph = ProcessHandle.of(pid)
                     if (ph.isPresent() && ph.get().isAlive()) {
-                        log.info('server_lifecycle: evicting stale {} process PID {} holding port {}',
-                                 name, pid, port)
+                        log.info('server_lifecycle: evicting stale {} process PID {} holding port {}', name, pid, port)
                         ph.get().destroyForcibly()
                         Thread.sleep(800)
                         killedByPid = !ph.get().isAlive()
@@ -566,16 +598,14 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         }
 
         // If port still occupied after PID kill (or PID unknown), apply Windows netstat fallback
-        if (!killedByPid || isPortListening(port)) {
-            if (isPortListening(port)) {
-                log.info('server_lifecycle: port {} still occupied — applying netstat force-kill for {}', port, name)
-                boolean forceKilled = killByPort(port)
-                if (forceKilled) {
-                    Thread.sleep(500)
-                    log.info('server_lifecycle: netstat force-kill on port {} succeeded', port)
-                } else {
-                    log.warn('server_lifecycle: could not evict process on port {} for {}', port, name)
-                }
+        if (!killedByPid && isPortListening(port)) {
+            log.info('server_lifecycle: port {} still occupied — applying netstat force-kill for {}', port, name)
+            boolean forceKilled = killByPort(port)
+            if (forceKilled) {
+                Thread.sleep(500)
+                log.info('server_lifecycle: netstat force-kill on port {} succeeded', port)
+            } else {
+                log.warn('server_lifecycle: could not evict process on port {} for {}', port, name)
             }
         }
     }
@@ -583,7 +613,7 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
     private void writeRuntimeState() {
         try {
             List<Map<String, Object>> running = []
-            managedProcesses.each { String name, Process proc ->
+            registry.ownedProcesses.each { String name, Process proc ->
                 Map<String, Object> entry = new LinkedHashMap<String, Object>()
                 entry.put('name', name)
                 entry.put('pid', proc.pid())

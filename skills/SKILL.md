@@ -78,6 +78,13 @@ file_read action=read path=<file> options={force:true}           # override, use
 
 ### `file_write action=server_transform` — correct param names
 
+**REQUIRED on every server_transform call — missing either causes immediate error:**
+- `options.expectedHash` — read the file first, copy `file_content_hash` from the response
+- `options.transform` — the transform name (see examples below)
+Never call server_transform with `options={}` or without these two keys.
+Only valid on .groovy/.java/.kt/.kts (AST transforms) or .md/.yml/.txt (section transforms).
+For arbitrary text swaps in any file — use `multi_replace` instead.
+
 ```
 # replace_method: body goes in options.newBody — NOT content
 file_write action=server_transform path=<file>

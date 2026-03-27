@@ -9,7 +9,8 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.29'
+version = '0.8.32'   // v0.8.32: uplift GCU dep 1.1.0 -> 1.1.1 (P4 TaskBinding.getPage + getFiltered)
+// v0.8.31: BUGFIX ServerLifecycleService.startServer() now passes -Dspring.profiles.active=http + -DMCP_MODE=http to ProcessBuilder cmd. Without these, HTTP companion processes inherited/defaulted to stdio profile, binding no port and running as useless duplicate stdio processes.
 // v0.8.25 fixed the create directory under missing parent problem
 // v0.8.23: file_list action=list returns listing_hash + knownHash short-circuit (parity with file_read action=list)
 // v0.8.22: fix multi_grep path guard; SKILL.md/CLAUDE.md/USAGE.md/README doc sync
@@ -81,7 +82,7 @@ dependencies {
     implementation 'org.apache.poi:poi-ooxml:5.3.0'
 
     // GroovyConcurrentUtils - XlsxAdapter/DocxAdapter/PptxAdapter DSL bridge
-    implementation files('../GroovyConcurrentUtils/build/libs/GroovyConcurrentUtils-1.0-SNAPSHOT.jar')
+    implementation 'org.softwood:GroovyConcurrentUtils:1.1.1'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

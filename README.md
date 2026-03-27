@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.29
+# mcp-groovy-filesystem-server v0.8.32
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -256,7 +256,7 @@ The filesystem server runs as a stdio subprocess. All Claude tool calls go throu
       "-Dspring.profiles.active=stdio",
       "-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects, ...",
       "-Dmcp.script.enable-python=true",
-      "-jar", "C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-0.8.22.jar"
+      "-jar", "C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-0.8.32.jar"
     ]
   }
 }
@@ -315,7 +315,7 @@ Located at `C:/Users/willw/claude-sync/mcp-http-servers.json`.
 ```powershell
 cd C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
 ./gradlew.bat bootJar
-# Output: build/libs/mcp-groovy-filesystem-server-0.8.23.jar
+# Output: build/libs/mcp-groovy-filesystem-server-0.8.32.jar
 
 # Use the mcp-deploy:1.6 flow template instead (handles all 5 config updates + restart)
 ```
@@ -333,6 +333,9 @@ Update all five configs on every version bump (five-config rule):
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.32** | GCU dep uplift 1.1.0 → 1.1.1 (`TaskBinding.getPage`/`pageKeys` paging API) |
+| **0.8.31** | BUGFIX `ServerLifecycleService.startServer()` now passes `-Dspring.profiles.active=http` + `-DMCP_MODE=http` to HTTP companion ProcessBuilder — without these, companions defaulted to stdio profile, bound no port, ran as useless duplicates |
+| **0.8.30** | Intermediate stability fix |
 | **0.8.29** | CRITICAL: `ServerLifecycleService` self-companion spawn fix — stdio no longer crashes on port 8081 conflict |
 | **0.8.28** | `grepPattern` stdout cap fix — collection now bypasses cap when filter set; filter applied post-collection |
 | **0.8.27** | `execute options.grepPattern` — Java regex filter on stdout, replaces `findstr` OR workarounds |
