@@ -48,6 +48,10 @@ class ContextServerClient {
     @Value('${mcp.context-server.read-timeout-ms:500}')
     int readTimeoutMs
 
+    /** Fallback for MCPB/stdio mode: queues reindex requests to shared SQLite when HTTP is unavailable. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    FilesystemTelemetryService telemetryService
+
     private static final int MAX_PERSIST_ENTRIES = 150
 
     private final ExecutorService asyncWriter = Executors.newSingleThreadExecutor { Runnable r ->
@@ -365,6 +369,12 @@ class ContextServerClient {
                 } finally { conn.disconnect() }
             } catch (Exception e) {
                 log.debug('reindexFile async failed for {}: {}', path, e.message)
+                // MCPB/stdio fallback: HTTP unreachable, queue via shared SQLite instead
+                // Context server drains pending_reindex on every context_lifecycle action=start
+                if (telemetryService) {
+                    telemetryService.queueReindexAsync(path)
+                    log.debug('reindexFile: queued {} via pending_reindex (HTTP unavailable)', path)
+                }
             }
         } as Runnable)
     }

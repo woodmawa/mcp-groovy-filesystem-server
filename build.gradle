@@ -9,7 +9,9 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.33'   // v0.8.33: replace_section headingStyle=text for arbitrary anchor matching in source files
+version = '0.8.35'   // v0.8.35: (1) FileReplaceService three-pass Unicode normalisation: NFC+NFKC+box-drawing chars. (2) Fix pending_reindex queue silently broken: mcp.usage.db-path was missing from fsJvmArgs in generateMcpbManifest causing FilesystemTelemetryService to no-op. Added to fsJvmArgs. See practices #214, #215, #216.
+// v0.8.35: FileReplaceService replace+multi_replace: add NFKC normalisation fallback after NFC (handles em-dash/en-dash variants, smart quotes). Fix contradictory error guidance -- patch is now correctly recommended when oldText contains non-ASCII. See practice #214.
+// v0.8.33: replace_section headingStyle=text for arbitrary anchor matching in source files
 // v0.8.31: BUGFIX ServerLifecycleService.startServer() now passes -Dspring.profiles.active=http + -DMCP_MODE=http to ProcessBuilder cmd. Without these, HTTP companion processes inherited/defaulted to stdio profile, binding no port and running as useless duplicate stdio processes.
 // v0.8.25 fixed the create directory under missing parent problem
 // v0.8.23: file_list action=list returns listing_hash + knownHash short-circuit (parity with file_read action=list)
@@ -99,4 +101,262 @@ tasks.named('test') {
 
 tasks.named('bootRun') {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+// =============================================================================
+// MCPB Desktop Extension Packaging
+// =============================================================================
+// Produces a .mcpb (MCP Bundle) file for installation in Claude Desktop via the
+// extension registry — eliminating reliance on the hand-edited mcpServers JSON
+// block that Cowork clobbers on restart.
+//
+// Tasks:
+//   generateMcpbManifest  — writes manifest.json into build/mcpb-staging/
+//   stageJarForMcpb       — copies bootJar into build/mcpb-staging/server/
+//   packageMcpbThin       — ZIPs staging dir → build/distributions/*.mcpb
+//   copyMcpbToSync        — copies thin .mcpb to claude-sync/extensions/
+//   installMcpbLocal      — installs directly into DT extension cache (requires restart)
+//
+// Usage:
+//   ./gradlew packageMcpbThin installMcpbLocal   — full build + install into DT
+//   ./gradlew copyMcpbToSync                     — copy to claude-sync for manual install
+// =============================================================================
+
+import groovy.json.JsonOutput
+
+def mcpbStagingDir   = layout.buildDirectory.dir('mcpb-staging').get().asFile
+def mcpbOutputDir    = layout.buildDirectory.dir('distributions').get().asFile
+def claudeSyncExtDir = file('C:/Users/willw/claude-sync/extensions')
+def claudeSyncDir    = file('C:/Users/willw/claude-sync')
+
+// JVM args — mirrors current DT config args exactly
+def fsJvmArgs = [
+    '--enable-native-access=ALL-UNNAMED',
+    '-XX:+IgnoreUnrecognizedVMOptions',
+    '-Dspring.profiles.active=stdio',
+    '-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects, C:/Users/willw/claude, C:/Users/willw/AppData/Roaming/Claude, C:/Users/willw/claude-sync, C:/Users/willw/.claude, C:/Users/willw/alumniserve, C:/Users/willw/OneDrive',
+    '-Dmcp.script.enable-python=true',
+    '-Dmcp.script.python-home=C:/python314',
+    // Required for FilesystemTelemetryService and pending_reindex queue (ontology reindex fallback)
+    '-Dmcp.usage.db-path=C:/Users/willw/claude-sync/best_practices.db'
+]
+// ─── generateMcpbManifest ────────────────────────────────────────────────────
+
+tasks.register('generateMcpbManifest') {
+    group       = 'mcpb'
+    description = 'Generates manifest.json for the thin MCPB bundle into build/mcpb-staging/'
+
+    dependsOn bootJar
+
+    inputs.property('version', project.version)
+    outputs.file("${mcpbStagingDir}/manifest.json")
+
+    doFirst {
+        mcpbStagingDir.mkdirs()
+        new File(mcpbStagingDir, 'server').mkdirs()
+    }
+
+    doLast {
+        String dxtVersion = project.findProperty('mcpb.dxt.version')
+            ?: { throw new GradleException("mcpb.dxt.version not set in gradle.properties") }()
+
+        String jarName = "${project.name}-${project.version}.jar"
+        List<String> args = fsJvmArgs + [
+            '-jar',
+            '${__dirname}/server/' + jarName
+        ]
+
+        Map manifest = [
+            dxt_version : dxtVersion,
+            name        : project.name,
+            version     : project.version as String,
+            description : 'Filesystem MCP server — file read/write, search, structure, server-side transforms, server lifecycle management',
+            author      : [
+                name  : 'Will Woodman',
+                email : 'willw@softwood.co.uk'
+            ],
+            server      : [
+                type        : 'binary',
+                entry_point : 'server/' + jarName,
+                mcp_config  : [
+                    command : 'java',
+                    args    : args
+                ]
+            ],
+            compatibility : [
+                platforms : ['win32']
+            ],
+            tools : [
+                [name: 'file_read',       description: 'Read files and directories — read, head, tail, range, grep, structure, list and more'],
+                [name: 'file_write',      description: 'Write and modify files — write, append, patch, multi_replace, server_transform'],
+                [name: 'file_search',     description: 'Search file contents or filenames by regex'],
+                [name: 'server_lifecycle', description: 'Manage HTTP MCP server processes — start, stop, status, ensure, reload']
+            ]
+        ]
+
+        def manifestFile = new File(mcpbStagingDir, 'manifest.json')
+        manifestFile.text = JsonOutput.prettyPrint(JsonOutput.toJson(manifest))
+        logger.lifecycle("MCPB: manifest.json written → ${manifestFile}")
+    }
+}
+
+// ─── stageJarForMcpb ─────────────────────────────────────────────────────────
+
+tasks.register('stageJarForMcpb', Copy) {
+    group       = 'mcpb'
+    description = 'Copies the bootJar into build/mcpb-staging/server/'
+
+    dependsOn bootJar, generateMcpbManifest
+
+    from(bootJar.outputs.files)
+    into("${mcpbStagingDir}/server")
+}
+
+// ─── packageMcpbThin ─────────────────────────────────────────────────────────
+
+tasks.register('packageMcpbThin', Zip) {
+    group       = 'mcpb'
+    description = 'Packages a thin MCPB bundle (JAR only — requires java on PATH/JAVA_HOME)'
+
+    dependsOn stageJarForMcpb
+
+    from(mcpbStagingDir)
+    destinationDirectory = mcpbOutputDir
+    archiveFileName      = "${project.name}-${project.version}-thin.mcpb"
+
+    doLast {
+        logger.lifecycle("MCPB thin bundle → ${mcpbOutputDir}/${archiveFileName.get()}")
+    }
+}
+
+// ─── copyMcpbToSync ──────────────────────────────────────────────────────────
+
+tasks.register('copyMcpbToSync', Copy) {
+    group       = 'mcpb'
+    description = 'Copies the thin .mcpb to C:/Users/willw/claude-sync/extensions/ for manual DT install'
+
+    dependsOn packageMcpbThin
+
+    from(mcpbOutputDir) {
+        include "${project.name}-${project.version}-thin.mcpb"
+    }
+    into(claudeSyncExtDir)
+
+    doFirst  { claudeSyncExtDir.mkdirs() }
+    doLast   { logger.lifecycle("MCPB copied to claude-sync/extensions/ — double-click to install in DT") }
+}
+
+// ─── killHttpCompanions ───────────────────────────────────────────────────────
+// Reads mcp-http-servers-runtime.json and kills HTTP companion PIDs only.
+// Critically: reads stdioPid from the file and NEVER kills it.
+// Safe to run while DT is open -- only HTTP child processes are affected.
+
+tasks.register('killHttpCompanions') {
+    group       = 'mcpb'
+    description = 'Kill HTTP companion processes (from runtime JSON) without touching stdio JVMs'
+
+    doLast {
+        def runtimeFile = new File(claudeSyncDir, 'mcp-http-servers-runtime.json')
+        if (!runtimeFile.exists()) {
+            logger.lifecycle('killHttpCompanions: no runtime file found, nothing to kill')
+            return
+        }
+        def slurper = new groovy.json.JsonSlurper()
+        def state   = slurper.parse(runtimeFile) as Map
+
+        // Build protected PID set from EITHER format:
+        //   v1 (old): state.stdioPid (Long)  -- written by ServerLifecycleService pre-0.8.34
+        //   v2 (new): state.stdioJvmPids (Map<name,pid>) -- written by ServerLifecycleService 0.8.34+
+        //             OR per-entry srv.stdioPid -- written by ServerLifecycleService 0.8.34+
+        Set<Long> protectedPids = new HashSet<Long>()
+        if (state.stdioPid) protectedPids.add(state.stdioPid as Long)
+        if (state.stdioJvmPids instanceof Map) {
+            (state.stdioJvmPids as Map).values().each { protectedPids.add(it as Long) }
+        }
+
+        List servers = state.managedServers as List ?: []
+        if (!servers) { logger.lifecycle('killHttpCompanions: no managed servers in runtime file'); return }
+
+        servers.each { srv ->
+            long pid = (srv.pid as Long) ?: 0L
+            if (pid <= 0) { logger.lifecycle("killHttpCompanions: ${srv.name} has no PID, skipping"); return }
+            // Also collect per-entry stdioPid (v1 server_lifecycle format)
+            if (srv.stdioPid) protectedPids.add(srv.stdioPid as Long)
+            if (protectedPids.contains(pid)) {
+                logger.error("killHttpCompanions: REFUSING to kill PID ${pid} for ${srv.name} -- is a protected stdio JVM")
+                return
+            }
+            try {
+                def ph = ProcessHandle.of(pid)
+                if (ph.isPresent() && ph.get().isAlive()) {
+                    ph.get().destroyForcibly()
+                    logger.lifecycle("killHttpCompanions: killed ${srv.name} HTTP companion PID ${pid} (jar=${srv.jar ?: 'unknown'})")
+                } else {
+                    logger.lifecycle("killHttpCompanions: ${srv.name} PID ${pid} already dead")
+                }
+            } catch (Exception e) {
+                logger.warn("killHttpCompanions: failed to kill ${srv.name} PID ${pid}: ${e.message}")
+            }
+        }
+    }
+}
+
+// ─── installMcpbLocal ────────────────────────────────────────────────────────
+// Installs manifest.json + jar directly into the DT extension cache directory.
+// With version bump: new jar installs alongside locked old jar (different filename).
+// Old jar deleted on next DT restart. Safe to run while DT is open IF version changed.
+// Requires a DT restart to pick up changes.
+
+tasks.register('installMcpbLocal') {
+    group       = 'mcpb'
+    description = 'Kills HTTP companions, installs jar+manifest into DT extension cache (requires DT restart)'
+
+    dependsOn stageJarForMcpb
+
+    doFirst {
+        // Kill HTTP companion processes before install so their jar handles are released.
+        // This does NOT kill the stdio JVM -- stdioPid guard in killHttpCompanions prevents it.
+        tasks.named('killHttpCompanions').get().actions.each { it.execute(tasks.named('killHttpCompanions').get()) }
+    }
+
+    doLast {
+        def dtExtDir  = file("$System.env.APPDATA/Claude/Claude Extensions/local.mcpb.will-woodman.${project.name}")
+        def serverDir = new File(dtExtDir, 'server')
+        serverDir.mkdirs()
+        serverDir.listFiles()?.each { f ->
+            if (f.name.endsWith('.jar')) {
+                if (f.delete()) { logger.lifecycle("MCPB: removed stale jar ${f.name}") }
+                else { logger.warn("MCPB: WARNING — could not delete ${f.name} (close DT before deploying)") }
+            }
+        }
+        java.nio.file.Files.copy(new File(mcpbStagingDir, 'manifest.json').toPath(),
+            new File(dtExtDir, 'manifest.json').toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        String jarName = "${project.name}-${project.version}.jar"
+        java.nio.file.Files.copy(new File(mcpbStagingDir, "server/${jarName}").toPath(),
+            new File(serverDir, jarName).toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        logger.lifecycle("MCPB: install complete — restart DT to activate v${project.version}")
+
+        // Update extensions-installations.json (DT metadata cache — practice #190)
+        def installsFile = new File("$System.env.APPDATA/Claude/extensions-installations.json")
+        try {
+            def mcpbFile = new File(mcpbOutputDir, "${project.name}-${project.version}-thin.mcpb")
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            mcpbFile.eachByte(8192) { byte[] buf, int len -> digest.update(buf, 0, len) }
+            String mcpbHash = digest.digest().collect { String.format('%02x', it & 0xff) }.join('')
+            def slurper = new groovy.json.JsonSlurper()
+            Map installs = installsFile.exists() ? (slurper.parse(installsFile) as Map) : [extensions: [:]]
+            if (!installs.extensions) installs.extensions = [:]
+            def manifest = slurper.parse(new File(mcpbStagingDir, 'manifest.json'))
+            String extId = "local.mcpb.will-woodman.${project.name}"
+            installs.extensions[extId] = [
+                id: extId, version: project.version as String, hash: mcpbHash,
+                installedAt: new Date().format("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"),
+                manifest: manifest, signatureInfo: [status: 'unsigned'], source: 'local'
+            ]
+            installsFile.text = groovy.json.JsonOutput.toJson(installs)
+            logger.lifecycle("MCPB: updated extensions-installations.json -> v${project.version}")
+        } catch (Exception e) {
+            logger.warn("MCPB: WARNING — could not update extensions-installations.json: ${e.message}")
+        }
+    }
 }

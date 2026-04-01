@@ -252,6 +252,7 @@ class FilesystemTelemetryService {
                     log.debug('telemetry column {} already present', col)
                 }
             }
+            ensurePendingReindexTable()
         } catch (Exception e) {
             log.debug('FilesystemTelemetryService: DB connection failed (non-fatal): {}', e.message)
         }
@@ -296,5 +297,54 @@ class FilesystemTelemetryService {
         } catch (Exception e) {
             return 'hasherr'
         }
+    }
+
+    /**
+     * Creates pending_reindex table in shared SQLite if absent.
+     * Called from init() so the table is always ready when FS starts.
+     */
+    void ensurePendingReindexTable() {
+        if (!dbPath) return
+        try {
+            withConnection { conn ->
+                conn.createStatement().execute('''
+                    CREATE TABLE IF NOT EXISTS pending_reindex (
+                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_path TEXT NOT NULL,
+                        queued_at TEXT DEFAULT (datetime('now')),
+                        cluster   TEXT
+                    )''')
+                conn.createStatement().execute(
+                    'CREATE INDEX IF NOT EXISTS idx_pending_reindex_path ON pending_reindex(file_path)')
+            }
+            log.debug('FilesystemTelemetryService: pending_reindex table ready')
+        } catch (Exception e) {
+            log.debug('FilesystemTelemetryService: ensurePendingReindexTable failed (non-fatal): {}', e.message)
+        }
+    }
+
+    /**
+     * Queues a file path for ontology reindex via the shared SQLite pending_reindex table.
+     * Called by ContextServerClient when the HTTP path to context server is unavailable (MCPB/stdio mode).
+     * The context server drains this table on every context_lifecycle action=start.
+     * Only queues .groovy and .java files — skips all others.
+     */
+    void queueReindexAsync(String filePath) {
+        if (!dbPath || !filePath) return
+        if (!filePath.endsWith('.groovy') && !filePath.endsWith('.java')) return
+        asyncWriter.submit({
+            try {
+                withConnection { conn ->
+                    def ps = conn.prepareStatement(
+                        'INSERT OR IGNORE INTO pending_reindex(file_path) VALUES(?)')
+                    ps.setString(1, filePath)
+                    ps.executeUpdate()
+                    ps.close()
+                    log.debug('queueReindex: queued {}', filePath)
+                }
+            } catch (Exception e) {
+                log.debug('queueReindex failed (non-fatal): {}', e.message)
+            }
+        } as Runnable)
     }
 }

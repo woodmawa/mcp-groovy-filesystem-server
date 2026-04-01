@@ -327,19 +327,84 @@ Located at `C:/Users/willw/claude-sync/mcp-http-servers.json`.
 ```powershell
 cd C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server
 ./gradlew.bat bootJar
-# Output: build/libs/mcp-groovy-filesystem-server-0.8.32.jar
-
-# Use the mcp-deploy:1.6 flow template instead (handles all 5 config updates + restart)
 ```
 
-Update all five configs on every version bump (five-config rule):
-- `build.gradle` version string
-- `claude-sync/mcp-http-servers.json`
-- `AppData/Roaming/Claude/claude_desktop_config.json`
-- `claude-sync/claude_code_mcp_config.json`
-- `claude-sync/regression-test.py` (DEPLOY-05/07 read from mcp-http-servers.json automatically — no manual update needed)
+---
+
+## Deployment — MCPB Extension (preferred)
+
+All MCP servers are deployed as **Claude Desktop Extensions** (`.mcpb` bundles). This is the
+preferred approach — it aligns with Anthropic's direction and eliminates the Cowork config-clobber
+bug where Cowork overwrites `claude_desktop_config.json` on restart, dropping server entries.
+
+`mcpServers` in `claude_desktop_config.json` is now **empty**. All servers load via the DT
+extension registry exclusively.
+
+### Build and install
+
+```powershell
+# Build bundle and install directly into DT extension cache
+./gradlew packageMcpbThin installMcpbLocal
+# Then restart Claude Desktop to activate the new version
+```
+
+Installs to:
+```
+%APPDATA%/Claude/Claude Extensions/local.mcpb.will-woodman.mcp-groovy-filesystem-server/
+  manifest.json
+  server/mcp-groovy-filesystem-server-<version>.jar
+```
+
+Stale jars from previous versions are automatically removed before the new jar is copied.
+
+### Schema version
+
+```properties
+# gradle.properties — bump when Anthropic changes the DXT spec, not on every release
+mcpb.dxt.version=0.1
+```
+
+### Tool prefix after MCPB migration
+
+| Mode | Prefix |
+|------|--------|
+| stdio `mcpServers` entry (legacy) | `groovy-filesystem` |
+| MCPB extension (current) | `mcp-groovy-filesystem-server` |
+
+Always call `tool_search` at session start if tools are not found.
 
 ---
+
+## Fallback — stdio config (emergency only)
+
+If the extension fails to load, temporarily restore the stdio entry in
+`%APPDATA%/Roaming/Claude/claude_desktop_config.json`:
+
+```json
+"groovy-filesystem": {
+  "command": "C:/Program Files/Common Files/Oracle/Java/javapath/java.exe",
+  "args": [
+    "--enable-native-access=ALL-UNNAMED",
+    "-XX:+IgnoreUnrecognizedVMOptions",
+    "-Dspring.profiles.active=stdio",
+    "-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects, C:/Users/willw/claude, C:/Users/willw/AppData/Roaming/Claude, C:/Users/willw/claude-sync, C:/Users/willw/.claude, C:/Users/willw/alumniserve, C:/Users/willw/OneDrive",
+    "-Dmcp.script.enable-python=true",
+    "-jar", "C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-0.8.33.jar"
+  ]
+}
+```
+
+Remove this entry again once the extension is restored.
+
+---
+
+## Five-config rule — files updated on every version bump
+
+- `build.gradle` version string
+- `claude-sync/mcp-http-servers.json`
+- `claude-sync/claude_code_mcp_config.json`
+- `claude-sync/regression-test.py`
+- Re-run `./gradlew packageMcpbThin installMcpbLocal` + restart DT
 
 ## Version History
 

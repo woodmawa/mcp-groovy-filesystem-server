@@ -146,16 +146,21 @@ Developer toolchain. Actions:
                                   int timeout, Object requestId) {
         List<String> allowed = ['build', 'test', 'clean', 'compileGroovy', 'compileJava',
                                 'bootRun', 'bootJar', 'jar', 'dependencies', 'tasks',
-                                'check', 'assemble', 'publish', 'wrapper']
+                                'check', 'assemble', 'publish', 'wrapper',
+                                'packageMcpbThin', 'installMcpbLocal', 'copyMcpbToSync',
+                                'generateMcpbManifest', 'stageJarForMcpb']
         if (!subcommand) return McpResponse.error(requestId, -32602, "subcommand required for gradle. Allowed: ${allowed.join(', ')}")
-        if (!(subcommand in allowed)) return McpResponse.error(requestId, -32602, "gradle task '${subcommand}' not allowed. Allowed: ${allowed.join(', ')}")
+        // Support multi-task subcommands e.g. 'packageMcpbThin installMcpbLocal' - validate each token
+        List<String> tasks = subcommand.trim().split(/\s+/).toList()
+        List<String> rejected = tasks.findAll { !(it in allowed) }
+        if (rejected) return McpResponse.error(requestId, -32602, "gradle task(s) not allowed: ${rejected.join(', ')}. Allowed: ${allowed.join(', ')}")
 
         // Use gradlew wrapper if available, fall back to system gradle
         boolean isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
         File wrapperFile  = new File(workingDir, isWindows ? 'gradlew.bat' : 'gradlew')
         String gradleCmd  = wrapperFile.exists() ? wrapperFile.absolutePath : 'gradle'
 
-        List<String> cmd = [gradleCmd, subcommand, '--no-daemon'] + args
+        List<String> cmd = [gradleCmd] + tasks + ['--no-daemon'] + args
         return runTool(cmd, workingDir, timeout, "gradle ${subcommand}", requestId)
     }
 

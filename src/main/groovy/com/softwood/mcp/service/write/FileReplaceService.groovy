@@ -35,8 +35,32 @@ class FileReplaceService extends AbstractFileService {
     }
 
     // -----------------------------------------------------------------------
+    // Unicode normalisation helper
+    // -----------------------------------------------------------------------
+
+    /**
+     * Replaces box-drawing characters (U+2500-U+257F) with ASCII equivalents.
+     * These appear in Groovy/Gradle files as decorative comment separators.
+     * U+2500 (horizontal) -> '-', U+2502 (vertical) -> '|', others -> '-'.
+     * Purely cosmetic normalisation -- safe to apply before string matching.
+     */
+    private static String normalizeBoxDrawing(String s) {
+        if (!s) return s
+        StringBuilder sb = new StringBuilder(s.length())
+        s.codePoints().forEach { int cp ->
+            if (cp >= 0x2500 && cp <= 0x257F) {
+                sb.append(cp == 0x2502 || cp == 0x2503 || cp == 0x2551 ? '|' : '-')
+            } else {
+                sb.appendCodePoint(cp)
+            }
+        }
+        return sb.toString()
+    }
+
+    // -----------------------------------------------------------------------
     // replace
     // -----------------------------------------------------------------------
+
 
     McpResponse doReplace(String path, Map<String, Object> options, Object requestId) {
         String oldText      = options.oldText as String
@@ -77,22 +101,42 @@ class FileReplaceService extends AbstractFileService {
 
         int count = WriteUtils.countOccurrences(current, oldText)
 
-        // If no match, try Unicode NFC normalization (handles em-dash, smart quotes, etc.)
+        // If no match, try progressive Unicode normalisation: NFC -> NFKC -> box-drawing chars
         boolean usedNormalized = false
         if (count == 0) {
+            // Pass 1: NFC - canonical decomposition + canonical composition
             String nfcContent = Normalizer.normalize(current, Normalizer.Form.NFC)
             String nfcOldText = Normalizer.normalize(oldText, Normalizer.Form.NFC)
-            int nfcCount = WriteUtils.countOccurrences(nfcContent, nfcOldText)
-            if (nfcCount == 1) {
-                // NFC normalization resolved the mismatch - use normalized versions
-                current = nfcContent
-                oldText = nfcOldText
+            if (WriteUtils.countOccurrences(nfcContent, nfcOldText) == 1) {
+                current = nfcContent; oldText = nfcOldText
                 newText = Normalizer.normalize(newText, Normalizer.Form.NFC)
-                count = 1
-                usedNormalized = true
-                log.debug('replace: NFC normalization resolved match for {}', normalized)
+                count = 1; usedNormalized = true
+                log.debug('replace: NFC normalisation resolved match for {}', normalized)
             }
         }
+        if (count == 0) {
+            // Pass 2: NFKC - compatibility decomposition (en/em dash variants, smart quotes)
+            String nfkcContent = Normalizer.normalize(current, Normalizer.Form.NFKC)
+            String nfkcOldText = Normalizer.normalize(oldText, Normalizer.Form.NFKC)
+            if (WriteUtils.countOccurrences(nfkcContent, nfkcOldText) == 1) {
+                current = nfkcContent; oldText = nfkcOldText
+                newText = Normalizer.normalize(newText, Normalizer.Form.NFKC)
+                count = 1; usedNormalized = true
+                log.debug('replace: NFKC normalisation resolved match for {}', normalized)
+            }
+        }
+        if (count == 0) {
+            // Pass 3: box-drawing chars (U+2500-U+257F -> ASCII dashes/pipes)
+            String bdContent = normalizeBoxDrawing(current)
+            String bdOldText = normalizeBoxDrawing(oldText)
+            if (WriteUtils.countOccurrences(bdContent, bdOldText) == 1) {
+                current = bdContent; oldText = bdOldText
+                newText = normalizeBoxDrawing(newText)
+                count = 1; usedNormalized = true
+                log.debug('replace: box-drawing normalisation resolved match for {}', normalized)
+            }
+        }
+
 
         if (count == 0) {
             String firstLine = oldText.trim().tokenize('\n').first()?.trim() ?: ''
@@ -111,7 +155,8 @@ class FileReplaceService extends AbstractFileService {
             }
             Map<String, Object> err = [
                 action: 'replace', success: false,
-                error: 'oldText not found in file. Check exact whitespace/newlines. NOTE: replace matches exact bytes \u2014 for strings containing non-ASCII characters (em-dashes, smart quotes, etc.) use patch with explicit startLine/endLine instead. IMPORTANT: Do NOT fall back to patch \u2014 file content may have drifted. Re-read the target area with file_read action=range or action=get_method to get current content and content_hash, then retry replace with the exact current text and expectedHash.',
+                error: 'oldText not found in file (NFC+NFKC+box-drawing normalisation tried). RECOVERY: (1) Re-read target lines with file_read action=range or action=get_method to get EXACT current text+hash. (2) If oldText contains non-ASCII (em-dashes, box-drawing etc) use action=patch with startLine/endLine -- immune to encoding issues. (3) Retry replace with exact current text + current expectedHash.',
+
                 line_endings: hasCrLf ? 'CRLF' : 'LF',
                 oldText_first_line: firstLine.take(120)
             ] as Map<String, Object>
@@ -207,12 +252,28 @@ class FileReplaceService extends AbstractFileService {
             if (!oldText) { validationErrors << ("Entry ${i}: missing oldText" as String); return }
             int count = WriteUtils.countOccurrences(snapshot, oldText)
             if (count == 0) {
-                // Try NFC normalization
+                // Pass 1: NFC
                 if (nfcSnapshot == null) nfcSnapshot = Normalizer.normalize(snapshot, Normalizer.Form.NFC)
                 String nfcOld = Normalizer.normalize(oldText, Normalizer.Form.NFC)
                 int nfcCount = WriteUtils.countOccurrences(nfcSnapshot, nfcOld)
                 if (nfcCount == 1) { usedNormalized = true; count = 1 }
                 else if (nfcCount > 1) { count = nfcCount }
+            }
+            if (count == 0) {
+                // Pass 2: NFKC (en/em dash variants, smart quotes)
+                String nfkcSnap = Normalizer.normalize(snapshot, Normalizer.Form.NFKC)
+                String nfkcOld = Normalizer.normalize(oldText, Normalizer.Form.NFKC)
+                int nfkcCount = WriteUtils.countOccurrences(nfkcSnap, nfkcOld)
+                if (nfkcCount == 1) { usedNormalized = true; count = 1 }
+                else if (nfkcCount > 1) { count = nfkcCount }
+            }
+            if (count == 0) {
+                // Pass 3: box-drawing chars (U+2500-U+257F -> ASCII)
+                String bdSnap = normalizeBoxDrawing(snapshot)
+                String bdOld  = normalizeBoxDrawing(oldText)
+                int bdCount = WriteUtils.countOccurrences(bdSnap, bdOld)
+                if (bdCount == 1) { usedNormalized = true; count = 1 }
+                else if (bdCount > 1) { count = bdCount }
             }
             if (count == 0) validationErrors << ("Entry ${i}: oldText not found: '${sanitize(oldText.take(60))}'" as String)
             if (count > 1)  validationErrors << ("Entry ${i}: oldText not unique (${count} occurrences): '${sanitize(oldText.take(60))}'" as String)
@@ -234,20 +295,23 @@ class FileReplaceService extends AbstractFileService {
                 ("multi_replace validation failed (file NOT modified): ${validationErrors.join('; ')}" as String))
         }
 
-        // Phase 2: apply in order (use NFC-normalized content if raw match failed)
-        String current = usedNormalized ? Normalizer.normalize(snapshot, Normalizer.Form.NFC) : snapshot
+        // Phase 2: apply using the same normalisation that resolved the match (all three passes are idempotent)
+        String current = usedNormalized
+            ? normalizeBoxDrawing(Normalizer.normalize(snapshot, Normalizer.Form.NFKC))
+            : snapshot
         int applied = 0
         replacements.each { Map<String, Object> rep ->
             String oldText = (rep.oldText as String)?.replace('\r\n', '\n')?.replace('\r', '\n')
             String newText = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
             if (usedNormalized) {
-                oldText = Normalizer.normalize(oldText, Normalizer.Form.NFC)
-                newText = Normalizer.normalize(newText, Normalizer.Form.NFC)
+                oldText = normalizeBoxDrawing(Normalizer.normalize(oldText, Normalizer.Form.NFKC))
+                newText = normalizeBoxDrawing(Normalizer.normalize(newText, Normalizer.Form.NFKC))
             }
             current = current.replace(oldText, newText)
             applied++
         }
-        if (usedNormalized) log.debug('multi_replace: NFC normalization resolved matches for {}', normalized)
+        if (usedNormalized) log.debug('multi_replace: unicode normalisation resolved matches for {}', normalized)
+
 
         Path target = Paths.get(normalized)
         if (backup) WriteUtils.makeBackup(target)

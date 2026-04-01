@@ -612,16 +612,41 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
 
     private void writeRuntimeState() {
         try {
+            // Own JVM PID - the stdio process DT launched from the MCPB manifest.
+            // Recorded so kill scripts know what NOT to kill.
+            long stdioPid = ProcessHandle.current().pid()
+
+            // Load config so we can record jar name per companion
+            Map<String, Object> config = loadConfig()
+            List<Map> serverDefs = config.servers as List<Map> ?: []
+
             List<Map<String, Object>> running = []
             registry.ownedProcesses.each { String name, Process proc ->
                 Map<String, Object> entry = new LinkedHashMap<String, Object>()
-                entry.put('name', name)
-                entry.put('pid', proc.pid())
-                entry.put('alive', proc.alive)
+                entry.put('name',       name)
+                entry.put('pid',        proc.pid())          // HTTP companion PID - SAFE TO KILL
+                entry.put('alive',      proc.alive)
+                entry.put('stdioPid',   stdioPid)            // MCPB stdio JVM PID - DO NOT KILL
+                entry.put('startedAt',  new Date().toInstant().toString())
+                // Resolve jar name from config for kill-script verification
+                Map serverDef = serverDefs.find { (it.name as String) == name } as Map
+                if (serverDef) {
+                    entry.put('jar',  serverDef.jar as String)
+                    entry.put('port', serverDef.port as Integer)
+                }
                 running << entry
             }
+            // Build stdioJvmPids map: name -> stdioPid for all managed servers (DO NOT KILL)
+            Map<String, Long> stdioJvmPids = new LinkedHashMap<String, Long>()
+            registry.ownedProcesses.keySet().each { String name ->
+                stdioJvmPids.put(name, stdioPid)
+            }
+
             Map<String, Object> state = new LinkedHashMap<String, Object>()
-            state.put('updatedAt', new Date().toString())
+            state.put('updatedAt',      new Date().toString())
+            state.put('format',         'v2')                // v2: has stdioJvmPids map + per-entry stdioPid
+            state.put('stdioPid',       stdioPid)            // legacy top-level: own stdio PID (kept for v1 compat)
+            state.put('stdioJvmPids',   stdioJvmPids)        // v2: map of name->stdioPid (DO NOT KILL)
             state.put('managedServers', running)
             File runtimeFile = new File("${claudeSyncPath}/${RUNTIME_FILENAME}")
             mapper.writerWithDefaultPrettyPrinter().writeValue(runtimeFile, state)
