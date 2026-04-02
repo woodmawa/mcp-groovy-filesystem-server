@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.35'   // v0.8.35: (1) FileReplaceService three-pass Unicode normalisation: NFC+NFKC+box-drawing chars. (2) Fix pending_reindex queue silently broken: mcp.usage.db-path was missing from fsJvmArgs in generateMcpbManifest causing FilesystemTelemetryService to no-op. Added to fsJvmArgs. See practices #214, #215, #216.
+version = '0.8.36'   // v0.8.35: (1) FileReplaceService three-pass Unicode normalisation: NFC+NFKC+box-drawing chars. (2) Fix pending_reindex queue silently broken: mcp.usage.db-path was missing from fsJvmArgs in generateMcpbManifest causing FilesystemTelemetryService to no-op. Added to fsJvmArgs. See practices #214, #215, #216.
 // v0.8.35: FileReplaceService replace+multi_replace: add NFKC normalisation fallback after NFC (handles em-dash/en-dash variants, smart quotes). Fix contradictory error guidance -- patch is now correctly recommended when oldText contains non-ASCII. See practice #214.
 // v0.8.33: replace_section headingStyle=text for arbitrary anchor matching in source files
 // v0.8.31: BUGFIX ServerLifecycleService.startServer() now passes -Dspring.profiles.active=http + -DMCP_MODE=http to ProcessBuilder cmd. Without these, HTTP companion processes inherited/defaulted to stdio profile, binding no port and running as useless duplicate stdio processes.

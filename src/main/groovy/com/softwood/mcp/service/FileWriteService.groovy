@@ -64,8 +64,8 @@ Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|f
 - write(path, content): overwrite entire file
 - append(path, content): append to end
 - replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated — check error detail.
-- patch: line-range edits. options.replacements=[{startLine,endLine,newText}] 1-indexed. ALWAYS get_method immediately before patching.
-- multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Use for multiple changes to one file.
+- patch: line-range edits. options.replacements=[{startLine,endLine,newText}] 1-indexed. ALWAYS re-read target lines immediately before each patch (line numbers shift after every edit). For multi-section changes pass ALL replacements in a single patch call -- never sequential patches across turns. After any structural Groovy edit (new method/brace changes) run compileGroovy before continuing. On compile failure: git checkout HEAD -- <file> and start over with one clean patch.
+- multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Preferred for multiple text swaps in one file. Does NOT shift line numbers. Use instead of sequential patch calls where possible.
 - server_transform: server-side transform — file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_after_heading|append_section|add_method|add_import
 - chunk_write/finalise_write/abort_write: large-file chunked writes.
 All mutating actions return content_hash. Pass options.expectedHash to reject if file changed since last read.

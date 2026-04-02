@@ -19,11 +19,19 @@ import java.nio.file.Paths
  *
  * v0.7.44 - extracted from FileWriteService as part of write/ subpackage split.
  *           Includes WI2 fix: improved hash-mismatch error message.
+ * v0.8.36 - recentPatches hint: warns when same file patched twice in <60s without
+ *           a re-read between patches. Line numbers shift after every patch -- callers
+ *           MUST re-read between sequential patches and use the returned content_hash
+ *           as expectedHash. Best practice: pass ALL replacements in a single patch
+ *           call rather than sequential calls.
  */
 @Service
 @Slf4j
 @CompileStatic
 class FilePatchService extends AbstractFileService {
+
+    /** Track recent patches to warn about sequential patching without intervening re-reads. */
+    private final Map<String, Long> recentPatches = Collections.synchronizedMap(new LinkedHashMap<String, Long>())
 
     FilePatchService(PathService pathService) {
         super(pathService)
@@ -35,7 +43,7 @@ class FilePatchService extends AbstractFileService {
         boolean backup      = options.backup as boolean ?: false
         String expectedHash = options.expectedHash as String
         if (!expectedHash) {
-            log.warn('doPatch called without expectedHash for {} — drift guard disabled. Caller should pass expectedHash from last read.', path)
+            log.warn('doPatch called without expectedHash for {} \u2014 drift guard disabled. Caller should pass expectedHash from last read.', path)
         }
 
         List<Map<String, Object>> replacements = (options.replacements instanceof List)
@@ -191,9 +199,24 @@ class FilePatchService extends AbstractFileService {
         ] as Map<String, Object>
         if (verifyError) result.put('verify_warning', verifyError)
 
+        // Warn if same file patched twice within 60s without a re-read between patches.
+        // Line numbers shift after every patch -- sequential patches without re-reading
+        // cause exactly the kind of file corruption seen in practice #217.
+        long now = System.currentTimeMillis()
+        boolean shouldHint = recentPatches.containsKey(normalized) && (now - recentPatches.get(normalized)) < 60_000L
+        recentPatches.put(normalized, now)
+        if (shouldHint) {
+            String hint = 'CAUTION: this file was patched recently -- line numbers have shifted. ' +
+                'Re-read with action=range or get_method and use the returned content_hash as expectedHash before next patch. ' +
+                'For multiple changes, pass all replacements[] in a SINGLE patch call -- never sequential patches across turns.'
+            result.put('hint', hint)
+            log.warn('patch: sequential patch detected on {} -- caller should re-read between patches', normalized)
+        }
+
         if (isWriteCompact(options)) {
             Map<String, Object> compact = [success: result.success, applied: applied, content_hash: resultHash, file_content_hash: resultHash] as Map<String, Object>
             if (verifyError) compact.put('verify_warning', verifyError)
+            if (shouldHint) compact.put('hint', result.get('hint'))
             return textResponse(requestId, compact)
         }
         return textResponse(requestId, result)
