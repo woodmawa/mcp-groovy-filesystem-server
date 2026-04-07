@@ -99,6 +99,7 @@ file_write action=server_transform path=<file>
                     newContent:"...", expectedHash:"<hash>"}
 
 # replace_section: heading-based (## headings only), content in options.newContent
+# insert_before_match: any file type, substring match, options.match + options.content (+ optional options.occurrence 1/-1/N)
 # insert_after_heading: content in options.content
 # append_section: content in options.content
 # add_method: body in options.newBody

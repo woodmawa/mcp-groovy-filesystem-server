@@ -11,6 +11,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 class McpGroovyFileSystemServerApplication {
     
     static void main(String[] args) {
+        // v0.8.40: force UTF-8 on stdout so JsonRpcWriter.System.out.println correctly
+        // encodes U+2192 and other non-Latin-1 Unicode. Default JVM charset on Windows
+        // is Cp1252 which corrupts these chars in tool responses.
+        System.setOut(new java.io.PrintStream(System.out, true, 'UTF-8'))
 
         System.setProperty("spring.main.banner-mode", "off")
         SpringApplication.run(McpGroovyFileSystemServerApplication, args)

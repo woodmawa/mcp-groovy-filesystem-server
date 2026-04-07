@@ -36,7 +36,7 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
     private static final String CONFIG_FILENAME = 'mcp-http-servers.json'
     private static final String RUNTIME_FILENAME = 'mcp-http-servers-runtime.json'
 
-    @Value('${MCP_CONTEXT_STORAGE_PATH:C:/Users/willw/claude-sync}')
+    @Value('${MCP_CONTEXT_STORAGE_PATH:DERIVE}')
     String claudeSyncPath
 
     // The HTTP port this process itself binds to (from server.port).
@@ -76,6 +76,10 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
      */
     @PostConstruct
     void autoStartHttpCompanions() {
+        // Derive portable claudeSyncPath if env var not set
+        if (!claudeSyncPath || claudeSyncPath == 'DERIVE') {
+            claudeSyncPath = System.getProperty('user.home').replace('\\', '/') + '/claude-sync'
+        }
         try {
             Map<String, Object> config = loadConfig()
             List<Map> servers = config.servers as List<Map>
@@ -202,6 +206,13 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         if (!server) {
             return McpResponse.error(requestId, -32602,
                 "Unknown server: ${name}. Known: ${servers*.name.join(', ')}" as String)
+        }
+
+        // Early-exit: if port is already listening, skip startServer entirely
+        int port = server.port as int
+        if (isPortListening(port, 1, 0)) {
+            log.debug("doEnsure: {} already listening on port {}, skipping startServer", name, port)
+            return textResponse(requestId, [action: 'ensure', result: [name: name, port: port, started: false, reason: 'already listening']])
         }
 
         Map<String, Object> result = startServer(server)

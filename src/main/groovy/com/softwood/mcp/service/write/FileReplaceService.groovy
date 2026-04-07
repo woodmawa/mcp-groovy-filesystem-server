@@ -27,6 +27,10 @@ class FileReplaceService extends AbstractFileService {
     @Value('${mcp.filesystem.read-chunk-threshold-kb:300}')
     int replaceChunkThresholdKb
 
+    // Separate threshold for replace/multi_replace -- higher than read-chunk to allow large handler files
+    @Value('${mcp.filesystem.replace-threshold-kb:150}')
+    int replaceFileSizeThresholdKb
+
     // v0.8.1 Change 4: track recent writes to nudge multi_replace batching
     private final Map<String, Long> recentWrites = Collections.synchronizedMap(new LinkedHashMap<String, Long>())
 
@@ -76,9 +80,10 @@ class FileReplaceService extends AbstractFileService {
         String encoding   = options.encoding as String ?: 'UTF-8'
 
         long fileSizeKb = Files.size(Paths.get(normalized)).intdiv(1024)
-        if (fileSizeKb > replaceChunkThresholdKb) {
+        if (fileSizeKb > replaceFileSizeThresholdKb) {
             return McpResponse.error(requestId, -32602,
-                ("replace: file is ${fileSizeKb}KB which exceeds threshold ${replaceChunkThresholdKb}KB. Use patch (line-range edit) for large files." as String))
+                ("replace: file is ${fileSizeKb}KB which exceeds threshold ${replaceFileSizeThresholdKb}KB. " +
+                 "Use multi_replace for up to ${replaceFileSizeThresholdKb}KB, or patch (line-range) for larger files." as String))
         }
 
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))
@@ -224,9 +229,10 @@ class FileReplaceService extends AbstractFileService {
         String expectedHash = options.expectedHash as String
 
         long fileSizeKb = Files.size(Paths.get(normalized)).intdiv(1024)
-        if (fileSizeKb > replaceChunkThresholdKb) {
+        if (fileSizeKb > replaceFileSizeThresholdKb) {
             return McpResponse.error(requestId, -32602,
-                ("multi_replace: file is ${fileSizeKb}KB which exceeds threshold ${replaceChunkThresholdKb}KB. Use patch (line-range edit) for large files." as String))
+                ("multi_replace: file is ${fileSizeKb}KB which exceeds threshold ${replaceFileSizeThresholdKb}KB. " +
+                 "Use patch (line-range edit) for files larger than ${replaceFileSizeThresholdKb}KB." as String))
         }
 
         byte[] rawBytes   = Files.readAllBytes(Paths.get(normalized))

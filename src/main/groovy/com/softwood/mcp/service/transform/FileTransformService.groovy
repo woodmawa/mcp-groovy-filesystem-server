@@ -108,6 +108,7 @@ class FileTransformService extends AbstractFileService {
             // Per-transform allowed extension sets. null = any file type allowed.
             Map<String, List<String>> transformAllowedExts = [
                 'replace_between'     : null,   // anchor-string-based, file-format-agnostic
+                'insert_before_match' : null,   // substring match, insert-before, file-format-agnostic
                 'replace_method'      : ['groovy', 'java', 'kt', 'kts'],
                 'add_method'          : ['groovy', 'java', 'kt', 'kts'],
                 'add_import'          : ['groovy', 'java', 'kt', 'kts'],

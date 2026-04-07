@@ -106,8 +106,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
             // Normalize and validate working dir
             workingDir = pathService.normalizePath(workingDir)
+            // Normalize and validate working dir
+            workingDir = pathService.normalizePath(workingDir)
             if (!isPathAllowed(workingDir)) {
-                throw new SecurityException("Working directory not in allowed list: ${sanitize(workingDir)}")
+                String allowed = allowedDirectories.join(', ')
+                throw new SecurityException("Working directory '${sanitize(workingDir)}' is not in the allowed list. Allowed directories: ${allowed}")
             }
 
             // Security validation

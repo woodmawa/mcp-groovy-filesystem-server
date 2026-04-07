@@ -49,6 +49,11 @@ mcp:
     # lets the model fetch only the chunk(s) it needs. v0.7.42.
     read-chunk-threshold-kb: 60
 
+    # Separate threshold for replace/multi_replace operations. Higher than read-chunk
+    # so large handler files (e.g. 61KB ContextReadToolHandler) can still be multi_replaced.
+    # Only fall back to patch if file exceeds this. v0.8.41.
+    replace-threshold-kb: 150
+
     # v0.7.25: Soft warning threshold for large read responses
     large-response-warn-chars: 8000
 

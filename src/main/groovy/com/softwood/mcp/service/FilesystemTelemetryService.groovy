@@ -166,13 +166,25 @@ class FilesystemTelemetryService {
                          String outcome = 'success') {
         if (!dbPath) return   // persistence not configured  silent no-op
 
+        // v0.8.39: resolve real session ID lazily on first call -- one JDBC read per session, cached thereafter
+        // McpController passes 'unknown' because it cannot intercept context_lifecycle (a context-server tool).
+        // readActiveSessionId() opens a short-lived read-only connection -- safe from asyncWriter thread.
+        String resolvedId = sessionId
+        if (!resolvedId || resolvedId == 'unknown') {
+            if (trackedSessionId && trackedSessionId != 'unknown') {
+                resolvedId = trackedSessionId  // already resolved this session
+            } else {
+                String fromDb = readActiveSessionId()
+                if (fromDb) resolvedId = fromDb
+            }
+        }
 
         // Reset repeat cache and token accumulator when session changes
-        if (sessionId && sessionId != trackedSessionId) {
+        if (resolvedId && resolvedId != trackedSessionId) {
             sessionCallCache.clear()
             resetSessionAccumulator()
-            trackedSessionId = sessionId
-            log.debug('FilesystemTelemetry: new session {} - accumulator reset', sessionId)
+            trackedSessionId = resolvedId
+            log.debug('FilesystemTelemetry: new session {} - accumulator reset', resolvedId)
         }
 
         asyncWriter.submit {
@@ -193,7 +205,7 @@ class FilesystemTelemetryService {
                              is_repeat_call, args_hash,
                              action, path_hash, outcome)
                         VALUES (?,?,?,?,?,?,?,?,?,?)''')
-                    stmt.setString(1, sessionId ?: 'unknown')
+                    stmt.setString(1, resolvedId ?: 'unknown')
                     stmt.setString(2, toolName)
                     stmt.setString(3, 'filesystem-server')
                     stmt.setInt(4, responseChars)
@@ -286,6 +298,31 @@ class FilesystemTelemetryService {
             } finally {
                 conn.close()
             }
+        }
+    }
+
+    /**
+     * D1/D3/D4 fix: read the active session ID directly from the SQLite active_session table.
+     * Uses a short-lived read-only connection so it is safe to call from any thread.
+     * Returns null if dbPath not configured, table missing, or no active session row.
+     */
+    String readActiveSessionId() {
+        if (!dbPath) return null
+        try {
+            Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
+            try {
+                PreparedStatement ps = conn.prepareStatement(
+                    'SELECT session_id FROM active_session ORDER BY id DESC LIMIT 1')
+                ResultSet rs = ps.executeQuery()
+                String sid = rs.next() ? rs.getString('session_id') : null
+                rs.close(); ps.close()
+                return sid
+            } finally {
+                conn.close()
+            }
+        } catch (Exception e) {
+            log.debug('FilesystemTelemetryService.readActiveSessionId failed (non-fatal): {}', e.message)
+            return null
         }
     }
 

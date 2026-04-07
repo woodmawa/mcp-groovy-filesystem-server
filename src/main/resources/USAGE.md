@@ -76,6 +76,7 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 - `add_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
 - `add_import` — Groovy/Java only. Params: `options.import` (full import line e.g. `'import com.example.Foo'` or just `'com.example.Foo'` — `import ` prefix added automatically if absent)
 - `replace_section` — Markdown/yml/yaml/toml only. Params: `options.heading`, `options.newContent`
+- `insert_before_match` — **any file type**. Params: `options.match` (substring), `options.content`, `options.occurrence` (1=first/default, -1=last, N=Nth)
 - `insert_after_heading` — Markdown/yml/yaml/toml. Params: `options.heading`, `options.content`
 - `append_section` — Markdown/yml/yaml/toml. Params: `options.heading`, `options.content`
 - `replace_between` — **any file type**. Params: `options.startAnchor`, `options.endAnchor`, `options.newContent`

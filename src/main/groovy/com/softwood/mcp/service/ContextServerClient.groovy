@@ -7,6 +7,7 @@ import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 
+import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
@@ -61,7 +62,8 @@ class ContextServerClient {
     }
 
     // Active session ID — lazily resolved from context server, cached for session duration
-    private volatile String activeSessionId = null
+    // package-scoped for McpController access (no private -- @CompileStatic blocks cross-class private field access)
+    volatile String activeSessionId = null
 
     /**
      * Liveness flag for context server HTTP endpoint.
@@ -307,13 +309,54 @@ class ContextServerClient {
     }
 
     /**
-     * Resolve the active session ID. Returns cached value if available; otherwise
-     * makes one lightweight GET to the context server and caches the result.
-     * Returns null if context server is unreachable or no session is active.
+     * Eagerly resolve + cache the active session ID at startup.
+     * Submitted async to asyncWriter so Spring context is fully wired before the JDBC read fires.
+     * Eliminates the 'new session unknown' log spam that occurs when the first tool call
+     * hits resolveSessionId() before the session ID has been primed.
+     */
+    @PostConstruct
+    void eagerResolveSessionId() {
+        asyncWriter.submit({
+            try {
+                String sid = resolveSessionId()
+                if (sid) {
+                    log.info('ContextServerClient: eagerly resolved session_id={} at startup', sid)
+                } else {
+                    log.debug('ContextServerClient: eager session resolve returned null (no active session yet)')
+                }
+            } catch (Exception e) {
+                log.debug('ContextServerClient: eager session resolve failed: {}', e.message)
+            }
+        } as Runnable)
+    }
+
+    /**
+     * Resolve the active session ID.
+     * D1/D3/D4 fix: reads active_session table directly via JDBC (FilesystemTelemetryService)
+     * instead of HTTP GET to /current-session. The HTTP endpoint returns the HTTP companion's
+     * own session scope, never the DT stdio user session. JDBC read is transport-agnostic.
+     * Caches the result for the session duration once resolved.
+     * Returns null if telemetryService unavailable or no active session.
      */
     private String resolveSessionId() {
+        // Return cached value only if non-null -- do NOT cache null (session may not be active yet at startup)
         if (activeSessionId) return activeSessionId
         if (!structurePersistEnabled) return null
+        // JDBC path - transport-agnostic, works in both stdio and HTTP companion modes.
+        // Always retry until we get a real session ID (active_session table may be empty at FS startup).
+        if (telemetryService) {
+            String sid = telemetryService.readActiveSessionId()
+            if (sid) {
+                activeSessionId = sid
+                log.info('ContextServerClient: resolved session_id={} via JDBC', sid)
+                return sid
+            }
+            // JDBC returned null -- session not started yet, do not cache, will retry on next call
+            log.debug('ContextServerClient: JDBC session resolve returned null (session not yet active)')
+            return null
+        }
+        // No telemetryService -- HTTP fallback for non-MCPB mode only
+        if (!contextServerReachable) return null
         try {
             URL url = new URL("${contextServerUrl}/current-session")
             HttpURLConnection conn = (HttpURLConnection) url.openConnection()
@@ -327,13 +370,13 @@ class ContextServerClient {
                     String sid = parsed?.get('session_id') as String
                     if (sid) {
                         activeSessionId = sid
-                        log.debug('ContextServerClient: resolved session_id={}', sid)
+                        log.debug('ContextServerClient: resolved session_id={} via HTTP fallback', sid)
                     }
                     return sid
                 }
             } finally { conn.disconnect() }
         } catch (Exception e) {
-            log.debug('resolveSessionId failed: {}', e.message)
+            log.debug('ContextServerClient: HTTP fallback failed (expected in MCPB mode): {}', e.message)
         }
         return null
     }

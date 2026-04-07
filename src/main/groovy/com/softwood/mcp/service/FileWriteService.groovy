@@ -57,8 +57,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 Write/modify files.
 Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write
 Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating — required).
-server_transform transforms: replace_section|replace_method|replace_between|insert_after_heading|append_section|add_method|add_import
-Returns content_hash. Use file_read action=help topic=file_write for safe editing workflow.''' : '''\
+server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import''' : '''\
 Write/modify files.
 Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write
 - write(path, content): overwrite entire file
@@ -66,7 +65,7 @@ Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|f
 - replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated — check error detail.
 - patch: line-range edits. options.replacements=[{startLine,endLine,newText}] 1-indexed. ALWAYS re-read target lines immediately before each patch (line numbers shift after every edit). For multi-section changes pass ALL replacements in a single patch call -- never sequential patches across turns. After any structural Groovy edit (new method/brace changes) run compileGroovy before continuing. On compile failure: git checkout HEAD -- <file> and start over with one clean patch.
 - multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Preferred for multiple text swaps in one file. Does NOT shift line numbers. Use instead of sequential patch calls where possible.
-- server_transform: server-side transform — file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_after_heading|append_section|add_method|add_import
+- server_transform: server-side transform — file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
 - chunk_write/finalise_write/abort_write: large-file chunked writes.
 All mutating actions return content_hash. Pass options.expectedHash to reject if file changed since last read.
 SAFE EDITING: expectedHash always. get_method -> patch for code. grep -> replace for unique strings. multi_replace for multiple changes. Never sequential replaces without re-reading between them.

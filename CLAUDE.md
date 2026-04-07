@@ -95,14 +95,21 @@ file_read action=grep path=<directory>   ← "Path is not a file"
 file_search action=content path=<dir> options={contentPattern:"regex"}
 ```
 
-### execute — use action=cmd for gradle/git on Windows
+### Gradle builds -- use tools action=gradle (NOT execute action=cmd)
 
 ```
-# CORRECT
-execute action=cmd script="gradlew.bat bootJar"
-        options={workingDir:"C:/Users/willw/IdeaProjects/<server>", timeout:120, maxStdout:2000}
+# CORRECT -- canonical path, works from both Claude and AW flows
+mcp-groovy-filesystem-server:tools action=gradle subcommand=compileGroovy
+        options={workingDir:"C:/Users/willw/IdeaProjects/<server>"}
 
-# WRONG — groovy-filesystem:tools no longer exists as an MCP tool
+mcp-groovy-filesystem-server:tools action=gradle subcommand=packageMcpbThin
+        options={workingDir:"C:/Users/willw/IdeaProjects/<server>"}
+
+mcp-groovy-filesystem-server:tools action=gradle subcommand=installMcpbLocal
+        options={workingDir:"C:/Users/willw/IdeaProjects/<server>"}
+
+# WRONG -- execute action=cmd for gradle is the old pattern, do not use
+execute action=cmd script="gradlew.bat bootJar"   <-- deprecated
 ```
 
 ### server_transform — correct param names
@@ -116,6 +123,7 @@ file_write action=server_transform path=<file>
 
 # replace_between: new text in options.newContent
 # replace_section: new text in options.newContent
+# insert_before_match: any file, substring in options.match, new lines in options.content, optional options.occurrence
 # insert_after_heading / append_section: new text in options.content
 # add_import: import string in options.importStatement
 ```
@@ -163,13 +171,13 @@ The client also caches directory listings in-memory after `file_list` calls.
 ## Build and deploy
 
 ```
-# Build
-execute action=cmd script="gradlew.bat bootJar"
-        options={workingDir:"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server", timeout:120}
-
+# Build (canonical path)
+mcp-groovy-filesystem-server:tools action=gradle subcommand=compileGroovy options={workingDir:"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server"}
+mcp-groovy-filesystem-server:tools action=gradle subcommand=packageMcpbThin options={workingDir:"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server"}
+mcp-groovy-filesystem-server:tools action=gradle subcommand=installMcpbLocal options={workingDir:"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server"}
 # Deploy via flow template (handles all 5 config updates + restart)
 start_flow mode=flow templateName=mcp-deploy
-           params={serverName:"filesystem", projectDir:"...", oldVersion:"X", newVersion:"Y", jarPrefix:"mcp-groovy-filesystem-server"}
+           params={serverName:"filesystem", projectDir:"...", newVersion:"Y", jarPrefix:"mcp-groovy-filesystem-server"}
 ```
 
 Five-config rule — on every version bump update ALL of:

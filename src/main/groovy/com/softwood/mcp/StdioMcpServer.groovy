@@ -64,7 +64,7 @@ class StdioMcpServer implements CommandLineRunner {
 
         debugLog("Starting MCP stdio server v0.0.5...")
 
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in), 1024 * 1024)  // v0.8.6: 1MB buffer — default 8KB silently truncates large file_write requests
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, java.nio.charset.StandardCharsets.UTF_8), 1024 * 1024)  // v0.8.6: 1MB buffer; v0.8.39: explicit UTF-8 charset -- default JVM charset (Cp1252 on Windows) corrupts U+2192 and other non-Latin-1 Unicode in tool params
         int requestCount = 0
 
         // Log when server is ready for input

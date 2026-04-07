@@ -191,7 +191,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                 case 'help'         : return metaReader.doHelp(options, requestId)
                 case 'read_office'  : return officeHandler.readOffice(path, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown file_read action: ${action}")
+                    return McpResponse.error(requestId, -32602, "Unknown file_read action: '${action}'. Valid actions: read|head|tail|range|grep|multi_grep|multi|info|structure|get_method|list|checksum|stat|exists|diff|normalize|chunk_read|finalise_read|help. For script execution use the 'execute' tool.")
             }
         } catch (SecurityException e) {
             return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
