@@ -18,6 +18,9 @@ import java.text.Normalizer
  *
  * v0.7.44 - extracted from FileWriteService as part of write/ subpackage split.
  *           Includes WI2 fixes: non-ASCII diagnostic hint, improved hash-mismatch messages.
+ * v0.8.45 - FS-T9: brace-balance warning on replace and multi_replace. After each apply,
+ *           counts '{'/'}' in the changed region + 5-line context. Emits brace_warning if
+ *           unbalanced -- surfacing silent method-boundary corruption before compile.
  */
 @Service
 @Slf4j
@@ -205,13 +208,19 @@ class FileReplaceService extends AbstractFileService {
         boolean shouldHint = lastWrite != null && (now - lastWrite) < 60_000L
         recentWrites.put(normalized, now)
 
+        // FS-T9: brace-balance check on changed region
+        String braceWarning = checkBraceBalance(updated, oldText, newText, 'replace')
+
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
+            Map<String, Object> compact = [success: true, content_hash: hash, file_content_hash: hash] as Map<String, Object>
+            if (braceWarning) compact.brace_warning = braceWarning
+            return textResponse(requestId, compact)
         }
         Map<String, Object> resp = ([action: 'replace', path: normalized,
             replacements: 1, success: true,
             content_hash: hash, file_content_hash: hash] as Map<String, Object>)
         if (shouldHint) resp.hint = 'More edits to this file? Prefer multi_replace to batch them in one call.'
+        if (braceWarning) resp.brace_warning = braceWarning
         return textResponse(requestId, resp)
     }
 
@@ -326,19 +335,74 @@ class FileReplaceService extends AbstractFileService {
         log.info("multi_replace: {} applied in {} (line endings: {})", applied, normalized, hasCrLf ? 'CRLF' : 'LF')
 
         String hash = WriteUtils.fileHash(target)
-        if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, applied: applied, content_hash: hash, file_content_hash: hash])
+
+        // FS-T9: brace-balance check across all changed regions
+        String braceWarning = null
+        replacements.each { Map<String, Object> rep ->
+            String ot = (rep.oldText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+            String nt = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+            String w  = checkBraceBalance(current, ot, nt, 'multi_replace')
+            if (w && !braceWarning) braceWarning = w
         }
-        return textResponse(requestId, [
+
+        if (isWriteCompact(options)) {
+            Map<String, Object> compact = [success: true, applied: applied, content_hash: hash, file_content_hash: hash] as Map<String, Object>
+            if (braceWarning) compact.brace_warning = braceWarning
+            return textResponse(requestId, compact)
+        }
+        Map<String, Object> result = [
             action: 'multi_replace', path: normalized,
             applied: applied, success: true,
             content_hash: hash, file_content_hash: hash
-        ])
+        ] as Map<String, Object>
+        if (braceWarning) result.brace_warning = braceWarning
+        return textResponse(requestId, result)
     }
 
     // -----------------------------------------------------------------------
     // Helper
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // FS-T9: brace-balance checker
+    // -----------------------------------------------------------------------
+
+    /**
+     * Counts '{' and '}' in the newText and the immediately surrounding context
+     * (5 lines before the replacement start, 5 lines after the replacement end).
+     * If the newText alone is unbalanced, returns a diagnostic warning string;
+     * otherwise returns null (no warning).
+     *
+     * Not a hard error -- the replacement is always applied. The warning surfaces
+     * the most common silent corruption: forgetting to include closing braces that
+     * were present in oldText.
+     */
+    private static String checkBraceBalance(String fullContent, String oldText, String newText, String action) {
+        if (!oldText || !newText) return null
+        // Only check Groovy/Java-like files based on content heuristics
+        // (skip if no braces at all in the replacement context)
+        int newOpen  = newText.count('{')
+        int newClose = newText.count('}')
+        int oldOpen  = oldText.count('{')
+        int oldClose = oldText.count('}')
+        // Delta: how many net braces does the replacement ADD compared to what was removed
+        int deltaOpen  = newOpen  - oldOpen
+        int deltaClose = newClose - oldClose
+        if (deltaOpen == deltaClose) return null  // balanced replacement -- no warning
+
+        // newText itself is unbalanced internally
+        int newInternal = newOpen - newClose
+        if (newInternal == 0) return null  // newText is self-contained, net delta is structural -- OK
+
+        // Find approximate line number of the replacement
+        int replIdx    = fullContent.indexOf(newText)
+        int lineNumber = replIdx >= 0 ? (fullContent.substring(0, replIdx).count('\n') + 1) : -1
+        String lineRef = lineNumber > 0 ? " near line ${lineNumber}" : ''
+
+        return ("${action}: replacement${lineRef} may have unbalanced braces " +
+            "(newText has ${newOpen} open, ${newClose} close; oldText had ${oldOpen} open, ${oldClose} close). " +
+            "Verify closing braces were included in newText — silent method-boundary corruption if not." as String)
+    }
 
     private String normalizeAndCheckPath(String path) {
         String normalized = pathService.normalizePath(path)

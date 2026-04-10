@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.44
+# mcp-groovy-filesystem-server v0.8.45
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -95,6 +95,20 @@ with `oldText not found` even when the text was visually identical.
 ---
 
 ## What's New
+
+### v0.8.45 — FS-T9: brace-balance warning on replace / multi_replace (2026-04-10)
+
+**FS-T9 — `multi_replace` / `replace` brace-balance warning.** After each replacement,
+`FileReplaceService.checkBraceBalance()` compares `{`/`}` counts in `newText` vs `oldText`.
+If `newText` is internally unbalanced (net open ≠ net close), a `brace_warning` field is added
+to the response — surfacing silent method-boundary corruption (e.g. omitted closing braces that
+were present in `oldText`) before a compile cycle is needed. Not a hard error; the write always
+proceeds. Applies to both compact and full response paths.
+
+_Confirmed present from 0.8.44 baseline (no further changes needed):_
+FS-T1 (`insert_before_match` newline error), FS-T4 (`.md` file 600-line limit),
+FS-T6 (`patch` empty-options guard), FS-T7 (`get_method` regex fallback flag),
+FS-T8 (`chunk_status` action).
 
 ### v0.8.44 — FS accuracy fixes: chunk_status + get_method fallback flag (2026-04-10)
 
@@ -312,6 +326,9 @@ Also copies jar to `claude-sync/jars/` via `copyToJarsDir` task (for HTTP compan
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.45** | `FileReplaceService.checkBraceBalance()` — brace-balance warning on `replace` and `multi_replace`. Emits `brace_warning` when `newText` net brace count differs from `oldText`. Prevents silent method-boundary corruption. |
+| **0.8.44** | `chunk_status` action + `get_method` fallback flag (AST failure → regex scanner with `fallback:true`). `@CompileStatic` Elvis/`in`/sort hardening (practices #311–314). |
+| **0.8.43** | `insert_before_match` newline error, `patch` boundary_warning, doc-file 600-line read limit (FS-T1/T2/T4). |
 | **0.8.42** | `tools` tool: `action=gradle` subcommands (`compileGroovy`, `packageMcpbThin`, `installMcpbLocal`) -- canonical build path from both Claude and AW flows. Replaces `execute action=cmd gradlew.bat`. |
 | **0.8.41** | `mcp.usage.db-path` JVM arg wired into MCPB manifest `jvmArgs`. Required for `FilesystemTelemetryService` JDBC writes in DT stdio mode. Missing arg caused silent telemetry loss. |
 | **0.8.40** | UTF-8 stdio fix — `InputStreamReader(System.in, UTF_8)` + `System.setOut(UTF-8)`. Fixes silent `replace` failures for `→`/`—` chars on Windows. Practice #268: never use `2>&1` with Gradle. |
