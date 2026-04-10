@@ -9,8 +9,8 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.45'
-// v0.8.45: FS-T9: FileReplaceService.checkBraceBalance() -- brace-balance warning on replace and multi_replace. Compares '{'/'}' counts in newText vs oldText; emits brace_warning field in response when unbalanced (not a hard error). Surfaces silent method-boundary corruption (missing closing braces) before compile cycle. T1/T4/T6/T7/T8 all confirmed present from 0.8.44 baseline.
+version = '0.8.46'
+// v0.8.46: FS-T6 -- doPatch empty/missing options.replacements now returns textResponse([error:..., hint:...]) instead of McpResponse.error(-32602). DT was rendering -32602 as opaque 'Tool execution failed' rather than showing the message. textResponse wraps in MCP content block so DT shows the error map as readable text.
 // v0.8.44: FS-T7: FileStructureReader.doGetMethod() surfaces fallback:true + fallback_note when regex scanner used (AST compile error). FS-T8: ChunkBufferService.getWriteChunkStatus() + FileChunkWriter.doChunkStatus() + FileWriteService action=chunk_status -- returns receivedChunks/missingChunks/ready:bool so callers can verify all chunks arrived before finalise_write.
 // v0.8.42: ContextServerClient.resolveSessionId() fix -- null result from JDBC no longer cached (was blocking retries). HTTP fallback log message clarified as expected-in-MCPB. resolveSessionId() now retries JDBC on every call until active_session row exists. Fixes session_working_files always getting session_id='unknown' in MCPB mode.
 // v0.8.41: ServerLifecycleService.doEnsure() early-exit via isPortListening(port,1,0) before startServer. ContextServerClient @PostConstruct eagerResolveSessionId() — async session ID prime at startup eliminates 'new session unknown' log spam. FileReplaceService new replace-threshold-kb=150 separate property. FileReadService unknown-action error lists valid actions. ExecuteService workingDir error shows allowed dirs.

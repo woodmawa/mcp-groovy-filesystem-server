@@ -55,9 +55,12 @@ class FilePatchService extends AbstractFileService {
             : []
 
         if (!replacements) {
-            return McpResponse.error(requestId, -32602,
-                'patch requires options.replacements: [{startLine,endLine,newText}]. ' +
-                'Use write for full-file replacement, multi_replace for string-based edits.')
+            // FS-T6: return as textResponse (not McpResponse.error) so DT renders the message
+            // rather than showing the opaque "Tool execution failed" for -32602 codes.
+            return textResponse(requestId, [
+                error : 'patch requires options.replacements: [{startLine,endLine,newText}].',
+                hint  : 'Use action=multi_replace for string-based edits, or supply a replacements array.'
+            ])
         }
 
         log.debug("patch: starting on '{}' with {} replacement(s)", normalized, replacements.size())

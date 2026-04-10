@@ -96,6 +96,15 @@ with `oldText not found` even when the text was visually identical.
 
 ## What's New
 
+### v0.8.46 — FS-T6: patch empty options returns readable error (2026-04-10)
+
+`FilePatchService.doPatch`: when `options.replacements` is missing or empty, now
+returns `textResponse([error:..., hint:...])` instead of `McpResponse.error(-32602)`.
+Claude Desktop was rendering `-32602` protocol errors as the opaque `"Tool execution
+failed"` string rather than showing the error message. `textResponse` wraps the error
+as a content block that DT displays as readable JSON. FS-T6 closed. All accuracy
+fixes from the 0.8.43–0.8.46 sprint are now complete.
+
 ### v0.8.45 — FS-T9: brace-balance warning on replace / multi_replace (2026-04-10)
 
 **FS-T9 — `multi_replace` / `replace` brace-balance warning.** After each replacement,
