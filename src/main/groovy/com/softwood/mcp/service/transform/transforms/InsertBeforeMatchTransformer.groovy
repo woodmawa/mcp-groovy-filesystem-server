@@ -51,6 +51,13 @@ class InsertBeforeMatchTransformer implements FileTransformer {
             return new TransformResult(success: false,
                 error: 'options.content is required for insert_before_match')
         }
+        // FS-T1: multi-line match strings fail silently due to line-ending variation.
+        // Return a clear error instead of a silent no-op.
+        if (match.contains('\n') || match.contains('\r')) {
+            return new TransformResult(success: false,
+                error: 'options.match contains newline characters — insert_before_match uses single-line substring matching only. ' +
+                       'Use a unique single-line anchor from the target region (e.g. the first line of the block you want to insert before).')
+        }
 
         List<String> lines = new File(normalizedPath).readLines('UTF-8')
 

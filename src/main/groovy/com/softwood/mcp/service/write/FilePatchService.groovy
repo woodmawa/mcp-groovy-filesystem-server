@@ -24,6 +24,10 @@ import java.nio.file.Paths
  *           MUST re-read between sequential patches and use the returned content_hash
  *           as expectedHash. Best practice: pass ALL replacements in a single patch
  *           call rather than sequential calls.
+ * v0.8.43 - FS-T2: boundary_warning emitted when endLine == last line of file.
+ *           FS-T3 NOTE: server ALREADY applies replacements bottom-to-top regardless
+ *           of supplied order. Caller line-number drift between turns is the real hazard
+ *           -- always re-read (range/get_method) immediately before patching.
  */
 @Service
 @Slf4j
@@ -128,6 +132,19 @@ class FilePatchService extends AbstractFileService {
                 "patch validation failed (file NOT modified): ${errors.join('; ')}" as String)
         }
 
+        // FS-T2: Detect boundary patches (endLine == last line of file).
+        // These are high-risk: the closing brace at EOF is often already present and
+        // callers accidentally duplicate it by including it in newText.
+        List<String> boundaryWarnings = []
+        sorted.each { Map<String, Object> rep ->
+            if ((rep.endLine as int) == originalLineCount) {
+                boundaryWarnings << ("replacement [${rep.startLine}..${rep.endLine}] touches the last line of the file " +
+                    "(boundary patch). Verify newText does NOT duplicate the class closing brace or EOF line. " +
+                    "Re-read lines ${Math.max(1, (rep.startLine as int) - 2)}..${originalLineCount} to confirm brace ownership." as String)
+                log.warn("patch: boundary patch detected on '{}' at line {}", normalized, rep.endLine)
+            }
+        }
+
         // ---- Phase 2: Apply bottom-up ----
         int applied       = 0
         int expectedDelta = 0
@@ -198,6 +215,7 @@ class FilePatchService extends AbstractFileService {
             file_content_hash: resultHash
         ] as Map<String, Object>
         if (verifyError) result.put('verify_warning', verifyError)
+        if (boundaryWarnings) result.put('boundary_warning', boundaryWarnings.join(' | '))
 
         // Warn if same file patched twice within 60s without a re-read between patches.
         // Line numbers shift after every patch -- sequential patches without re-reading
@@ -217,6 +235,7 @@ class FilePatchService extends AbstractFileService {
             Map<String, Object> compact = [success: result.success, applied: applied, content_hash: resultHash, file_content_hash: resultHash] as Map<String, Object>
             if (verifyError) compact.put('verify_warning', verifyError)
             if (shouldHint) compact.put('hint', result.get('hint'))
+            if (boundaryWarnings) compact.put('boundary_warning', result.get('boundary_warning'))
             return textResponse(requestId, compact)
         }
         return textResponse(requestId, result)

@@ -53,6 +53,18 @@ class FileContentReader extends AbstractFileService {
     @Value('${mcp.filesystem.read-max-lines-before-refuse:200}')
     int readMaxLinesBeforeRefuse
 
+    /** Non-code doc/config files below this size (bytes) get a higher line limit to avoid
+     *  spurious refusals on briefs, YAML configs, etc. Default 100KB. (FS-T4) */
+    @Value('${mcp.filesystem.read-max-lines-docs-size-bytes:102400}')
+    long readMaxLinesDocsSizeBytes
+
+    /** Higher line limit for doc/config files under the size threshold. Default 600. (FS-T4) */
+    @Value('${mcp.filesystem.read-max-lines-docs:600}')
+    int readMaxLinesDocs
+
+    private static final Set<String> DOC_EXTENSIONS =
+        ['.md', '.txt', '.yml', '.yaml', '.json', '.toml', '.ini', '.properties', '.xml'] as Set
+
     FileContentReader(PathService pathService) {
         super(pathService)
     }
@@ -72,10 +84,17 @@ class FileContentReader extends AbstractFileService {
         long threshBytes = (long) readChunkThresholdKb * 1024
 
         if (!(options.force as boolean)) {
-            int lineCount = ReadResponseHelper.countLinesUpTo(normalized, readMaxLinesBeforeRefuse, encoding)
-            if (lineCount > readMaxLinesBeforeRefuse) {
+            // FS-T4: doc/config files under the size threshold use a higher line limit
+            // to avoid spurious refusals on briefs, YAML, and other non-code files.
+            boolean isDocFile = DOC_EXTENSIONS.any { normalized.toLowerCase().endsWith(it) }
+            int effectiveLimit = (isDocFile && fileSize <= readMaxLinesDocsSizeBytes)
+                ? readMaxLinesDocs
+                : readMaxLinesBeforeRefuse
+            int lineCount = ReadResponseHelper.countLinesUpTo(normalized, effectiveLimit, encoding)
+            if (lineCount > effectiveLimit) {
                 return McpResponse.error(requestId, -32602,
-                    ("read refused: file has more than ${readMaxLinesBeforeRefuse} lines. " +
+                    ("read refused: file has more than ${effectiveLimit} lines" +
+                     (isDocFile ? " (doc/config file limit=${effectiveLimit})" : '') + ". " +
                      "Use targeted actions instead:\n" +
                      "  1. structure(path, compact=true) - get method/section outline\n" +
                      "  2. get_method(path, method) - read one method body\n" +

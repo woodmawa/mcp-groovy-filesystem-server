@@ -9,7 +9,8 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.42'
+version = '0.8.43'
+// v0.8.43: FS-T1: InsertBeforeMatchTransformer -- explicit error if options.match contains newlines (was silent no-op). FS-T2: FilePatchService -- boundary_warning in response when endLine == last line of file. FS-T3: Confirmed server already applies patch replacements bottom-to-top; added class doc note. FS-T4: FileContentReader -- doc/config files (.md/.txt/.yml etc) under 100KB use 600-line limit instead of 200.
 // v0.8.42: ContextServerClient.resolveSessionId() fix -- null result from JDBC no longer cached (was blocking retries). HTTP fallback log message clarified as expected-in-MCPB. resolveSessionId() now retries JDBC on every call until active_session row exists. Fixes session_working_files always getting session_id='unknown' in MCPB mode.
 // v0.8.41: ServerLifecycleService.doEnsure() early-exit via isPortListening(port,1,0) before startServer. ContextServerClient @PostConstruct eagerResolveSessionId() — async session ID prime at startup eliminates 'new session unknown' log spam. FileReplaceService new replace-threshold-kb=150 separate property. FileReadService unknown-action error lists valid actions. ExecuteService workingDir error shows allowed dirs.
 // v0.8.40: Fix Unicode corruption on stdio transport. Two changes: (1) StdioMcpServer.groovy -- InputStreamReader(System.in) now uses explicit StandardCharsets.UTF_8 (was JVM default Cp1252 on Windows, corrupted U+2192 and other non-Latin-1 chars in tool params causing file_write replace to fail silently). (2) McpGroovyFileSystemServerApplication.main() -- System.setOut(PrintStream UTF-8) so JsonRpcWriter output also encodes Unicode correctly.
