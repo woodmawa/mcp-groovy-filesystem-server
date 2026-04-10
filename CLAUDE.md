@@ -5,7 +5,7 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** check `build.gradle` line starting `version =`
+- **Current version:** `0.8.44` (check `build.gradle` to confirm)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -211,7 +211,16 @@ file_read action=list path=<same dir> options={knownHash:<listing_hash>}
 file_read action=multi_grep options={pattern:"package com", paths:["File1.groovy","File2.groovy"]}
 → should return matched files without error
 
-# Session token meter
+# Test session token meter
 file_read action=stat path=<any file>
 → response should contain _session_read_tokens field
+
+# Test chunk_status (v0.8.44)
+file_write action=chunk_write path=x.txt content="hello" options={sessionId:"test-1", chunkIndex:0}
+file_write action=chunk_status options={sessionId:"test-1", totalChunks:2}
+→ should return receivedChunks:[0], missingChunks:[1], ready:false
+file_write action=abort_write options={sessionId:"test-1"}
+
+# Test get_method fallback flag (v0.8.44)
+# (only visible when file has a compile error — look for fallback:true in response)
 ```

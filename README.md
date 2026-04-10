@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.42
+# mcp-groovy-filesystem-server v0.8.44
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -95,6 +95,31 @@ with `oldText not found` even when the text was visually identical.
 ---
 
 ## What's New
+
+### v0.8.44 — FS accuracy fixes: chunk_status + get_method fallback flag (2026-04-10)
+
+**FS-T7 — `get_method` fallback flag.** When the AST parser fails on a file with a compile error,
+`FileStructureReader.doGetMethod()` now returns `fallback:true` and a `fallback_note` in the response
+so callers know the method boundaries were derived from the regex scanner and may be imprecise.
+
+**FS-T8 — `chunk_status` action.** New `file_write action=chunk_status` lets callers verify which
+chunks have been received before calling `finalise_write`. Required options: `sessionId`, `totalChunks`.
+Returns `receivedChunks[]`, `missingChunks[]`, `ready:bool`. Prevents corrupt files from missed chunks.
+
+**`@CompileStatic` hardening (practices #311–314).** Three runtime patterns fixed that caused silent
+crashes under Groovy `@CompileStatic`:
+- `(Integer) ?: 0` Elvis on falsy zero — replaced with explicit null check throughout
+- `x in [list]` list-literal `in` operator — replaced with `== a || == b` chains
+- `list.sort(null)` null Comparator — replaced with `Collections.sort()` or removed where collection already ordered (e.g. `ConcurrentSkipListMap.keySet()`)
+
+All three trigger `IntRange.subListBorders NPE` at runtime with no compile warning.
+
+### v0.8.43 — FS accuracy fixes: patch order, insert_before_match, boundary warning (2026-04-10)
+
+**FS-T1** — `InsertBeforeMatchTransformer`: explicit error when `options.match` contains newlines (was silent no-op).
+**FS-T2** — `FilePatchService`: `boundary_warning` emitted when `endLine` == last line of file (high risk of duplicate closing brace).
+**FS-T3** — `FilePatchService`: confirmed server already applies patch replacements bottom-to-top; class doc updated.
+**FS-T4** — `FileContentReader`: doc/config files (`.md`/`.txt`/`.yml`) under 100 KB use 600-line limit instead of 200.
 
 ### v0.8.40 — UTF-8 stdio fix (2026-04-04)
 

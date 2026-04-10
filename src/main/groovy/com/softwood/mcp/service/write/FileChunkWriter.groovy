@@ -33,7 +33,9 @@ class FileChunkWriter extends AbstractFileService {
 
     McpResponse doChunkWrite(String path, String content, Map<String, Object> options, Object requestId) {
         String sessionId = options.sessionId as String
-        int chunkIndex   = (options.chunkIndex as Integer) ?: 0
+        // @CompileStatic guard: (Integer) ?: 0 crashes when value is 0 (falsy) — use explicit null check
+        Integer chunkIndexBoxed = options.chunkIndex as Integer
+        int chunkIndex = (chunkIndexBoxed != null) ? chunkIndexBoxed.intValue() : 0
         if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for chunk_write')
         if (!content)   return McpResponse.error(requestId, -32602, 'content required for chunk_write')
 
@@ -54,7 +56,9 @@ class FileChunkWriter extends AbstractFileService {
 
     McpResponse doFinaliseWrite(String path, Map<String, Object> options, Object requestId) {
         String sessionId = options.sessionId as String
-        int totalChunks  = (options.totalChunks as Integer) ?: 0
+        // @CompileStatic guard: Integer ?: 0 triggers IntRange resolution — use explicit null check
+        Integer totalChunksBoxed = options.totalChunks as Integer
+        int totalChunks = (totalChunksBoxed != null) ? totalChunksBoxed.intValue() : 0
         if (!sessionId)      return McpResponse.error(requestId, -32602, 'options.sessionId required for finalise_write')
         if (totalChunks < 1) return McpResponse.error(requestId, -32602, 'options.totalChunks required for finalise_write')
 
@@ -107,6 +111,44 @@ class FileChunkWriter extends AbstractFileService {
         if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for abort_write')
         chunkBufferService.abortWriteSession(sessionId)
         return textResponse(requestId, [action: 'abort_write', sessionId: sessionId, success: true])
+    }
+
+    /**
+     * FS-T8: chunk_status — returns which chunks have been received for a write session
+     * and which are still missing. Call before finalise_write to verify all chunks arrived.
+     * Returns ready:true only when receivedCount == totalChunks.
+     */
+    McpResponse doChunkStatus(Map<String, Object> options, Object requestId) {
+        String sessionId = options.sessionId as String
+        // @CompileStatic guard: Integer ?: 0 triggers IntRange resolution — use explicit null check
+        Integer totalChunksBoxed = options.totalChunks as Integer
+        int totalChunks = (totalChunksBoxed != null) ? totalChunksBoxed.intValue() : 0
+        if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for chunk_status')
+        if (totalChunks < 1) return McpResponse.error(requestId, -32602, 'options.totalChunks required for chunk_status')
+
+        Map<String, Object> status = chunkBufferService.getWriteChunkStatus(sessionId)
+        if (status == null) {
+            return McpResponse.error(requestId, -32602,
+                "chunk_status: no write session found for sessionId='${sessionId}'. " +
+                'Session may have expired (TTL 30 min) or was never started.')
+        }
+
+        List<Integer> received = new ArrayList<Integer>(status.receivedChunks as Collection<Integer>)
+        List<Integer> expected = new ArrayList<Integer>()
+        for (int i = 0; i < totalChunks; i++) expected.add(i)
+        List<Integer> missing  = new ArrayList<Integer>()
+        for (Integer idx : expected) { if (!received.contains(idx)) missing.add(idx) }
+
+        Map<String, Object> result = [
+            action        : 'chunk_status',
+            sessionId     : sessionId,
+            totalChunks   : totalChunks,
+            receivedChunks: received,
+            missingChunks : missing,
+            ready         : missing.isEmpty()
+        ] as Map<String, Object>
+        log.debug('chunk_status: session={} received={}/{} missing={}', sessionId, received.size(), totalChunks, missing)
+        return textResponse(requestId, result)
     }
 
     // -----------------------------------------------------------------------

@@ -55,18 +55,18 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
             name       : 'file_write',
             description: isDescriptionCompact() ? '''\
 Write/modify files.
-Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write
+Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
 Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating — required).
 server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import''' : '''\
 Write/modify files.
-Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write
+Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
 - write(path, content): overwrite entire file
 - append(path, content): append to end
 - replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated — check error detail.
 - patch: line-range edits. options.replacements=[{startLine,endLine,newText}] 1-indexed. ALWAYS re-read target lines immediately before each patch (line numbers shift after every edit). For multi-section changes pass ALL replacements in a single patch call -- never sequential patches across turns. After any structural Groovy edit (new method/brace changes) run compileGroovy before continuing. On compile failure: git checkout HEAD -- <file> and start over with one clean patch.
 - multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Preferred for multiple text swaps in one file. Does NOT shift line numbers. Use instead of sequential patch calls where possible.
 - server_transform: server-side transform — file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
-- chunk_write/finalise_write/abort_write: large-file chunked writes.
+- chunk_write/finalise_write/abort_write: large-file chunked writes. chunk_status: verify received chunks before finalise.
 All mutating actions return content_hash. Pass options.expectedHash to reject if file changed since last read.
 SAFE EDITING: expectedHash always. get_method -> patch for code. grep -> replace for unique strings. multi_replace for multiple changes. Never sequential replaces without re-reading between them.
 CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — read it before retrying. Do NOT fall through to patch.''',
@@ -75,9 +75,9 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                 properties: [
                     action : [type: 'string',
                               enum: ['write', 'append', 'replace', 'patch', 'multi_replace',
-                                     'chunk_write', 'finalise_write', 'abort_write', 'server_transform',
+                                     'chunk_write', 'finalise_write', 'abort_write', 'chunk_status', 'server_transform',
                                      'write_office']],
-                    path   : [type: 'string', description: 'Target file path (required for all actions except abort_write)'],
+                    path   : [type: 'string', description: 'Target file path (required for all actions except abort_write and chunk_status)'],
                     content: [type: 'string', description: 'Content for write/append/chunk_write (not used for write_office)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: [
@@ -85,9 +85,9 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
                                   expectedHash: [type: 'string',  description: '12-char SHA-256 prefix from prior read/write. Rejects edit if file changed.'],
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
-                                  sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write)'],
+                                  sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write, chunk_status)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
-                                  totalChunks : [type: 'integer', description: 'Total chunks (required for finalise_write)'],
+                                  totalChunks : [type: 'integer', description: 'Total chunks (required for finalise_write, chunk_status)'],
                                   oldText     : [type: 'string',  description: 'Unique string to replace (required for replace — must appear exactly once)'],
                                   newText     : [type: 'string',  description: 'Replacement string (required for replace)'],
                                   replacements: [type: 'array',
@@ -123,7 +123,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
             options = promoteTopLevelParams(action, arguments, options)
 
             // Guard: all actions except abort_write require a valid path
-            if (!path && action != 'abort_write') {
+            if (!path && action != 'abort_write' && action != 'chunk_status') {
                 return McpResponse.error(requestId, -32602,
                     "file_write '${action}' requires a 'path' parameter (received null). " +
                     "Ensure 'path' is at the top level of the arguments object, not nested inside options.")
@@ -139,6 +139,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                 case 'chunk_write'   : response = chunkWriter.doChunkWrite(path, content, options, requestId); break
                 case 'finalise_write': response = chunkWriter.doFinaliseWrite(path, options, requestId); break
                 case 'abort_write'   : return chunkWriter.doAbortWrite(options, requestId)
+                case 'chunk_status'  : return chunkWriter.doChunkStatus(options, requestId)
                 case 'server_transform': response = fileTransformService.applyTransform(path, options, requestId); break
                 case 'write_office'    : response = officeHandler.writeOffice(path, options, requestId); break
                 default:

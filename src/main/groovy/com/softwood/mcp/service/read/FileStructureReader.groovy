@@ -182,7 +182,9 @@ class FileStructureReader extends AbstractFileService {
         boolean fuzzy     = options.fuzzy as Boolean ?: false
         if (!methodName) return McpResponse.error(requestId, -32602, 'options.method is required for get_method')
 
-        List<Map> entries = structureCache.getStructure(normalized).structure as List<Map>
+        Map<String, Object> scanResult = structureCache.getStructure(normalized)
+        List<Map> entries = scanResult.structure as List<Map>
+        String scanner    = scanResult.scanner as String
 
         Map found = fuzzy
             ? entries.find { it.type == 'method' && (it.content as String).contains(methodName) }
@@ -219,6 +221,12 @@ class FileStructureReader extends AbstractFileService {
             lines: lines.size(), content: content,
             file_content_hash: structureCache.getHash(normalized)
         ] as Map<String, Object>
+        // FS-T7: surface fallback flag when AST failed and regex scanner was used.
+        // Callers can detect compile-error files and know the boundary may be imprecise.
+        if (scanner == 'regex') {
+            gmResp.fallback = true
+            gmResp.fallback_note = 'AST unavailable (possible compile error) — method boundaries derived from regex scan. Result may be imprecise for overloaded methods or complex signatures.'
+        }
         if (methodTruncated) {
             gmResp._truncated = true
             gmResp._truncatedNote = ("Method body truncated at ${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Use action=range with startLine=${startLine} and maxLines to read the rest." as String)

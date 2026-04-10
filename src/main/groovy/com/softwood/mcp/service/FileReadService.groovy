@@ -122,7 +122,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
             Map<String, Object> options = normaliseOptions(arguments.options)
 
             // Guard: most actions require a valid path
-            if (!path && !(action in ['multi', 'multi_grep', 'project_root', 'allowed_dirs', 'chunk_read', 'finalise_read', 'help'])) {
+            if (!path && action != 'multi' && action != 'multi_grep' && action != 'project_root' && action != 'allowed_dirs' && action != 'chunk_read' && action != 'finalise_read' && action != 'help') {
                 return McpResponse.error(requestId, -32602,
                     "file_read '${action}' requires a 'path' parameter (received null).")
             }

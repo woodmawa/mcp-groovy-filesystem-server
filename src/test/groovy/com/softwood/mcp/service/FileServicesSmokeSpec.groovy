@@ -277,4 +277,103 @@ class FileServicesSmokeSpec extends Specification {
         expect:
         pathService.normalizePath('C:\\Users\\willw\\file.txt') == 'C:/Users/willw/file.txt'
     }
+
+    // -----------------------------------------------------------------------
+    // FS-T8: chunk_status action
+    // -----------------------------------------------------------------------
+
+    def "chunk_status returns receivedChunks and missingChunks correctly"() {
+        given: "a write session with chunks 0 and 2 received (1 missing)"
+        String sessionId = ChunkBufferService.newSessionId()
+        chunkBufferService.receiveWriteChunk(sessionId, 0, 'chunk-zero')
+        chunkBufferService.receiveWriteChunk(sessionId, 2, 'chunk-two')
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'chunk_status',
+            path   : null,
+            options: [sessionId: sessionId, totalChunks: 3]
+        ], 'test-cs-1')
+
+        then: "status shows 2 received, 1 missing, not ready"
+        r.error == null
+        def result = new groovy.json.JsonSlurper().parseText(
+            r.result.content[0].text as String) as Map
+        result.receivedChunks == [0, 2]
+        result.missingChunks  == [1]
+        result.ready          == false
+        result.totalChunks    == 3
+
+        cleanup:
+        chunkBufferService.abortWriteSession(sessionId)
+    }
+
+    def "chunk_status returns ready true when all chunks present"() {
+        given: "all 2 chunks received"
+        String sessionId = ChunkBufferService.newSessionId()
+        chunkBufferService.receiveWriteChunk(sessionId, 0, 'alpha')
+        chunkBufferService.receiveWriteChunk(sessionId, 1, 'beta')
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'chunk_status',
+            path   : null,
+            options: [sessionId: sessionId, totalChunks: 2]
+        ], 'test-cs-2')
+
+        then:
+        r.error == null
+        def result = new groovy.json.JsonSlurper().parseText(
+            r.result.content[0].text as String) as Map
+        result.missingChunks == []
+        result.ready         == true
+
+        cleanup:
+        chunkBufferService.abortWriteSession(sessionId)
+    }
+
+    def "chunk_status returns error for unknown sessionId"() {
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'chunk_status',
+            path   : null,
+            options: [sessionId: 'no-such-session-xyz', totalChunks: 2]
+        ], 'test-cs-3')
+
+        then: "descriptive error, not a crash"
+        r.error != null
+        r.error.message?.contains('no write session found')
+    }
+
+    // -----------------------------------------------------------------------
+    // FS-T7: get_method fallback flag via AstStructureScanner
+    // -----------------------------------------------------------------------
+
+    def "AstStructureScanner falls back to regex on a file with a syntax error"() {
+        given: "a Groovy file with a deliberate syntax error"
+        File broken = File.createTempFile('broken-', '.groovy')
+        broken.deleteOnExit()
+        broken.text = '''\
+class BrokenClass {
+    String name
+
+    void doSomething(String arg) {
+        println arg
+    }
+
+    SYNTAX ERROR HERE
+}
+'''
+        when:
+        def scanner = new com.softwood.mcp.service.AstStructureScanner()
+        def result  = scanner.scan(broken)
+
+        then: "scanner field is 'regex' (AST failed, fell back)"
+        result.scanner == 'regex'
+        result.structure != null
+
+        and: "doSomething method is still found via regex"
+        def methods = (result.structure as List).findAll { it.type == 'method' }
+        methods.any { (it.content as String).contains('doSomething') }
+    }
 }

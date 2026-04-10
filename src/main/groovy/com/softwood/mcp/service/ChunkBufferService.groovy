@@ -116,6 +116,23 @@ class ChunkBufferService {
 
 
     /**
+     * FS-T8: Return status of an in-progress write session.
+     * Tells the caller which chunks have been received and which are missing.
+     * Returns null if the session does not exist.
+     */
+    Map<String, Object> getWriteChunkStatus(String sessionId) {
+        ConcurrentSkipListMap<Integer, String> chunks = writeSessions.get(sessionId)
+        if (chunks == null) return null
+        // ConcurrentSkipListMap.keySet() is already in natural (ascending) order -- no sort needed
+        List<Integer> received = new ArrayList<Integer>(chunks.keySet())
+        return [
+            sessionId     : sessionId,
+            receivedChunks: received,
+            receivedCount : received.size()
+        ] as Map<String, Object>
+    }
+
+    /**
      * Abort and discard a write session.
      */
     void abortWriteSession(String sessionId) {
