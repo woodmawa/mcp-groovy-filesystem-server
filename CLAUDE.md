@@ -5,7 +5,7 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.8.45` (check `build.gradle` to confirm)
+- **Current version:** `0.8.48` (check `build.gradle` to confirm)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -155,6 +155,19 @@ file_write action=server_transform path=<file>
 - **Never** sequential `replace` calls without re-reading between them — use `multi_replace`
 - **For files >200 lines:** `structure` → `get_method`, never `read` without `force=true`
 - **After any patch:** use returned `content_hash` as `expectedHash` for the next edit
+- **multi_replace overlap rule (v0.8.48):** entries sharing a boundary line are rejected — merge into one entry or use separate calls
+- **Boundary patch (v0.8.48):** response includes `requires_reread:true` when `startLine==1` or `endLine==last` — re-read before next edit
+
+### Error contract (v0.8.48+)
+
+All tool errors return `isError:true` in content — Claude Desktop renders `content[0].text` directly. The old JSON-RPC `{error:{code,message}}` is no longer used for tool handlers.
+```groovy
+// NEW (0.8.48+)
+assert r.result.isError == true
+assert (r.result.content[0] as Map).text.contains('expected keyword')
+// OLD (pre-0.8.48) — no longer applies
+assert r.error != null   // always null for tool errors now
+```
 
 ---
 
@@ -180,6 +193,8 @@ start_flow mode=flow templateName=mcp-deploy
            params={serverName:"filesystem", projectDir:"...", newVersion:"Y", jarPrefix:"mcp-groovy-filesystem-server"}
 ```
 
+**`mcp-http-servers.json` is now auto-updated** by `copyToJarsDir` (v0.8.48) — no manual step needed after deploy.
+
 Five-config rule — on every version bump update ALL of:
 1. `build.gradle` version string
 2. `claude-sync/mcp-http-servers.json`
@@ -194,6 +209,18 @@ Five-config rule — on every version bump update ALL of:
 ```
 # Confirm version
 server_lifecycle action=status verbose=true  → jar should show new version
+
+# Test error surfacing (v0.8.48 contract)
+file_write action=replace path=<any file> options={oldText:'NOTEXIST', expectedHash:<hash>}
+→ r.result.isError==true, content[0].text contains 'oldText not found'  (NOT r.error!=null)
+
+# Test multi_replace overlap rejection
+file_write action=multi_replace path=<file> options={replacements:[{oldText:'a\nb',newText:'X'},{oldText:'b\nc',newText:'Y'}],...}
+→ isError:true, text contains 'overlap'
+
+# Test boundary patch requires_reread
+file_write action=patch path=<file> options={replacements:[{startLine:1,endLine:1,newText:'X'}],...}
+→ success, parseContent(r).requires_reread == true
 
 # Test knownHash on read
 file_read action=structure path=<any groovy file>

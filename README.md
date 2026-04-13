@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.45
+# mcp-groovy-filesystem-server v0.8.48
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -96,7 +96,21 @@ with `oldText not found` even when the text was visually identical.
 
 ## What's New
 
-### v0.8.46 — FS-T6: patch empty options returns readable error (2026-04-10)
+### v0.8.48 — TDD hardening: error surfacing, multi_replace safety, brace pre-write (2026-04-13)
+
+**Root cause analysis (8 RCAs) and full TDD contract spec delivered.** All tool handler errors now visible to Claude Desktop.
+
+- **RCA-1 / `McpResponse.toolError()`** — `McpResponse.error()` produced a JSON-RPC protocol error object that Claude Desktop silently swallowed for `tools/call`. New `toolError()` factory returns `isError:true` in the content array — the format DT actually renders. All tool handlers (`FileReplaceService`, `FilePatchService`, `FileTransformService`, `McpController.handleToolsCall`) migrated.
+- **RCA-2 / `multi_replace` overlap detection** — Added suffix/prefix partial overlap check (entries sharing a boundary line now rejected with actionable fix guidance). Added simulation pass: if applying entry N makes entry M unfindable, whole batch fails, file untouched.
+- **RCA-3 / `requires_reread`** — Boundary patches (`startLine==1` or `endLine==last line`) now include `requires_reread:true` in success response. `recentPatches` map updated only after confirmed successful `atomicWrite`.
+- **RCA-5 / position-order apply** — `doMultiReplace` now locates all positions first, applies in reverse position order (highest offset first). Prevents earlier replacements shifting offsets for later ones.
+- **RCA-6 / `FileTransformService`** — All 9 `McpResponse.error()` call sites replaced with `toolError()`.
+- **RCA-7 / brace check pre-write** — `checkBraceBalance` in `doMultiReplace` now runs on simulated result **before** `atomicWrite`. Returns `toolError`, file not modified if unbalanced. Previously fired post-write as a warning on an already-corrupted file.
+- **RCA-8 / legacy tests** — `FileReplaceAndPatchSpec`, `FileServicesSmokeSpec`, `McpControllerSmokeSpec` updated to new `isError:true` contract.
+- **TDD gate** — `FileContractSpec` (CT-1..CT-13) written first, confirmed failing against 0.8.47, all 13 passing on 0.8.48. Full suite: 54 tests, 0 failures.
+- **Deploy fix** — `copyToJarsDir` Gradle task now auto-updates `mcp-http-servers.json` jar reference on every deploy. Eliminates stale HTTP companion jar problem.
+
+### v0.8.47 — TDD fixes: unicode replace, multi_replace normalisation, boundary patch safety (2026-04-12)
 
 `FilePatchService.doPatch`: when `options.replacements` is missing or empty, now
 returns `textResponse([error:..., hint:...])` instead of `McpResponse.error(-32602)`.
@@ -266,6 +280,8 @@ independent instances. They share `best_practices.db` via JDBC but nothing else.
 5. **Human gate** — close DT, reopen DT
 6. **Verify** — new session auto-detects `deploy-state.json`, confirms jar, deletes state file
 
+**`mcp-http-servers.json` is now auto-updated** by `copyToJarsDir` (v0.8.48) — no manual patch needed after deploy.
+
 **NEVER restart DT without step 4 completing.** The flow updates `mcp-http-servers.json`,
 `cc-config`, `server_versions`, and writes `deploy-state.json`. Skipping it requires manual
 patching of these files every time.
@@ -335,6 +351,8 @@ Also copies jar to `claude-sync/jars/` via `copyToJarsDir` task (for HTTP compan
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.48** | `McpResponse.toolError()` — all tool errors now `isError:true` content (DT-visible). `multi_replace`: suffix/prefix overlap detection + simulation pass (entry-makes-entry-unfindable aborts batch). Brace check runs on simulated result **before** write. `requires_reread:true` on boundary patches. Position-order apply in `doMultiReplace`. `FileTransformService` errors surfaced. `copyToJarsDir` auto-updates `mcp-http-servers.json`. TDD: `FileContractSpec` CT-1..CT-13. 54 tests, 0 failures. |
+| **0.8.47** | Fix A'' — per-position unicode replace in `doReplace`/`doMultiReplace` (NFC/NFKC). Fix B — per-entry normalisation tracking. Fix C — sequential boundary patch blocked. Fix D — `lines_shifted`. Fix E — `tail_content`. Fix F — pre-apply brace check (.groovy/.java). Fix G — `removed_lines` snippet. |
 | **0.8.45** | `FileReplaceService.checkBraceBalance()` — brace-balance warning on `replace` and `multi_replace`. Emits `brace_warning` when `newText` net brace count differs from `oldText`. Prevents silent method-boundary corruption. |
 | **0.8.44** | `chunk_status` action + `get_method` fallback flag (AST failure → regex scanner with `fallback:true`). `@CompileStatic` Elvis/`in`/sort hardening (practices #311–314). |
 | **0.8.43** | `insert_before_match` newline error, `patch` boundary_warning, doc-file 600-line read limit (FS-T1/T2/T4). |

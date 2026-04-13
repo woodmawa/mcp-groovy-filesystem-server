@@ -67,9 +67,12 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 
 **replace** — replace ONE unique string. Params inside `options`: `oldText`, `newText`. Fails if not found or found multiple times (returns nearest_match or line numbers). Always grep first to confirm uniqueness.
 
-**patch** — line-range edits: `options.replacements[]` = `[{startLine, endLine, newText}]` (1-indexed, inclusive). ALWAYS call get_method immediately before to get current line numbers — they shift after every patch.
+**patch** — line-range edits: `options.replacements[]` = `[{startLine, endLine, newText}]` (1-indexed, inclusive). ALWAYS call get_method immediately before to get current line numbers — they shift after every patch. Response includes `requires_reread:true` when patch touches line 1 or the last line (boundary patch) — re-read before next edit on that file.
 
-**multi_replace** — ordered list of `[{oldText, newText}]` swaps. Pre-validates ALL before writing. Preferred for multiple changes to same file.
+**multi_replace** — ordered list of `[{oldText, newText}]` swaps. Pre-validates ALL before writing. Preferred for multiple changes to same file. Safety rules (v0.8.48):
+- Entries that overlap (one contains the other, or they share a boundary line) are **rejected** with a clear error — merge into one entry or use separate calls.
+- A simulation pass runs before write: if entry N makes entry M unfindable, the whole batch fails and the file is unchanged.
+- Brace balance is checked on the simulated result **before** writing — returns error if unbalanced, file not modified.
 
 **server_transform** — server-side named transformation. File content never crosses context boundary. REQUIRED: `options.expectedHash`. `options.transform`:
 - `replace_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
@@ -96,7 +99,7 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 - `path` must be at TOP LEVEL of arguments, not inside options
 - Never use sequential replace calls without re-reading between them → use multi_replace
 - After any patch, re-read before next patch (line numbers shift)
-- replace failure returns JSON-RPC error with nearest_match hint — read it before retrying
+- **Error responses (v0.8.48+):** all tool errors return `isError:true` in content — `content[0].text` contains the error message. The old JSON-RPC `{error:{code,message}}` format is no longer used for tool-level errors.
 
 ---
 
@@ -156,8 +159,13 @@ Key options:
 - `options.grepPattern` — Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including `|` alternation (unlike Windows `findstr`). Example: `"MessagesRequestBuilder\\.class$|EventsRequestBuilder\\.class$"`. Use this instead of piping to findstr for any output filtering.
 
 ### Windows builds
-Use `action=cmd` for gradle: `script='gradlew.bat clean bootJar'`
-Use `action=powershell` for scripts: `script='C:/path/to/script.ps1'`
+Use `tools action=gradle` for all builds — canonical path from both Claude and AW flows:
+```
+mcp-groovy-filesystem-server:tools action=gradle subcommand=compileGroovy options={workingDir:"<projectDir>"}
+mcp-groovy-filesystem-server:tools action=gradle subcommand=packageMcpbThin options={workingDir:"<projectDir>"}
+mcp-groovy-filesystem-server:tools action=gradle subcommand=installMcpbLocal options={workingDir:"<projectDir>"}
+```
+Do NOT use `execute action=cmd script='gradlew.bat ...'` — that is the deprecated path.
 
 ---
 

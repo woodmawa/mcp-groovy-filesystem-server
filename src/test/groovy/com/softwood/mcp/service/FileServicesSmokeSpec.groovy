@@ -222,8 +222,11 @@ class FileServicesSmokeSpec extends Specification {
             options: [:]
         ], 'test-patch-2')
 
-        then: "error returned, file untouched"
-        r.error != null
+        then: "isError:true tool error visible to Claude (RCA-1 fix: was textResponse error map)"
+        r.error == null
+        r.result != null
+        r.result.isError == true
+        (r.result.content[0] as Map).text?.toString()?.contains('patch requires')
         tmp.text == 'hello'
     }
 

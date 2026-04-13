@@ -9,7 +9,9 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.46'
+version = '0.8.48'
+// v0.8.48: RCA-1 McpResponse.toolError() -- all tool handler errors now return isError:true content (not JSON-RPC error object); Claude Desktop was silently swallowing -326xx errors. RCA-2 doMultiReplace: suffix/prefix partial overlap detection + simulation pass before apply (entry-makes-entry-unfindable fails whole batch). RCA-3 requires_reread:true on boundary patches (startLine==1 OR endLine==last); recentPatches only updated after successful write. RCA-5 doMultiReplace applies in reverse position order. RCA-6 FileTransformService all errors via toolError. RCA-7 checkBraceBalance runs on simulated result BEFORE atomicWrite. RCA-8 legacy specs updated to new isError:true contract. TDD: FileContractSpec CT-1..CT-13 all green.
+// v0.8.47: Fix A'' -- positionalReplace in doReplace/doMultiReplace: unicode NFC/NFKC normalisation now uses per-position replace so only the matched region is rewritten, not the whole file (ideation #35). Fix B -- per-entry normalisation tracking in doMultiReplace: each entry independently resolved, no global NFKC clobber of ASCII entries. Fix C -- sequential boundary patch (endLine==EOF) within 60s now BLOCKED with clear error. Fix D -- lines_shifted added to all patch responses. Fix E -- tail_content (last 5 lines) included in boundary patch responses. Fix F -- pre-apply brace balance check for .groovy/.java boundary patches. Fix G -- removed_lines snippet in patch response.
 // v0.8.46: FS-T6 -- doPatch empty/missing options.replacements now returns textResponse([error:..., hint:...]) instead of McpResponse.error(-32602). DT was rendering -32602 as opaque 'Tool execution failed' rather than showing the message. textResponse wraps in MCP content block so DT shows the error map as readable text.
 // v0.8.44: FS-T7: FileStructureReader.doGetMethod() surfaces fallback:true + fallback_note when regex scanner used (AST compile error). FS-T8: ChunkBufferService.getWriteChunkStatus() + FileChunkWriter.doChunkStatus() + FileWriteService action=chunk_status -- returns receivedChunks/missingChunks/ready:bool so callers can verify all chunks arrived before finalise_write.
 // v0.8.42: ContextServerClient.resolveSessionId() fix -- null result from JDBC no longer cached (was blocking retries). HTTP fallback log message clarified as expected-in-MCPB. resolveSessionId() now retries JDBC on every call until active_session row exists. Fixes session_working_files always getting session_id='unknown' in MCPB mode.
@@ -387,6 +389,31 @@ tasks.register('copyToJarsDir') {
             logger.lifecycle("JARS: copied ${jar.name} -> claude-sync/jars/")
         } else {
             logger.warn("JARS: WARNING -- jar not found at ${jar.path}, skipping copy")
+        }
+
+        // Update mcp-http-servers.json jar reference so HTTP companion always starts
+        // from the newly deployed jar without a manual fix after each deploy.
+        // Replaces any previous mcp-groovy-filesystem-server-*.jar entry for the filesystem server.
+        def httpServersFile = new File(claudeSyncDir, 'mcp-http-servers.json')
+        try {
+            if (httpServersFile.exists()) {
+                String jsonText = httpServersFile.text
+                // Replace old jar filename for filesystem server only (leaves other server entries untouched)
+                String updated = jsonText.replaceAll(
+                    /"jar":\s*"mcp-groovy-filesystem-server-[^"]+\.jar"/,
+                    "\"jar\": \"${jar.name}\""
+                )
+                if (updated != jsonText) {
+                    httpServersFile.text = updated
+                    logger.lifecycle("HTTP-CFG: mcp-http-servers.json updated -> ${jar.name}")
+                } else {
+                    logger.warn("HTTP-CFG: WARNING -- jar entry for filesystem not found in mcp-http-servers.json, check manually")
+                }
+            } else {
+                logger.warn("HTTP-CFG: WARNING -- mcp-http-servers.json not found at ${httpServersFile.path}")
+            }
+        } catch (Exception e) {
+            logger.warn("HTTP-CFG: WARNING -- could not update mcp-http-servers.json: ${e.message}")
         }
     }
 }

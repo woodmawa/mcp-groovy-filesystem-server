@@ -81,7 +81,7 @@ class McpControllerSmokeSpec extends Specification {
         response.error.code == -32601
     }
 
-    def "Unknown tool returns -32601 error"() {
+    def "Unknown tool returns isError:true tool error (updated for RCA-1 fix)"() {
         when:
         McpRequest req = new McpRequest(
             id: 'err-2',
@@ -90,9 +90,11 @@ class McpControllerSmokeSpec extends Specification {
         )
         McpResponse response = controller.handleRequest(req)
 
-        then:
-        response.error != null
-        response.error.code == -32601
+        then: "toolError: result with isError:true, not a JSON-RPC error object"
+        response.error == null
+        response.result != null
+        response.result.isError == true
+        (response.result.content[0] as Map).text?.toString()?.contains('Unknown tool')
     }
 
     def "tools/call dispatches file_read project_root correctly"() {

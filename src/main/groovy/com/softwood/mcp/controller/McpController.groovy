@@ -138,7 +138,7 @@ class McpController {
     private McpResponse handleToolsCall(McpRequest request) {
         String toolName = request.params?.name as String
         if (!toolName) {
-            return McpResponse.error(request.id, -32602, "tools/call missing required param: name")
+            return McpResponse.toolError(request.id, "tools/call missing required param: name")
         }
 
         Map<String, Object> arguments = (request.params?.arguments as Map<String, Object>) ?: [:] as Map<String, Object>
@@ -146,7 +146,7 @@ class McpController {
         ToolHandler handler = handlerMap[toolName]
         if (!handler) {
             log.warn("Unknown tool called: {}", toolName)
-            return McpResponse.error(request.id, -32601,
+            return McpResponse.toolError(request.id,
                 "Unknown tool: '${toolName}'. Available: ${handlerMap.keySet().join(', ')}" as String)
         }
 
@@ -174,7 +174,7 @@ class McpController {
             int tokenEst = Math.round(charCount / 4.0f) as int
             log.warn('BACKSTOP triggered: {} response {}chars (~{}tok) exceeds global cap {}chars',
                 toolName, charCount, tokenEst, globalResponseCapChars)
-            return McpResponse.error(request.id, -32603,
+            return McpResponse.toolError(request.id,
                 "Response too large: ${toolName} produced ${charCount} chars (~${tokenEst} tokens). " +
                 "Use targeted actions: structure/get_method/range/grep instead of full reads.")
         }

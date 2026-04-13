@@ -62,7 +62,7 @@ class FileTransformService extends AbstractFileService {
             String expectedHash  = options.expectedHash as String
 
             if (!expectedHash) {
-                return McpResponse.error(requestId, -32602,
+                return McpResponse.toolError(requestId,
                     'expectedHash is required for server_transform — Claude has not read the file ' +
                     'content, so drift cannot be detected without it. ' +
                     'Read the file first (file_read action=structure or action=read) to obtain its content_hash.')
@@ -72,14 +72,14 @@ class FileTransformService extends AbstractFileService {
             try {
                 normalized = validateFilePath(path)
             } catch (SecurityException e) {
-                return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(e.message)}")
+                return McpResponse.toolError(requestId, "Path not allowed: ${sanitize(e.message)}")
             } catch (FileNotFoundException e) {
-                return McpResponse.error(requestId, -32602, sanitize(e.message))
+                return McpResponse.toolError(requestId, sanitize(e.message))
             }
 
             String actualHash = WriteUtils.fileHash(Paths.get(normalized))
             if (actualHash != expectedHash) {
-                return McpResponse.error(requestId, -32602,
+                return McpResponse.toolError(requestId,
                     "Hash mismatch — file changed since last read. " +
                     "Re-read the file to get the current content_hash, then retry. " +
                     "(expected=${expectedHash}, actual=${actualHash})")
@@ -87,14 +87,14 @@ class FileTransformService extends AbstractFileService {
 
             if (!transformName) {
                 String available = (registry.keySet() as List<String>).sort().join(', ')
-                return McpResponse.error(requestId, -32602,
+                return McpResponse.toolError(requestId,
                     "options.transform is required. Available transforms: ${available}")
             }
 
             FileTransformer transformer = registry[transformName]
             if (!transformer) {
                 String available = (registry.keySet() as List<String>).sort().join(', ')
-                return McpResponse.error(requestId, -32602,
+                return McpResponse.toolError(requestId,
                     "Unknown transform '${sanitize(transformName)}'. Available: ${available}")
             }
 
@@ -123,7 +123,7 @@ class FileTransformService extends AbstractFileService {
 
             if (allowedExts != null && !(ext in allowedExts)) {
                 String allowed = allowedExts.collect { ".$it" }.join(', ')
-                return McpResponse.error(requestId, -32602,
+                return McpResponse.toolError(requestId,
                     "server_transform '${sanitize(transformName)}' does not support '.${ext}' files. " +
                     "Supported: ${allowed}. " +
                     "Use file_write action=multi_replace for arbitrary text swaps in unsupported file types.")
@@ -135,7 +135,7 @@ class FileTransformService extends AbstractFileService {
                 String msg = result.hint
                     ? "${result.error}\nHint: ${result.hint}"
                     : result.error
-                return McpResponse.error(requestId, -32602, msg)
+                return McpResponse.toolError(requestId, msg)
             }
 
             String newHash = WriteUtils.fileHash(Paths.get(normalized))
@@ -148,7 +148,7 @@ class FileTransformService extends AbstractFileService {
 
         } catch (Exception e) {
             log.error('server_transform error: {}', e.message)
-            return McpResponse.error(requestId, -32603, sanitize(e.message ?: e.class.simpleName))
+            return McpResponse.toolError(requestId, sanitize(e.message ?: e.class.simpleName))
         }
     }
 }
