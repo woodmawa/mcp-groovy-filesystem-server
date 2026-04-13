@@ -161,31 +161,39 @@ class FilePatchService extends AbstractFileService {
             }
         }
 
-        // Fix F: pre-apply brace balance check for Groovy/Java boundary patches.
-        // Simulate the full post-patch result and count braces before writing.
-        if (hasBoundaryPatch && (normalized.endsWith('.groovy') || normalized.endsWith('.java'))) {
-            // Build a simulated result by applying all replacements to a copy of lines
-            List<String> simLines = new ArrayList<String>(lines)
-            List<Map<String, Object>> simSorted = replacements.sort(false) { Map a, Map b ->
-                (b.startLine as int) <=> (a.startLine as int)
-            }
-            simSorted.each { Map<String, Object> rep ->
+        // Fix F (extended v0.8.49): per-replacement brace delta check for ALL Groovy/Java patches.
+        // Whole-file brace count stays balanced when a replacement swaps a brace-balanced removed
+        // section for a brace-balanced newText. But a patch can be structurally broken even with
+        // balanced totals -- e.g. removing 'if (x) {\n    body' (net +1 open) and replacing with
+        // just 'if (x) {\n    newBody' (also net +1 open) leaves the orphaned } from the original
+        // block closing the wrong scope. Correct check: for each replacement, the brace delta of
+        // (removedLines) must equal the brace delta of (newText). If they differ, the patch
+        // structurally corrupts the file even if the global count stays balanced. CT-14/CT-15.
+        if (normalized.endsWith('.groovy') || normalized.endsWith('.java')) {
+            for (Map<String, Object> rep : sorted) {
                 int s = (rep.startLine as int) - 1
                 int e = (rep.endLine   as int) - 1
-                String nt = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
-                List<String> nl = nt ? new ArrayList<String>(Arrays.asList(nt.split('\n', -1))) : [] as List<String>
-                simLines[s..e] = nl
-            }
-            String simContent = simLines.join('\n')
-            int openCount  = simContent.count('{')
-            int closeCount = simContent.count('}')
-            int imbalance  = Math.abs(openCount - closeCount)
-            if (imbalance > 1) {
-                log.warn('patch: pre-apply brace check REJECTED {} -- open={} close={} imbalance={}', normalized, openCount, closeCount, imbalance)
-                return McpResponse.toolError(requestId,
-                    ('patch: pre-apply brace check rejected boundary patch on ' + normalized.tokenize('/').last() + ': ' +
-                     'simulated result has ' + openCount + ' open braces and ' + closeCount + ' close braces (imbalance=' + imbalance + '). ' +
-                     'Verify newText includes all required closing braces. File NOT modified.'))
+                String removedContent = lines[s..e].join('\n')
+                String newContent     = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+                int removedOpen  = removedContent.count('{')
+                int removedClose = removedContent.count('}')
+                int newOpen      = newContent.count('{')
+                int newClose     = newContent.count('}')
+                int removedDelta = removedOpen  - removedClose   // +ve = more opens in removed
+                int newDelta     = newOpen      - newClose       // +ve = more opens in newText
+                if (removedDelta != newDelta) {
+                    log.warn('patch: brace delta mismatch REJECTED {} line {}-{}: removed delta={} new delta={}',
+                        normalized, rep.startLine, rep.endLine, removedDelta, newDelta)
+                    return McpResponse.toolError(requestId,
+                        ('patch: brace structure mismatch on ' + normalized.tokenize('/').last() +
+                         ' lines ' + rep.startLine + '-' + rep.endLine + ': ' +
+                         'removed section has brace delta ' + removedDelta +
+                         ' (opens=' + removedOpen + ' closes=' + removedClose + ')' +
+                         ' but newText has brace delta ' + newDelta +
+                         ' (opens=' + newOpen + ' closes=' + newClose + '). ' +
+                         'Extend the replacement range to include all closing braces for blocks it opens, ' +
+                         'or ensure newText closes every block it opens. File NOT modified.'))
+                }
             }
         }
 

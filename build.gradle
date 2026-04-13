@@ -9,7 +9,14 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.48'
+version = '0.8.49'
+// v0.8.49: Fix F extended -- FilePatchService brace delta check now covers ALL mid-file
+//          .groovy/.java patches, not just boundary patches. New algorithm: per-replacement
+//          brace delta check (removedLines delta must equal newText delta). Catches the exact
+//          failure mode where a patch removes 'if (!x) {\n body' (delta +1) but replaces
+//          with flat content (delta 0), orphaning the closing } in the surrounding scope.
+//          TDD: CT-14 (delta mismatch blocked) + CT-15 (balanced replacement passes). Full
+//          suite CT-1..CT-15 green. Root cause of PipelineExecutionService corruption session.
 // v0.8.48: RCA-1 McpResponse.toolError() -- all tool handler errors now return isError:true content (not JSON-RPC error object); Claude Desktop was silently swallowing -326xx errors. RCA-2 doMultiReplace: suffix/prefix partial overlap detection + simulation pass before apply (entry-makes-entry-unfindable fails whole batch). RCA-3 requires_reread:true on boundary patches (startLine==1 OR endLine==last); recentPatches only updated after successful write. RCA-5 doMultiReplace applies in reverse position order. RCA-6 FileTransformService all errors via toolError. RCA-7 checkBraceBalance runs on simulated result BEFORE atomicWrite. RCA-8 legacy specs updated to new isError:true contract. TDD: FileContractSpec CT-1..CT-13 all green.
 // v0.8.47: Fix A'' -- positionalReplace in doReplace/doMultiReplace: unicode NFC/NFKC normalisation now uses per-position replace so only the matched region is rewritten, not the whole file (ideation #35). Fix B -- per-entry normalisation tracking in doMultiReplace: each entry independently resolved, no global NFKC clobber of ASCII entries. Fix C -- sequential boundary patch (endLine==EOF) within 60s now BLOCKED with clear error. Fix D -- lines_shifted added to all patch responses. Fix E -- tail_content (last 5 lines) included in boundary patch responses. Fix F -- pre-apply brace balance check for .groovy/.java boundary patches. Fix G -- removed_lines snippet in patch response.
 // v0.8.46: FS-T6 -- doPatch empty/missing options.replacements now returns textResponse([error:..., hint:...]) instead of McpResponse.error(-32602). DT was rendering -32602 as opaque 'Tool execution failed' rather than showing the message. textResponse wraps in MCP content block so DT shows the error map as readable text.

@@ -385,4 +385,90 @@ class FileContractSpec extends Specification {
         r.result.isError == null || r.result.isError == false
         readFileContent(f.path) == "AAA\nbbb\nCCC\n"
     }
+
+    // -----------------------------------------------------------------------
+    // CT-14: patch replaces block-opening lines but excludes the matching close
+    //        -> brace delta mismatch -> BLOCKED
+    //
+    // This is the exact failure mode that corrupted PipelineExecutionService:
+    // A patch replaces 'if (!x) {\n    return err' (removed delta +1 open)
+    // with 'return McpResponse.toolError(...)' (newText delta 0).
+    // The orphaned } that was closing the if-block remains in the file and
+    // now closes the wrong scope. The patch tool must detect this mismatch.
+    // -----------------------------------------------------------------------
+    def "CT-14: patch with brace delta mismatch between removed and newText is blocked"() {
+        given: "a Groovy file with an if-block guarded by a closing brace on a separate line"
+        def f = writeFile('ct14.groovy',
+            "class Foo {\n" +
+            "    void bar() {\n" +
+            "        if (!thing) {\n" +
+            "            return 'error'\n" +
+            "        }\n" +
+            "        doWork()\n" +
+            "    }\n" +
+            "}\n")
+        String originalContent = readFileContent(f.path)
+
+        when: "patch replaces the if-block opening + body (lines 3-4, delta +1 open removed)"
+        //     but newText has no opening brace (delta 0) -- the } on line 5 is now orphaned"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [[
+                    startLine: 3,
+                    endLine  : 4,
+                    // removed delta: 'if (!thing) {' has +1 open. newText has 0 braces.
+                    // delta mismatch: removed=+1, new=0 -> orphaned } on line 5
+                    newText  : "            return McpResponse.toolError(requestId, 'thing required')"
+                ]]
+            ]
+        ], 'ct14')
+
+        then: "patch is rejected -- brace delta mismatch detected"
+        assertToolError(r, 'brace')
+        readFileContent(f.path) == originalContent
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-15: patch that replaces an if-block body including its closing brace
+    //        -> succeeds and file remains balanced
+    //
+    // Companion to CT-14: proves the check doesn't over-fire. A patch that
+    // includes the closing } in its range produces a balanced result and
+    // must succeed.
+    // -----------------------------------------------------------------------
+    def "CT-15: patch that replaces a complete if-block (including closing brace) succeeds"() {
+        given: "same Groovy file with balanced if block"
+        def f = writeFile('ct15.groovy',
+            "class Foo {\n" +
+            "    void bar() {\n" +
+            "        if (!thing) {\n" +
+            "            return 'error'\n" +
+            "        }\n" +
+            "        doWork()\n" +
+            "    }\n" +
+            "}\n")
+
+        when: "patch replaces lines 3-5 -- the full if block including its closing brace"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [[
+                    startLine: 3,
+                    endLine  : 5,
+                    newText  : "        if (!thing) {\n            return 'replaced'\n        }"
+                ]]
+            ]
+        ], 'ct15')
+
+        then: "patch succeeds -- braces balanced, content updated"
+        r.result != null
+        r.result.isError == null || r.result.isError == false
+        readFileContent(f.path).contains("return 'replaced'")
+        !readFileContent(f.path).contains("return 'error'")
+    }
 }
