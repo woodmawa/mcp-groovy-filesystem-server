@@ -36,8 +36,8 @@ class FileChunkWriter extends AbstractFileService {
         // @CompileStatic guard: (Integer) ?: 0 crashes when value is 0 (falsy) — use explicit null check
         Integer chunkIndexBoxed = options.chunkIndex as Integer
         int chunkIndex = (chunkIndexBoxed != null) ? chunkIndexBoxed.intValue() : 0
-        if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for chunk_write')
-        if (!content)   return McpResponse.error(requestId, -32602, 'content required for chunk_write')
+        if (!sessionId) return McpResponse.toolError(requestId, 'options.sessionId required for chunk_write')
+        if (!content)   return McpResponse.toolError(requestId, 'content required for chunk_write')
 
         int received = chunkBufferService.receiveWriteChunk(sessionId, chunkIndex, content)
         log.debug("chunk_write: session={}, index={}, received={}", sessionId, chunkIndex, received)
@@ -59,8 +59,8 @@ class FileChunkWriter extends AbstractFileService {
         // @CompileStatic guard: Integer ?: 0 triggers IntRange resolution — use explicit null check
         Integer totalChunksBoxed = options.totalChunks as Integer
         int totalChunks = (totalChunksBoxed != null) ? totalChunksBoxed.intValue() : 0
-        if (!sessionId)      return McpResponse.error(requestId, -32602, 'options.sessionId required for finalise_write')
-        if (totalChunks < 1) return McpResponse.error(requestId, -32602, 'options.totalChunks required for finalise_write')
+        if (!sessionId)      return McpResponse.toolError(requestId, 'options.sessionId required for finalise_write')
+        if (totalChunks < 1) return McpResponse.toolError(requestId, 'options.totalChunks required for finalise_write')
 
         String normalized = normalizeAndCheckPath(path)
         boolean backup    = options.backup as boolean ?: false
@@ -108,7 +108,7 @@ class FileChunkWriter extends AbstractFileService {
 
     McpResponse doAbortWrite(Map<String, Object> options, Object requestId) {
         String sessionId = options.sessionId as String
-        if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for abort_write')
+        if (!sessionId) return McpResponse.toolError(requestId, 'options.sessionId required for abort_write')
         chunkBufferService.abortWriteSession(sessionId)
         return textResponse(requestId, [action: 'abort_write', sessionId: sessionId, success: true])
     }
@@ -123,13 +123,12 @@ class FileChunkWriter extends AbstractFileService {
         // @CompileStatic guard: Integer ?: 0 triggers IntRange resolution — use explicit null check
         Integer totalChunksBoxed = options.totalChunks as Integer
         int totalChunks = (totalChunksBoxed != null) ? totalChunksBoxed.intValue() : 0
-        if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for chunk_status')
-        if (totalChunks < 1) return McpResponse.error(requestId, -32602, 'options.totalChunks required for chunk_status')
+        if (!sessionId) return McpResponse.toolError(requestId, 'options.sessionId required for chunk_status')
+        if (totalChunks < 1) return McpResponse.toolError(requestId, 'options.totalChunks required for chunk_status')
 
         Map<String, Object> status = chunkBufferService.getWriteChunkStatus(sessionId)
         if (status == null) {
-            return McpResponse.error(requestId, -32602,
-                "chunk_status: no write session found for sessionId='${sessionId}'. " +
+            return McpResponse.toolError(requestId, "chunk_status: no write session found for sessionId='${sessionId}'. " +
                 'Session may have expired (TTL 30 min) or was never started.')
         }
 

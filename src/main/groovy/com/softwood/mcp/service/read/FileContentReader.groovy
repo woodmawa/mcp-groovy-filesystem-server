@@ -92,8 +92,7 @@ class FileContentReader extends AbstractFileService {
                 : readMaxLinesBeforeRefuse
             int lineCount = ReadResponseHelper.countLinesUpTo(normalized, effectiveLimit, encoding)
             if (lineCount > effectiveLimit) {
-                return McpResponse.error(requestId, -32602,
-                    ("read refused: file has more than ${effectiveLimit} lines" +
+                return McpResponse.toolError(requestId, ("read refused: file has more than ${effectiveLimit} lines" +
                      (isDocFile ? " (doc/config file limit=${effectiveLimit})" : '') + ". " +
                      "Use targeted actions instead:\n" +
                      "  1. structure(path, compact=true) - get method/section outline\n" +
@@ -317,7 +316,7 @@ class FileContentReader extends AbstractFileService {
     McpResponse doGrep(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
         String patternStr = options.pattern as String
-        if (!patternStr) return McpResponse.error(requestId, -32602, 'options.pattern required for grep')
+        if (!patternStr) return McpResponse.toolError(requestId, 'options.pattern required for grep')
 
         int maxMatches   = (options.maxMatches as Integer) ?: maxSearchMatchesPerFile
         int contextLines = (options.contextLines as Integer) ?: 0
@@ -423,11 +422,11 @@ class FileContentReader extends AbstractFileService {
      */
     McpResponse doMultiGrep(Map<String, Object> options, Object requestId) {
         List<String> paths = (options.paths as List<String>) ?: []
-        if (!paths) return McpResponse.error(requestId, -32602, 'options.paths required for multi_grep')
+        if (!paths) return McpResponse.toolError(requestId, 'options.paths required for multi_grep')
         if (paths.size() > 20) paths = paths.take(20)
 
         String patternStr = options.pattern as String
-        if (!patternStr) return McpResponse.error(requestId, -32602, 'options.pattern required for multi_grep')
+        if (!patternStr) return McpResponse.toolError(requestId, 'options.pattern required for multi_grep')
 
         int maxMatchesPerFile = (options.maxMatches as Integer) ?: 5
         int contextLines      = (options.contextLines as Integer) ?: 0
@@ -494,7 +493,7 @@ class FileContentReader extends AbstractFileService {
 
     McpResponse doMulti(Map<String, Object> options, Object requestId) {
         List<String> paths = (options.paths as List<String>) ?: []
-        if (!paths) return McpResponse.error(requestId, -32602, 'options.paths required for multi read')
+        if (!paths) return McpResponse.toolError(requestId, 'options.paths required for multi read')
         if (paths.size() > maxReadMultiple) paths = paths.take(maxReadMultiple)
 
         String encoding   = options.encoding as String ?: 'UTF-8'
@@ -521,8 +520,7 @@ class FileContentReader extends AbstractFileService {
             } catch (Exception ignored) {}
         }
         if (totalBytes > aggregateCapBytes) {
-            return McpResponse.error(requestId, -32602,
-                ("multi: aggregate file sizes (~${totalBytes / 1024}KB) exceed 1MB cap. " +
+            return McpResponse.toolError(requestId, ("multi: aggregate file sizes (~${totalBytes / 1024}KB) exceed 1MB cap. " +
                  "Use individual reads with chunking for large files." as String))
         }
 

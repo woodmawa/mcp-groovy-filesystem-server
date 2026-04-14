@@ -9,7 +9,41 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.49'
+version = '0.8.58'
+// v0.8.58: MCP-EFFICIENCY-BUILD-BRIEF-V1 Turn 4 -- New-3: _tok estimate injected into every textResponse payload (Map payloads only, chars/4). AbstractFileService.textResponse enriched. CT-32: append_section wrong option name returns structured error. FileContractSpec 32 tests. Practice #424 (section transforms use content not newContent). MCP-EFFICIENCY-BUILD-BRIEF-V1 Turn 2 -- Fix C (get_method now records real startLine/endLine to range cache, parseResponsePayload helper added). CT-30 (server_transform extension guard), CT-31 (replace_method wrong option name). Practice #422 (replace_method requires newBody not newMethod). file_search wrong-path error diagnosed (Claude bad path, not FS bug). MCP-EFFICIENCY-BUILD-BRIEF-V1 Fix E -- InsertBeforeMatchTransformer: matchLast=true (alias for occurrence=-1) and fromLine=N (1-based, skip occurrences before line N) options. Both compose: fromLine restricts window first, matchLast/occurrence resolves within window. FileContractSpec CT-27 (matchLast targets last occurrence), CT-28 (fromLine skips early occurrences), CT-29 (combined matchLast+fromLine) -- 74 tests total. FS-F6 fix -- FileWriteService generic catch(Exception) now wraps error in JsonBuilder([success:false,error:msg,action:...]) so all tool-level exceptions return parseable JSON, not raw strings. FileContractSpec CT-24 (large-file replace returns structured response), CT-25 (top-level oldText/newText promotion succeeds), CT-26 (multi_replace missing replacements returns structured error) -- all 71 tests pass.
+// v0.8.54: Fix D -- action=multi guard for unranged ontology-indexed files (ContextServerClient.isOntologyIndexed, FileReadService BLOCKED_UNRANGED_INDEXED_READ per-path).
+//   Fix F FS -- ContextServerClient.invalidateFileAsync (POST /invalidate), FileWriteService post-write invalidation hook.
+//   Fix #52 -- ReplaceMethodTransformer signature validation (CT-17 now green). FileContractSpec CT-23: 23/23 pass.
+// v0.8.53: Fix C -- session-scoped range read cache intercept (ContextServerClient.checkRangeCache/recordRangeCacheAsync,
+//   FileReadService range+get_method cache check/record). CT-19..CT-23 added to FileContractSpec (all pass).
+//   CT-17 pre-existing failure logged to idea #52 (ReplaceMethodTransformer signature validation missing).
+// v0.8.52: McpResponse.error() renamed to protocolError() -- compiler-enforced + spec-enforced contract.
+//   McpController + HttpMcpController updated to call protocolError().
+//   ServiceErrorContractSpec rewritten (v0.8.52): 4 tests, fully recursive via Files.walkFileTree.
+//     Test 1: McpResponse.error() must not exist anywhere (compile-level removal).
+//     Test 2: McpResponse.protocolError() must not appear in non-controller service files.
+//     Test 3: controller files exist and actually use protocolError() (exclusion is real).
+//     Test 4: src/main/groovy accessible + non-empty (guards vacuous scan on CWD drift).
+//   findProjectRoot() resolves project root by walking up to build.gradle -- no fragile CWD reliance.
+//   TDD: 61 tests, 0 failures, 0 skipped.
+// v0.8.51: ServiceErrorContractSpec -- static analysis contract test added. Walks src/main/groovy
+//          recursively via Files.walkFileTree, asserts zero matches of McpResponse.error(requestId,-326xx)
+//          in service handlers. Excludes McpController.groovy + HttpMcpController.groovy (protocol level,
+//          correct). Prevents silent re-introduction of swallowed errors in any future edit.
+//          TDD: 59 tests, 0 failures, 0 skipped (+2: zero-violations scan + exclusions sanity check).
+// v0.8.50: RCA-1 COMPLETION -- bulk McpResponse.error(requestId,-326xx) -> toolError() across 14 service
+//          files (92 replacements). v0.8.48 claimed this fix but only converted a subset of call sites;
+//          the remainder were silently left as JSON-RPC error objects that Claude Desktop swallows
+//          (DT renders protocol-level errors as opaque 'Tool execution failed' with no message body).
+//          Root cause of incomplete 0.8.48 fix: the fix was applied manually file-by-file using
+//          server_transform/multi_replace with too-narrow scope; deep service subpackages
+//          (ExecuteService, ToolsService, FileChunkWriter, FileContentReader, FileMetaReader,
+//          FileStructureReader, ReadResponseHelper, OfficeDocumentHandler) were missed entirely.
+//          Fix verified via Python bulk regex replace + post-scan clean check. 92 occurrences in 14 files.
+//          McpController.groovy + HttpMcpController.groovy excluded (correct to use .error() for
+//          protocol-level dispatch). FileReplaceService already clean from 0.8.48.
+//          TDD: FileContractSpec CT-1..CT-15 preserved; CT-16 added (containment overlap surfacing).
+//          FileServicesSmokeSpec: chunk_status unknown-session test updated to isError:true contract.
 // v0.8.49: Fix F extended -- FilePatchService brace delta check now covers ALL mid-file
 //          .groovy/.java patches, not just boundary patches. New algorithm: per-replacement
 //          brace delta check (removedLines delta must equal newText delta). Catches the exact

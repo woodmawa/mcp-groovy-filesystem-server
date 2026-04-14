@@ -124,8 +124,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
 
             // Guard: all actions except abort_write require a valid path
             if (!path && action != 'abort_write' && action != 'chunk_status') {
-                return McpResponse.error(requestId, -32602,
-                    "file_write '${action}' requires a 'path' parameter (received null). " +
+                return McpResponse.toolError(requestId, "file_write '${action}' requires a 'path' parameter (received null). " +
                     "Ensure 'path' is at the top level of the arguments object, not nested inside options.")
             }
 
@@ -143,7 +142,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                 case 'server_transform': response = fileTransformService.applyTransform(path, options, requestId); break
                 case 'write_office'    : response = officeHandler.writeOffice(path, options, requestId); break
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown file_write action: ${action}")
+                    return McpResponse.toolError(requestId, "Unknown file_write action: ${action}")
             }
             // Invalidate structure cache after any successful mutating action
             if (path && MUTATING_ACTIONS.contains(action) && response.error == null) {
@@ -157,6 +156,9 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                         // Re-index ontology for source files so symbols stay current after writes
                         if (np.endsWith('.groovy') || np.endsWith('.java')) {
                             contextServerClient.reindexFileAsync(np)
+                            // Fix F (v0.8.54): queue pending_reindex so stale_warning fires
+                            // during the brief window before async reindex completes
+                            contextServerClient.invalidateFileAsync(np)
                         }
                     }
                 } catch (Exception ignored) {}
@@ -165,14 +167,17 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
 
         } catch (SecurityException e) {
             log.warn("Security violation in file_write: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+            return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (java.nio.file.NoSuchFileException e) {
             String msg = e.reason ?: "Path not found: ${e.file}"
             log.warn("file_write bad path: {}", msg)
-            return McpResponse.error(requestId, -32602, msg)
+            return McpResponse.toolError(requestId, msg)
         } catch (Exception e) {
             log.error("file_write error: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, sanitize(e.message))
+            // Return as JSON-structured toolError so callers can always parseText the response
+            String safeMsg = sanitize(e.message ?: e.class.simpleName)
+            return McpResponse.toolError(requestId,
+                new groovy.json.JsonBuilder([success: false, error: safeMsg, action: (arguments?.action ?: 'unknown') as String]).toString())
         }
     }
 

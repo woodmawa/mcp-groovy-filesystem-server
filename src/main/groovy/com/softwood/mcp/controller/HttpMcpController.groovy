@@ -121,12 +121,12 @@ class HttpMcpController {
         if (!sessionId) {
             log.debug('Streamable HTTP: missing Mcp-Session-Id on {} request', request.method)
             return ResponseEntity.badRequest()
-                .body(McpResponse.error(request.id, -32600, 'Missing Mcp-Session-Id header'))
+                .body(McpResponse.protocolError(request.id, -32600, 'Missing Mcp-Session-Id header'))
         }
         if (!knownSessions.contains(sessionId)) {
             log.debug('Streamable HTTP: unknown Mcp-Session-Id {} on {} request', sessionId, request.method)
             return ResponseEntity.badRequest()
-                .body(McpResponse.error(request.id, -32600, 'Unknown Mcp-Session-Id'))
+                .body(McpResponse.protocolError(request.id, -32600, 'Unknown Mcp-Session-Id'))
         }
 
         log.debug('Streamable HTTP POST: method={} session={}', request.method, sessionId)
@@ -198,7 +198,7 @@ class HttpMcpController {
         if (origin != null && !isTrustedOrigin(origin)) {
             log.warn('Streamable HTTP POST: rejected Origin={}', origin)
             return ResponseEntity.status(403)
-                .body(McpResponse.error(null, -32600, "Origin not permitted: ${origin}"))
+                .body(McpResponse.protocolError(null, -32600, "Origin not permitted: ${origin}"))
         }
         return null
     }

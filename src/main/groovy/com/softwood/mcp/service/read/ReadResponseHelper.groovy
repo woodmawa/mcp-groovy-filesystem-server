@@ -109,7 +109,7 @@ class ReadResponseHelper extends AbstractFileService {
     McpResponse doChunkRead(Map<String, Object> options, Object requestId) {
         String sessionId = options.sessionId as String
         int chunkIndex   = (options.chunkIndex as Integer) ?: 0
-        if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for chunk_read')
+        if (!sessionId) return McpResponse.toolError(requestId, 'options.sessionId required for chunk_read')
 
         String chunk = chunkBufferService.getReadChunk(sessionId, chunkIndex)
 
@@ -128,7 +128,7 @@ class ReadResponseHelper extends AbstractFileService {
 
     McpResponse doFinaliseRead(Map<String, Object> options, Object requestId) {
         String sessionId = options.sessionId as String
-        if (!sessionId) return McpResponse.error(requestId, -32602, 'options.sessionId required for finalise_read')
+        if (!sessionId) return McpResponse.toolError(requestId, 'options.sessionId required for finalise_read')
         chunkBufferService.finaliseRead(sessionId)
         return textResponse(requestId, [action: 'finalise_read', sessionId: sessionId, success: true])
     }

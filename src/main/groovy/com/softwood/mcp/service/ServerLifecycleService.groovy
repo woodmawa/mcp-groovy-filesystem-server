@@ -167,12 +167,11 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
                 case 'status'     : return doStatus(arguments, requestId)
                 case 'reload'     : return doReload(requestId)
                 default:
-                    return McpResponse.error(requestId, -32602,
-                        "Unknown server_lifecycle action: ${action}" as String)
+                    return McpResponse.toolError(requestId, "Unknown server_lifecycle action: ${action}" as String)
             }
         } catch (Exception e) {
             log.error("server_lifecycle error", e)
-            return McpResponse.error(requestId, -32603, sanitize(e.message) as String)
+            return McpResponse.toolError(requestId, sanitize(e.message) as String)
         }
     }
 
@@ -197,15 +196,14 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
 
     private McpResponse doEnsure(String name, Object requestId) {
         if (!name) {
-            return McpResponse.error(requestId, -32602, 'ensure requires server name' as String)
+            return McpResponse.toolError(requestId, 'ensure requires server name' as String)
         }
         Map<String, Object> config = loadConfig()
         List<Map> servers = config.servers as List<Map>
         Map server = servers.find { (it.name as String) == name }
 
         if (!server) {
-            return McpResponse.error(requestId, -32602,
-                "Unknown server: ${name}. Known: ${servers*.name.join(', ')}" as String)
+            return McpResponse.toolError(requestId, "Unknown server: ${name}. Known: ${servers*.name.join(', ')}" as String)
         }
 
         // Early-exit: if port is already listening, skip startServer entirely

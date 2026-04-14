@@ -73,20 +73,18 @@ class OfficeDocumentHandler {
             String validated = pathService.normalizePath(path)
             File file = new File(validated)
             if (!file.exists()) {
-                return McpResponse.error(requestId, -32602,
-                    "read_office: file not found: ${validated}")
+                return McpResponse.toolError(requestId, "read_office: file not found: ${validated}")
             }
             switch (format) {
                 case 'xlsx': return readXlsx(file, options, requestId)
                 case 'docx': return readDocx(file, options, requestId)
                 case 'pptx': return readPptx(file, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602,
-                        "read_office: unsupported format '${format}'. Use xlsx|docx|pptx or set options.format.")
+                    return McpResponse.toolError(requestId, "read_office: unsupported format '${format}'. Use xlsx|docx|pptx or set options.format.")
             }
         } catch (Exception e) {
             log.error("read_office error on ${path}: ${e.message}", e)
-            return McpResponse.error(requestId, -32603, sanitize("read_office failed: ${e.message}"))
+            return McpResponse.toolError(requestId, sanitize("read_office failed: ${e.message}"))
         }
     }
 
@@ -104,12 +102,11 @@ class OfficeDocumentHandler {
                 case 'docx': return writeDocx(validated, options, requestId)
                 case 'pptx': return writePptx(validated, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602,
-                        "write_office: unsupported format '${format}'. Use xlsx|docx|pptx or set options.format.")
+                    return McpResponse.toolError(requestId, "write_office: unsupported format '${format}'. Use xlsx|docx|pptx or set options.format.")
             }
         } catch (Exception e) {
             log.error("write_office error on ${path}: ${e.message}", e)
-            return McpResponse.error(requestId, -32603, sanitize("write_office failed: ${e.message}"))
+            return McpResponse.toolError(requestId, sanitize("write_office failed: ${e.message}"))
         }
     }
 
@@ -130,8 +127,7 @@ class OfficeDocumentHandler {
             Sheet sheet        = sheetName ? wb.getSheet(sheetName) : wb.getSheetAt(0)
             if (!sheet) {
                 List<String> avail = (0..<wb.numberOfSheets).collect { wb.getSheetName(it as int) }
-                return McpResponse.error(requestId, -32602,
-                    "read_office xlsx: sheet '${sheetName}' not found. Available: ${avail}")
+                return McpResponse.toolError(requestId, "read_office xlsx: sheet '${sheetName}' not found. Available: ${avail}")
             }
 
             String outputFormat      = (options.outputFormat ?: 'list_of_maps') as String
@@ -153,8 +149,7 @@ class OfficeDocumentHandler {
                     String keyCol = options.keyColumn as String
                     int keyIdx    = headers.indexOf(keyCol)
                     if (keyIdx < 0) {
-                        return McpResponse.error(requestId, -32602,
-                            "read_office xlsx map_by_key: keyColumn '${keyCol}' not in headers ${headers}")
+                        return McpResponse.toolError(requestId, "read_office xlsx map_by_key: keyColumn '${keyCol}' not in headers ${headers}")
                     }
                     result = dataRows.collectEntries { List row ->
                         def key = row.size() > keyIdx ? row[keyIdx] : null

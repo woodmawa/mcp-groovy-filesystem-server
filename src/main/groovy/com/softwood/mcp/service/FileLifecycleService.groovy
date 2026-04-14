@@ -84,14 +84,14 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
                 case 'rename' : return doMove(path, dst, options, requestId)  // rename = move within same dir
                 case 'touch'  : return doTouch(path, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown file_lifecycle action: ${action}")
+                    return McpResponse.toolError(requestId, "Unknown file_lifecycle action: ${action}")
             }
         } catch (SecurityException e) {
             log.warn("Security violation in file_lifecycle: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+            return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (Exception e) {
             log.error("file_lifecycle error: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         }
     }
 
@@ -135,7 +135,7 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
         boolean recursive = options.recursive as boolean ?: false
 
         if (!Files.exists(target)) {
-            return McpResponse.error(requestId, -32602, "Path does not exist: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "Path does not exist: ${sanitize(normalized)}")
         }
 
         if (Files.isDirectory(target)) {

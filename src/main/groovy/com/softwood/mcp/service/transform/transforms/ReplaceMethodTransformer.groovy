@@ -52,6 +52,15 @@ class ReplaceMethodTransformer implements FileTransformer {
             return new TransformResult(success: false,
                 error: 'options.newBody is required for replace_method')
         }
+        // CT-17 / idea #52: validate newBody contains the method signature line.
+        // A newBody lacking the signature silently corrupts the source file.
+        if (!newBody.contains(methodName)) {
+            return new TransformResult(success: false,
+                error: "replace_method: newBody must include the method signature. " +
+                    "Method name '${methodName}' not found in newBody. " +
+                    'Ensure newBody starts with the full signature line including the method name.')
+        }
+
 
         Map structureResult = structureCache.getStructure(normalizedPath)
         List<Map> entries   = (structureResult.structure as List<Map>) ?: []

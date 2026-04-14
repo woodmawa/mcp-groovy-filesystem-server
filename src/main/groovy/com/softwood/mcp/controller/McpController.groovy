@@ -75,7 +75,7 @@ class McpController {
             return dispatch(request)
         } catch (Exception e) {
             log.error("Unhandled error in handleRequest", e)
-            return McpResponse.error(request?.id, -32603,
+            return McpResponse.protocolError(request?.id, -32603,
                 Sanitizer.sanitize("Internal error: ${e.message}") as String)
         }
     }
@@ -94,7 +94,7 @@ class McpController {
             case 'ping'        : return McpResponse.success(request.id, [:] as Map<String, Object>)
             default:
                 log.warn("Unknown MCP method: {}", request.method)
-                return McpResponse.error(request.id, -32601, "Unknown method: ${request.method}" as String)
+                return McpResponse.protocolError(request.id, -32601, "Unknown method: ${request.method}" as String)
         }
     }
 

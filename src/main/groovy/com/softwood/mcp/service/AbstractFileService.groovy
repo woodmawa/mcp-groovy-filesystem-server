@@ -406,9 +406,22 @@ abstract class AbstractFileService {
     /**
      * Build a standard MCP success response wrapping text content
      */
+    /**
+     * Build a standard MCP success response wrapping text content.
+     * New-3 (v0.8.57): injects _tok estimate (charCount/4) into response
+     * payload so telemetry can track output token cost without log parsing.
+     */
     protected McpResponse textResponse(Object requestId, Object data) {
+        // Inject _tok into Map payloads before serialisation
+        Object payload = data
+        if (data instanceof Map) {
+            Map<String, Object> enriched = new LinkedHashMap<String, Object>((Map<String, Object>) data)
+            String preview = JsonOutput.toJson(data)
+            enriched['_tok'] = (int)(preview.length() / 4)
+            payload = enriched
+        }
         McpResponse.success(requestId, [
-            content: [[type: "text", text: JsonOutput.toJson(data)]]
+            content: [[type: 'text', text: JsonOutput.toJson(payload)]]
         ] as Map<String, Object>)
     }
 

@@ -123,8 +123,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
 
             // Guard: most actions require a valid path
             if (!path && action != 'multi' && action != 'multi_grep' && action != 'project_root' && action != 'allowed_dirs' && action != 'chunk_read' && action != 'finalise_read' && action != 'help') {
-                return McpResponse.error(requestId, -32602,
-                    "file_read '${action}' requires a 'path' parameter (received null).")
+                return McpResponse.toolError(requestId, "file_read '${action}' requires a 'path' parameter (received null).")
             }
 
             switch (action) {
@@ -144,13 +143,80 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                     return r
                 }
                 case 'range': {
+                    // Fix C (v0.8.50): session range read cache.
+                    // knownFileHash lets us validate the cache entry against current file state.
+                    // Graceful degradation: if CS is down or hash absent, fall through to normal read.
+                    if (contextServerClient != null) {
+                        String fileHash = options.get('knownFileHash') as String
+                        if (!fileHash) fileHash = options.get('knownHash') as String
+                        int csl = (options.get('startLine') as Integer) ?: 1
+                        int cml = (options.get('maxLines') as Integer) ?: 100
+                        if (fileHash) {
+                            String readAt = contextServerClient.checkRangeCache(path, csl, csl + cml - 1, fileHash)
+                            if (readAt != null) {
+                                String hitJson = groovy.json.JsonOutput.toJson([
+                                    cached          : true,
+                                    already_read_at : readAt,
+                                    hint            : 'Content already in context from this session. Do not re-read.',
+                                    is_repeat_call  : true
+                                ])
+                                return McpResponse.success(requestId, [
+                                    content: [[type: 'text', text: hitJson]]
+                                ] as Map<String, Object>)
+                            }
+                        }
+                    }
                     McpResponse r = contentReader.doRange(path, options, requestId)
-                    if (r.error == null) fireRegistryUpsert(path, r)
+                    if (r.error == null) {
+                        fireRegistryUpsert(path, r)
+                        if (contextServerClient != null) {
+                            String h = extractFileHash(r)
+                            int rsl = (options.get('startLine') as Integer) ?: 1
+                            int rml = (options.get('maxLines') as Integer) ?: 100
+                            if (h) contextServerClient.recordRangeCacheAsync(path, rsl, rsl + rml - 1, h)
+                        }
+                    }
                     return r
                 }
                 case 'grep'         : return contentReader.doGrep(path, options, requestId)
                 case 'multi_grep'   : return contentReader.doMultiGrep(options, requestId)
-                case 'multi'        : return contentReader.doMulti(options, requestId)
+                case 'multi'        : {
+                    // Fix D (v0.8.54): guard unranged reads on ontology-indexed files.
+                    // Per-path: if CS has this file indexed and no range is specified, block it.
+                    // Fail open: CS unavailable or file not indexed -> allow.
+                    if (contextServerClient != null) {
+                        List<String> rawPaths = (options.paths as List<String>) ?: []
+                        List<Map> blocked = []
+                        rawPaths.each { String p ->
+                            try {
+                                String stem = new File(p).name.replaceAll('\\.\\w+$', '')
+                                if (contextServerClient.isOntologyIndexed(stem)) {
+                                    blocked << [error: 'BLOCKED_UNRANGED_INDEXED_READ',
+                                                file : p,
+                                                hint : 'This file is ontology-indexed. Use: context_read scope=ontology action=locate query="' + stem + '" then file_read action=range startLine/endLine.',
+                                                locate_query: stem] as Map<String, Object>
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                        if (blocked) {
+                            boolean allBlocked = blocked.size() == rawPaths.size()
+                            if (allBlocked) {
+                                return McpResponse.toolError(requestId,
+                                    groovy.json.JsonOutput.toJson([error: 'BLOCKED_UNRANGED_INDEXED_READ',
+                                        blocked: blocked,
+                                        hint: 'All requested files are ontology-indexed. Use locate + range instead.']))
+                            }
+                            // Mixed: remove blocked from options, proceed with remainder
+                            List<String> allowed = rawPaths.findAll { String p ->
+                                blocked.every { (it as Map).file != p }
+                            }
+                            options = new HashMap<String, Object>(options as Map<String, Object>)
+                            options.paths = allowed
+                            options._blocked = blocked
+                        }
+                    }
+                    return contentReader.doMulti(options, requestId)
+                }
                 case 'info'         : return metaReader.doInfo(path, requestId)
                 case 'summary'      : return metaReader.doSummary(path, requestId)
                 case 'stat'         : return metaReader.doStat(path, requestId)
@@ -185,21 +251,35 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                     return listResp
                 }
                 case 'structure'    : return structureReader.doStructure(path, options, requestId)
-                case 'get_method'   : return structureReader.doGetMethod(path, options, requestId)
+                case 'get_method'   : {
+                    McpResponse r = structureReader.doGetMethod(path, options, requestId)
+                    if (r.error == null && contextServerClient != null) {
+                        String h = extractFileHash(r)
+                        if (h) {
+                            // Fix C (v0.8.56): record with actual line range from response
+                            // so a subsequent range read of same lines returns cached:true.
+                            Map<String, Object> payload = parseResponsePayload(r)
+                            int rsl = payload?.get('startLine') as Integer ?: 0
+                            int rel = payload?.get('endLine')   as Integer ?: 0
+                            contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
+                        }
+                    }
+                    return r
+                }
                 case 'chunk_read'   : return responseHelper.doChunkRead(options, requestId)
                 case 'finalise_read': return responseHelper.doFinaliseRead(options, requestId)
                 case 'help'         : return metaReader.doHelp(options, requestId)
                 case 'read_office'  : return officeHandler.readOffice(path, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown file_read action: '${action}'. Valid actions: read|head|tail|range|grep|multi_grep|multi|info|structure|get_method|list|checksum|stat|exists|diff|normalize|chunk_read|finalise_read|help. For script execution use the 'execute' tool.")
+                    return McpResponse.toolError(requestId, "Unknown file_read action: '${action}'. Valid actions: read|head|tail|range|grep|multi_grep|multi|info|structure|get_method|list|checksum|stat|exists|diff|normalize|chunk_read|finalise_read|help. For script execution use the 'execute' tool.")
             }
         } catch (SecurityException e) {
-            return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+            return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (FileNotFoundException e) {
-            return McpResponse.error(requestId, -32602, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         } catch (Exception e) {
             log.error('file_read error: {}', sanitize(e.message), e)
-            return McpResponse.error(requestId, -32603, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         }
     }
 
@@ -224,6 +304,18 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
             if (!text) return null
             Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
             return data?.get('file_content_hash') as String
+        } catch (Exception ignored) { return null }
+    }
+
+    /** Parse the full JSON payload map from an McpResponse content envelope. */
+    private static Map<String, Object> parseResponsePayload(McpResponse resp) {
+        try {
+            if (resp.result == null) return null
+            List content = resp.result.get('content') as List
+            if (!content) return null
+            String text = (content[0] as Map)?.get('text') as String
+            if (!text) return null
+            return (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
         } catch (Exception ignored) { return null }
     }
 }

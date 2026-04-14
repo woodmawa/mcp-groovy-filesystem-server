@@ -105,13 +105,13 @@ Developer toolchain. Actions:
                 case 'project_scan': return doProjectScan(workingDir, requestId)
                 case 'stats'       : return doStats(requestId, options)
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown tools action: ${action}")
+                    return McpResponse.toolError(requestId, "Unknown tools action: ${action}")
             }
         } catch (SecurityException e) {
-            return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+            return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (Exception e) {
             log.error("tools error: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         }
     }
 
@@ -124,16 +124,15 @@ Developer toolchain. Actions:
         List<String> allowed = ['status', 'log', 'diff', 'add', 'commit', 'push', 'pull',
                                 'branch', 'stash', 'clone', 'fetch', 'checkout', 'merge',
                                 'show', 'tag', 'remote', 'reset', 'revert']
-        if (!subcommand) return McpResponse.error(requestId, -32602, "subcommand required for git. Allowed: ${allowed.join(', ')}")
-        if (!(subcommand in allowed)) return McpResponse.error(requestId, -32602, "git subcommand '${subcommand}' not allowed. Allowed: ${allowed.join(', ')}")
+        if (!subcommand) return McpResponse.toolError(requestId, "subcommand required for git. Allowed: ${allowed.join(', ')}")
+        if (!(subcommand in allowed)) return McpResponse.toolError(requestId, "git subcommand '${subcommand}' not allowed. Allowed: ${allowed.join(', ')}")
 
         List<String> cmd = ['git', subcommand]
 
         // Commit MUST have a message - without it git opens an editor which hangs in headless mode
         if (subcommand == 'commit') {
             if (!options.message) {
-                return McpResponse.error(requestId, -32602,
-                    'git commit requires options.message - omitting it causes the process to hang waiting for an editor')
+                return McpResponse.toolError(requestId, 'git commit requires options.message - omitting it causes the process to hang waiting for an editor')
             }
             cmd += ['-m', options.message as String]
         }
@@ -149,11 +148,11 @@ Developer toolchain. Actions:
                                 'check', 'assemble', 'publish', 'wrapper',
                                 'packageMcpbThin', 'installMcpbLocal', 'copyMcpbToSync',
                                 'generateMcpbManifest', 'stageJarForMcpb']
-        if (!subcommand) return McpResponse.error(requestId, -32602, "subcommand required for gradle. Allowed: ${allowed.join(', ')}")
+        if (!subcommand) return McpResponse.toolError(requestId, "subcommand required for gradle. Allowed: ${allowed.join(', ')}")
         // Support multi-task subcommands e.g. 'packageMcpbThin installMcpbLocal' - validate each token
         List<String> tasks = subcommand.trim().split(/\s+/).toList()
         List<String> rejected = tasks.findAll { !(it in allowed) }
-        if (rejected) return McpResponse.error(requestId, -32602, "gradle task(s) not allowed: ${rejected.join(', ')}. Allowed: ${allowed.join(', ')}")
+        if (rejected) return McpResponse.toolError(requestId, "gradle task(s) not allowed: ${rejected.join(', ')}. Allowed: ${allowed.join(', ')}")
 
         // Use gradlew wrapper if available, fall back to system gradle
         boolean isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
@@ -168,8 +167,8 @@ Developer toolchain. Actions:
                                int timeout, Object requestId) {
         List<String> allowed = ['package', 'test', 'clean', 'install', 'verify', 'compile',
                                 'dependency:tree', 'dependency:resolve', 'help:effective-pom']
-        if (!subcommand) return McpResponse.error(requestId, -32602, "subcommand required for mvn. Allowed: ${allowed.join(', ')}")
-        if (!(subcommand in allowed)) return McpResponse.error(requestId, -32602, "mvn goal '${subcommand}' not allowed. Allowed: ${allowed.join(', ')}")
+        if (!subcommand) return McpResponse.toolError(requestId, "subcommand required for mvn. Allowed: ${allowed.join(', ')}")
+        if (!(subcommand in allowed)) return McpResponse.toolError(requestId, "mvn goal '${subcommand}' not allowed. Allowed: ${allowed.join(', ')}")
 
         List<String> cmd = ['mvn', subcommand] + args
         return runTool(cmd, workingDir, timeout, "mvn ${subcommand}", requestId)
@@ -179,8 +178,8 @@ Developer toolchain. Actions:
                                int timeout, Object requestId) {
         List<String> allowed = ['install', 'build', 'test', 'run', 'start', 'lint',
                                 'audit', 'outdated', 'list']
-        if (!subcommand) return McpResponse.error(requestId, -32602, "subcommand required for npm. Allowed: ${allowed.join(', ')}")
-        if (!(subcommand in allowed)) return McpResponse.error(requestId, -32602, "npm command '${subcommand}' not allowed. Allowed: ${allowed.join(', ')}")
+        if (!subcommand) return McpResponse.toolError(requestId, "subcommand required for npm. Allowed: ${allowed.join(', ')}")
+        if (!(subcommand in allowed)) return McpResponse.toolError(requestId, "npm command '${subcommand}' not allowed. Allowed: ${allowed.join(', ')}")
 
         List<String> cmd = ['npm', subcommand] + args
         return runTool(cmd, workingDir, timeout, "npm ${subcommand}", requestId)

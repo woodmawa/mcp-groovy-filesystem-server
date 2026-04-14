@@ -78,15 +78,15 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
                 case 'name'   : return doNameSearch(normalized, options, requestId)
                 case 'project': return doProjectSearch(normalized, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown file_search action: ${action}")
+                    return McpResponse.toolError(requestId, "Unknown file_search action: ${action}")
             }
         } catch (SecurityException e) {
-            return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+            return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (FileNotFoundException e) {
-            return McpResponse.error(requestId, -32602, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         } catch (Exception e) {
             log.error("file_search error: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         }
     }
 
@@ -97,7 +97,7 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
     private McpResponse doContentSearch(String path, Map<String, Object> options, Object requestId) {
         String contentPatternStr = options.contentPattern as String
         if (!contentPatternStr) {
-            return McpResponse.error(requestId, -32602, "options.contentPattern is required for content search")
+            return McpResponse.toolError(requestId, "options.contentPattern is required for content search")
         }
 
         String filePatternStr = options.filePattern as String ?: defaultFilePattern
@@ -146,7 +146,7 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
     private McpResponse doNameSearch(String path, Map<String, Object> options, Object requestId) {
         String filePatternStr = options.filePattern as String
         if (!filePatternStr) {
-            return McpResponse.error(requestId, -32602, "options.filePattern is required for name search")
+            return McpResponse.toolError(requestId, "options.filePattern is required for name search")
         }
 
         int maxResults = (options.maxResults as Integer) ?: maxSearchResults
@@ -194,8 +194,7 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
             // Name search within project
             return doNameSearch(path, options, requestId)
         } else {
-            return McpResponse.error(requestId, -32602,
-                "project search requires options.contentPattern or options.filePattern")
+            return McpResponse.toolError(requestId, "project search requires options.contentPattern or options.filePattern")
         }
     }
 

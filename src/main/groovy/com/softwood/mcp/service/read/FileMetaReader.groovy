@@ -137,15 +137,14 @@ class FileMetaReader extends AbstractFileService {
 
     McpResponse doDiff(String path, Map<String, Object> options, Object requestId) {
         String compareTo = options.compareTo as String
-        if (!compareTo) return McpResponse.error(requestId, -32602, 'options.compareTo required for diff')
+        if (!compareTo) return McpResponse.toolError(requestId, 'options.compareTo required for diff')
         String normA = validateFilePath(path)
         String normB = validateFilePath(compareTo)
 
         long sizeAKb = Files.size(Paths.get(normA)).intdiv(1024)
         long sizeBKb = Files.size(Paths.get(normB)).intdiv(1024)
         if (sizeAKb > readChunkThresholdKb || sizeBKb > readChunkThresholdKb) {
-            return McpResponse.error(requestId, -32602,
-                ("diff: one or both files exceed ${readChunkThresholdKb}KB threshold (${sizeAKb}KB vs ${sizeBKb}KB). Use grep or range for targeted comparison." as String))
+            return McpResponse.toolError(requestId, ("diff: one or both files exceed ${readChunkThresholdKb}KB threshold (${sizeAKb}KB vs ${sizeBKb}KB). Use grep or range for targeted comparison." as String))
         }
 
         com.softwood.mcp.promise.Promise<List<String>> readA = Promises.async({ -> new File(normA).readLines('UTF-8') } as Callable<List<String>>)
@@ -203,10 +202,10 @@ class FileMetaReader extends AbstractFileService {
 
         Path dirPath = Paths.get(normalized)
         if (!Files.exists(dirPath)) {
-            return McpResponse.error(requestId, -32602, "Path not found: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "Path not found: ${sanitize(normalized)}")
         }
         if (!Files.isDirectory(dirPath)) {
-            return McpResponse.error(requestId, -32602, "Not a directory: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "Not a directory: ${sanitize(normalized)}")
         }
 
         // Skip Windows reserved device names (create phantom files via GDK)
@@ -286,11 +285,11 @@ class FileMetaReader extends AbstractFileService {
         try {
             InputStream is = getClass().classLoader.getResourceAsStream('USAGE.md')
             if (!is) {
-                return McpResponse.error(requestId, -32603, 'USAGE.md not found in classpath')
+                return McpResponse.toolError(requestId, 'USAGE.md not found in classpath')
             }
             content = is.withCloseable { it.text }
         } catch (Exception e) {
-            return McpResponse.error(requestId, -32603, "Failed to read USAGE.md: ${e.message}")
+            return McpResponse.toolError(requestId, "Failed to read USAGE.md: ${e.message}")
         }
 
         if (topic == 'all') {
@@ -312,8 +311,7 @@ class FileMetaReader extends AbstractFileService {
         }
         if (start < 0) {
             List<String> topics = content.split('\n').findAll { it.startsWith('## ') }.collect { it.substring(3).trim() }
-            return McpResponse.error(requestId, -32602,
-                "Topic '${topic}' not found. Available: ${topics.join(', ')}")
+            return McpResponse.toolError(requestId, "Topic '${topic}' not found. Available: ${topics.join(', ')}")
         }
 
         // Extract from this heading to the next same-level heading

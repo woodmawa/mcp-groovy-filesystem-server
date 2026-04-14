@@ -126,14 +126,14 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 case 'cmd'       : return doCmd(script, workingDir, timeout, envOverrides, options, requestId)
                 case 'python'    : return doPython(script, workingDir, timeout, envOverrides, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown execute action: ${action}")
+                    return McpResponse.toolError(requestId, "Unknown execute action: ${action}")
             }
         } catch (SecurityException e) {
             log.warn("execute security violation: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+            return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (Exception e) {
             log.error("execute error: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         }
     }
 
@@ -143,10 +143,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
     private McpResponse doBash(String script, String workingDir, int timeout,
                                Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
-        if (!enableBash) return McpResponse.error(requestId, -32603, "Bash execution is disabled")
+        if (!enableBash) return McpResponse.toolError(requestId, "Bash execution is disabled")
         if (!whitelistConfig.isBashAllowed(script)) {
             log.warn("Bash script rejected by whitelist/blacklist config")
-            return McpResponse.error(requestId, -32603, "Bash command not permitted by whitelist configuration")
+            return McpResponse.toolError(requestId, "Bash command not permitted by whitelist configuration")
         }
         List<String> cmd = ['bash', '-c', script]
         return runProcess(cmd, workingDir, timeout, 'bash', requestId, envOverrides, options)
@@ -154,10 +154,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
     private McpResponse doPowershell(String script, String workingDir, int timeout,
                                     Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
-        if (!enablePowershell) return McpResponse.error(requestId, -32603, "PowerShell execution is disabled")
+        if (!enablePowershell) return McpResponse.toolError(requestId, "PowerShell execution is disabled")
         if (!whitelistConfig.isPowershellAllowed(script)) {
             log.warn("PowerShell script rejected by whitelist/blacklist config")
-            return McpResponse.error(requestId, -32603, "PowerShell command not permitted by whitelist configuration")
+            return McpResponse.toolError(requestId, "PowerShell command not permitted by whitelist configuration")
         }
         // Always write script to a temp .ps1 file and invoke via -File.
         // Passing scripts via -Command mangles multi-line scripts, backtick escapes,
@@ -176,10 +176,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
     private McpResponse doCmd(String script, String workingDir, int timeout,
                              Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
-        if (!enableCmd) return McpResponse.error(requestId, -32603, "CMD execution is disabled")
+        if (!enableCmd) return McpResponse.toolError(requestId, "CMD execution is disabled")
         if (!whitelistConfig.isCmdAllowed(script)) {
             log.warn("CMD script rejected by whitelist/blacklist config")
-            return McpResponse.error(requestId, -32603, "CMD command not permitted by whitelist configuration")
+            return McpResponse.toolError(requestId, "CMD command not permitted by whitelist configuration")
         }
         List<String> cmd = ['cmd', '/c', script]
         return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides, options)
@@ -189,8 +189,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                   Map<String, String> envOverrides, Map<String, Object> options,
                                   Object requestId) {
         if (!enablePython) {
-            return McpResponse.error(requestId, -32603,
-                'Python execution is disabled. Set mcp.script.enable-python=true and ensure PYTHON_HOME is configured.')
+            return McpResponse.toolError(requestId, 'Python execution is disabled. Set mcp.script.enable-python=true and ensure PYTHON_HOME is configured.')
         }
 
         // Resolve interpreter from PYTHON_HOME (env var, set at Machine scope on Windows)
@@ -201,8 +200,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             interpreter = "${home}/python.exe"
             File exe = new File(interpreter)
             if (!exe.exists()) {
-                return McpResponse.error(requestId, -32603,
-                    "Python interpreter not found at PYTHON_HOME: ${sanitize(pythonHome)}. " +
+                return McpResponse.toolError(requestId, "Python interpreter not found at PYTHON_HOME: ${sanitize(pythonHome)}. " +
                     "Expected: ${sanitize(interpreter)}")
             }
         } else {
@@ -229,7 +227,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
     private McpResponse doGroovy(String script, String workingDir, int timeout,
                                  Map<String, Object> options, Object requestId) {
-        if (!enableGroovy) return McpResponse.error(requestId, -32603, "Groovy execution is disabled")
+        if (!enableGroovy) return McpResponse.toolError(requestId, "Groovy execution is disabled")
 
         long start = System.currentTimeMillis()
         try {

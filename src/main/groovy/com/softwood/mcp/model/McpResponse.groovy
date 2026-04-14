@@ -10,12 +10,18 @@ class McpResponse {
     Object id
     Map<String, Object> result
     McpError error
-    
+
     static McpResponse success(Object id, Map<String, Object> result) {
         new McpResponse(id: id, result: result)
     }
-    
-    static McpResponse error(Object id, int code, String message) {
+
+    /**
+     * Protocol-level error: produces a JSON-RPC error object.
+     * ONLY for use in McpController and HttpMcpController (protocol dispatch).
+     * Claude Desktop silently swallows these from tool handlers -- use toolError() instead.
+     * Deliberately named protocolError() to prevent accidental use in service handlers.
+     */
+    static McpResponse protocolError(Object id, int code, String message) {
         new McpResponse(
             id: id,
             error: new McpError(code: code, message: message as String)
@@ -24,10 +30,8 @@ class McpResponse {
 
     /**
      * Tool-level error: returns isError:true in content array.
-     * This is what MCP tools/call requires — Claude Desktop renders content[0].text.
+     * This is what MCP tools/call requires -- Claude Desktop renders content[0].text.
      * Use this everywhere a tool handler wants to surface an error to Claude.
-     * Do NOT use McpResponse.error() from tool handlers — that produces a JSON-RPC
-     * protocol-level error object that Claude Desktop silently swallows.
      */
     static McpResponse toolError(Object id, String message) {
         success(id, [

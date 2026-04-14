@@ -513,6 +513,164 @@ class ContextServerClient {
         Integer.toHexString(key.hashCode()).padLeft(8, '0')
     }
 
+    // -----------------------------------------------------------------------
+    // Fix C (v0.8.50) -- session-scoped range read cache
+    // checkRangeCache: sync, 500ms hard timeout -- never blocks FS.
+    // recordRangeCacheAsync: fire-and-forget -- never blocks FS.
+    // Both silently no-op if CS HTTP is unreachable.
+    // -----------------------------------------------------------------------
+
+    String checkRangeCache(String filePath, int startLine, int endLine, String fileHash) {
+        if (!contextServerReachable || !fileHash) return null
+        String sid = resolveSessionId()
+        if (!sid) return null
+        try {
+            Map<String, Object> body = [
+                action       : 'check',
+                sessionId    : sid,
+                sourceFile   : filePath,
+                startLine    : startLine,
+                endLine      : endLine,
+                knownFileHash: fileHash
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(body)
+            URL url = new URL("${contextServerUrl}/rangeCache")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    if (parsed?.get('cached') == true) return (parsed.get('read_at') as String) ?: ''
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (ConnectException e) {
+            if (contextServerReachable) {
+                contextServerReachable = false
+                log.info('ContextServerClient: CS unreachable -- range cache disabled for session')
+            }
+        } catch (Exception e) {
+            log.debug('checkRangeCache failed (non-fatal): {}', e.message)
+        }
+        return null
+    }
+
+    void recordRangeCacheAsync(String filePath, int startLine, int endLine, String contentHash) {
+        if (!contextServerReachable || !contentHash) return
+        String sid = resolveSessionId()
+        if (!sid) return
+        asyncWriter.submit({
+            try {
+                Map<String, Object> body = [
+                    action     : 'record',
+                    sessionId  : sid,
+                    sourceFile : filePath,
+                    startLine  : startLine,
+                    endLine    : endLine,
+                    contentHash: contentHash
+                ] as Map<String, Object>
+                String json = groovy.json.JsonOutput.toJson(body)
+                URL url = new URL("${contextServerUrl}/rangeCache")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput      = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 2000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { it << json }
+                    conn.responseCode
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (ConnectException ignored) {
+                contextServerReachable = false
+            } catch (Exception e) {
+                log.debug('recordRangeCacheAsync failed (non-fatal): {}', e.message)
+            }
+        } as Runnable)
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix D (v0.8.54): check if a file stem is ontology-indexed.
+    // Sync, 500ms hard timeout. Returns true if CS has a node for this stem.
+    // Used by FileReadService multi guard.
+    // -----------------------------------------------------------------------
+    boolean isOntologyIndexed(String fileStem) {
+        if (!contextServerReachable || !fileStem) return false
+        try {
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_read',
+                          arguments: [scope: 'ontology', action: 'locate', query: fileStem]]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) {
+                        Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
+                        return data?.get('found') == true
+                    }
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            if (contextServerReachable) {
+                contextServerReachable = false
+                log.info('ContextServerClient: CS unreachable -- ontology guard disabled for session')
+            }
+        } catch (Exception e) {
+            log.debug('isOntologyIndexed failed (non-fatal): {}', e.message)
+        }
+        return false
+    }
+
+    // Fix F (v0.8.54): notify CS that a file has been written and needs reindexing.
+    // Fire-and-forget via asyncWriter -- never blocks the write path.
+    void invalidateFileAsync(String filePath) {
+        if (!contextServerReachable || !filePath) return
+        asyncWriter.submit({
+            try {
+                Map<String, Object> body = [filePath: filePath] as Map<String, Object>
+                String json = groovy.json.JsonOutput.toJson(body)
+                URL url = new URL("${contextServerUrl}/invalidate")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput      = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 3000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { it << json }
+                    conn.responseCode
+                } finally { conn.disconnect() }
+            } catch (ConnectException ignored) {
+                contextServerReachable = false
+            } catch (Exception e) {
+                log.debug('invalidateFileAsync failed (non-fatal): {}', e.message)
+            }
+        } as Runnable)
+    }
+
+
     @PreDestroy
     void shutdown() {
         asyncWriter.shutdown()

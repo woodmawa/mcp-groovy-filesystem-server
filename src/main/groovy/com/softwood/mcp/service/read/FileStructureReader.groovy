@@ -57,7 +57,7 @@ class FileStructureReader extends AbstractFileService {
     McpResponse doStructure(String path, Map<String, Object> options, Object requestId) {
         String normalized = pathService.normalizePath(path)
         if (!isPathAllowed(normalized)) {
-            return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "Path not allowed: ${sanitize(normalized)}")
         }
 
         // FIX-D: hash gate - if file unchanged, skip re-scan entirely
@@ -66,19 +66,17 @@ class FileStructureReader extends AbstractFileService {
 
         Path filePath = Paths.get(normalized)
         if (Files.isDirectory(filePath)) {
-            return McpResponse.error(requestId, -32602,
-                "structure requires a FILE path, not a directory. " +
+            return McpResponse.toolError(requestId, "structure requires a FILE path, not a directory. " +
                 "Use file_list action=tree for directory outlines. Path: ${sanitize(normalized)}")
         }
         if (!Files.exists(filePath)) {
-            return McpResponse.error(requestId, -32602, "File not found: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "File not found: ${sanitize(normalized)}")
         }
         if (!Files.isRegularFile(filePath)) {
-            return McpResponse.error(requestId, -32602, "Path is not a regular file: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "Path is not a regular file: ${sanitize(normalized)}")
         }
         if (Files.size(filePath) > 512 * 1024L) {
-            return McpResponse.error(requestId, -32602,
-                "File too large for structure scan (>512KB). Use head/range/grep for large files: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "File too large for structure scan (>512KB). Use head/range/grep for large files: ${sanitize(normalized)}")
         }
 
         Map<String, Object> result  = structureCache.getStructure(normalized)
@@ -169,10 +167,10 @@ class FileStructureReader extends AbstractFileService {
     McpResponse doGetMethod(String path, Map<String, Object> options, Object requestId) {
         String normalized = pathService.normalizePath(path)
         if (!isPathAllowed(normalized)) {
-            return McpResponse.error(requestId, -32603, "Path not allowed: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "Path not allowed: ${sanitize(normalized)}")
         }
         if (!new File(normalized).exists()) {
-            return McpResponse.error(requestId, -32602, "File not found: ${sanitize(normalized)}")
+            return McpResponse.toolError(requestId, "File not found: ${sanitize(normalized)}")
         }
 
         McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId)
@@ -180,7 +178,7 @@ class FileStructureReader extends AbstractFileService {
 
         String methodName = options.method as String
         boolean fuzzy     = options.fuzzy as Boolean ?: false
-        if (!methodName) return McpResponse.error(requestId, -32602, 'options.method is required for get_method')
+        if (!methodName) return McpResponse.toolError(requestId, 'options.method is required for get_method')
 
         Map<String, Object> scanResult = structureCache.getStructure(normalized)
         List<Map> entries = scanResult.structure as List<Map>
@@ -190,8 +188,7 @@ class FileStructureReader extends AbstractFileService {
             ? entries.find { it.type == 'method' && (it.content as String).contains(methodName) }
             : entries.find { it.type == 'method' && (it.content as String) =~ /\b${java.util.regex.Pattern.quote(methodName)}\s*\(/ }
 
-        if (!found) return McpResponse.error(requestId, -32602,
-            "Method '${sanitize(methodName)}' not found in ${sanitize(normalized)}")
+        if (!found) return McpResponse.toolError(requestId, "Method '${sanitize(methodName)}' not found in ${sanitize(normalized)}")
 
         int startLine   = found.line as int
         Integer endLine = found.endLine as Integer

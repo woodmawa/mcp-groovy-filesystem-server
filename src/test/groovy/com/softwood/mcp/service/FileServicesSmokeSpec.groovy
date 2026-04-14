@@ -343,9 +343,11 @@ class FileServicesSmokeSpec extends Specification {
             options: [sessionId: 'no-such-session-xyz', totalChunks: 2]
         ], 'test-cs-3')
 
-        then: "descriptive error, not a crash"
-        r.error != null
-        r.error.message?.contains('no write session found')
+        then: "isError:true tool error visible to Claude (RCA-1 contract: was JSON-RPC error object, swallowed by DT)"
+        r.error == null
+        r.result != null
+        r.result.isError == true
+        (r.result.content[0] as Map).text?.toString()?.contains('no write session found')
     }
 
     // -----------------------------------------------------------------------

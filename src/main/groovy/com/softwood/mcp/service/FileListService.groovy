@@ -87,15 +87,15 @@ action=list returns listing_hash. Pass as options.knownHash on repeat calls to g
                 case 'tree'    : return doTree(normalized, options, requestId)
                 case 'sizes'   : return doSizes(normalized, options, requestId)
                 default:
-                    return McpResponse.error(requestId, -32602, "Unknown file_list action: ${action}")
+                    return McpResponse.toolError(requestId, "Unknown file_list action: ${action}")
             }
         } catch (SecurityException e) {
-            return McpResponse.error(requestId, -32603, "Security error: ${sanitize(e.message)}")
+            return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (FileNotFoundException e) {
-            return McpResponse.error(requestId, -32602, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         } catch (Exception e) {
             log.error("file_list error: {}", sanitize(e.message))
-            return McpResponse.error(requestId, -32603, sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         }
     }
 
