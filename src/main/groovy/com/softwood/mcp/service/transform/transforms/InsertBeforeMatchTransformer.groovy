@@ -19,9 +19,13 @@ import java.nio.file.Paths
  *   content  -- text to insert as new lines before the matched line
  *
  * Optional options:
- *   occurrence  -- which match to use: 1 (default/first), -1 (last), or N (Nth, 1-based)
- *   matchLast   -- boolean; true = insert before LAST occurrence (alias for occurrence=-1)
- *   fromLine    -- integer (1-based); ignore occurrences on lines before this number
+ *   occurrence   -- which match to use: 1 (default/first), -1 (last), or N (Nth, 1-based)
+ *   matchLast    -- boolean; true = insert before LAST occurrence (alias for occurrence=-1)
+ *   fromLine     -- integer (1-based); ignore occurrences on lines before this number
+ *   matchIsRegex -- boolean (default false); if true, options.match is compiled as a Java
+ *                   regex Pattern and matched via find() instead of contains().
+ *                   Enables anchored patterns like ^}$ to match closing braces exactly.
+ *                   Regex errors return a structured toolError with the parse message.
  *
  * fromLine and matchLast/occurrence compose: fromLine restricts the search window first,
  * then occurrence/-1/matchLast resolves within that window.
@@ -47,10 +51,22 @@ class InsertBeforeMatchTransformer implements FileTransformer {
         String match   = options.match as String
         String content = options.content as String
         // occurrence: 1=first (default), -1=last, N=Nth. matchLast=true is alias for -1.
-        boolean matchLast = options.matchLast != null ? (options.matchLast as boolean) : false
+        boolean matchLast  = options.matchLast  != null ? (options.matchLast  as boolean) : false
+        boolean matchIsRegex = options.matchIsRegex != null ? (options.matchIsRegex as boolean) : false
         int occurrence = matchLast ? -1 : (options.occurrence != null ? (options.occurrence as int) : 1)
         // fromLine: 1-based; ignore matches on lines strictly before this line number
         int fromLine = options.fromLine != null ? (options.fromLine as int) : 1
+
+        // Compile regex pattern if requested -- fail fast with useful error
+        java.util.regex.Pattern matchPattern = null
+        if (matchIsRegex) {
+            try {
+                matchPattern = java.util.regex.Pattern.compile(match)
+            } catch (java.util.regex.PatternSyntaxException e) {
+                return new TransformResult(success: false,
+                    error: "options.match is not a valid regex: ${e.message}")
+            }
+        }
 
         if (!match) {
             return new TransformResult(success: false,
@@ -75,7 +91,10 @@ class InsertBeforeMatchTransformer implements FileTransformer {
         for (int i = 0; i < lines.size(); i++) {
             // fromLine is 1-based; skip lines before it
             if ((i + 1) < fromLine) continue
-            if (lines[i].contains(match)) {
+            boolean lineMatches = matchIsRegex
+                ? matchPattern.matcher(lines[i]).find()
+                : lines[i].contains(match)
+            if (lineMatches) {
                 matchIndices << i
             }
         }
@@ -120,7 +139,8 @@ class InsertBeforeMatchTransformer implements FileTransformer {
         return new TransformResult(
             success      : true,
             linesAffected: insertLines.size(),
-            message      : 'Inserted ' + insertLines.size() + ' line(s) before line ' + (targetIdx + 1) + " (match='" + match + "')"
+            message      : 'Inserted ' + insertLines.size() + ' line(s) before line ' + (targetIdx + 1) +
+                           (matchIsRegex ? " (regex='" : " (match='") + match + "')"
         )
     }
 }

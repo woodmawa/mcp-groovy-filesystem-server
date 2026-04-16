@@ -186,9 +186,19 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                     // Fail open: CS unavailable or file not indexed -> allow.
                     if (contextServerClient != null) {
                         List<String> rawPaths = (options.paths as List<String>) ?: []
+                        // Exempt paths that have a knownHash supplied -- caller only wants
+                        // hash-change detection, not full content. No content tokens at risk.
+                        // Also exempt if compact=true (hash-only multi read).
+                        Map knownHashMap = (options.knownHashes instanceof Map)
+                            ? (options.knownHashes as Map) : [:]
+                        boolean compactMode = options.compact as boolean ?: false
                         List<Map> blocked = []
                         rawPaths.each { String p ->
                             try {
+                                // Normalise path for knownHashes lookup
+                                String np = pathService.normalizePath(p)
+                                boolean hasKnownHash = knownHashMap.containsKey(np) || knownHashMap.containsKey(p)
+                                if (hasKnownHash || compactMode) return // exempt -- no content risk
                                 String stem = new File(p).name.replaceAll('\\.\\w+$', '')
                                 if (contextServerClient.isOntologyIndexed(stem)) {
                                     blocked << [error: 'BLOCKED_UNRANGED_INDEXED_READ',

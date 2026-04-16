@@ -1188,4 +1188,395 @@ class FileContractSpec extends Specification {
         new File(f.path).text == readFileContent(f.path)
     }
 
+    // =======================================================================
+    // CT-33..CT-51: checksum, stat, exists, diff, write, append, head, tail,
+    //               info, grep contracts. Added FS 0.8.58+ gap-fill 2026-04-16.
+    // Rationale: action=checksum is used by CS dependency-sweep handler;
+    //   action=exists must not throw on absent path (sweep defensiveness);
+    //   stat non-existent path must not surface uncaught exception.
+    // =======================================================================
+
+    def "CT-33: checksum of existing file returns SHA-256 hex, not error"() {
+        given:
+        def f = writeFile('ct33.txt', 'hello checksum world')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read', [action: 'checksum', path: f.path], 'ct33')
+
+        then: "success response, checksum field present, 64-char lowercase hex"
+        r != null
+        (r.result as Map).isError != true
+        def c = parseContent(r)
+        c.action == 'checksum'
+        c.checksum != null
+        (c.checksum as String).length() == 64
+        (c.checksum as String) ==~ /[0-9a-f]{64}/
+        c.algorithm == 'SHA-256'
+    }
+
+    def "CT-34: checksum is deterministic -- same content returns same hash on repeated calls"() {
+        given:
+        def f = writeFile('ct34.txt', 'deterministic checksum content')
+
+        when:
+        def r1 = fileReadService.handleToolCall('file_read', [action: 'checksum', path: f.path], 'ct34a')
+        def r2 = fileReadService.handleToolCall('file_read', [action: 'checksum', path: f.path], 'ct34b')
+
+        then:
+        parseContent(r1).checksum == parseContent(r2).checksum
+    }
+
+    def "CT-35: checksum with algorithm=MD5 returns 32-char hex"() {
+        given:
+        def f = writeFile('ct35.txt', 'md5 test content')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'checksum', path: f.path, options: [algorithm: 'MD5']], 'ct35')
+
+        then:
+        (r.result as Map).isError != true
+        def c = parseContent(r)
+        c.algorithm == 'MD5'
+        (c.checksum as String).length() == 32
+        (c.checksum as String) ==~ /[0-9a-f]{32}/
+    }
+
+    def "CT-36: checksum of non-existent file returns toolError, not uncaught exception"() {
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'checksum', path: tempDir.resolve('does-not-exist.txt').toString()], 'ct36')
+
+        then: "toolError surfaced to Claude -- not exception, not protocol error"
+        r != null
+        (r.result as Map).isError == true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.toLowerCase().contains('not found') || txt.toLowerCase().contains('does-not-exist')
+    }
+
+    def "CT-37: checksum with unknown algorithm returns toolError with message"() {
+        given:
+        def f = writeFile('ct37.txt', 'algorithm test')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'checksum', path: f.path, options: [algorithm: 'NOSUCHALGORITHM']], 'ct37')
+
+        then: "toolError -- NoSuchAlgorithmException must not surface as uncaught exception"
+        r != null
+        (r.result as Map).isError == true
+    }
+
+    def "CT-38: stat of existing file returns exists:true and size"() {
+        given:
+        def content = 'stat test content'
+        def f = writeFile('ct38.txt', content)
+
+        when:
+        def r = fileReadService.handleToolCall('file_read', [action: 'stat', path: f.path], 'ct38')
+
+        then:
+        (r.result as Map).isError != true
+        def c = parseContent(r)
+        c.exists == true
+        (c.size as long) == content.bytes.length
+        c.action == 'stat'
+    }
+
+    def "CT-39: stat of non-existent path returns toolError or exists:false -- never uncaught exception"() {
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'stat', path: tempDir.resolve('ghost.txt').toString()], 'ct39')
+
+        then: "safe response -- either toolError OR {exists:false} -- never throws"
+        r != null
+        def m = r.result as Map
+        boolean isToolError  = m.isError == true
+        boolean isExistsFalse = !isToolError && parseContent(r).exists == false
+        isToolError || isExistsFalse
+    }
+
+    def "CT-40: exists on present file returns exists:true"() {
+        given:
+        def f = writeFile('ct40.txt', 'exists test')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read', [action: 'exists', path: f.path], 'ct40')
+
+        then:
+        (r.result as Map).isError != true
+        parseContent(r).exists == true
+    }
+
+    def "CT-41: exists on absent path returns exists:false, NOT toolError and NOT exception"() {
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'exists', path: tempDir.resolve('absent.txt').toString()], 'ct41')
+
+        then: "exists MUST return exists:false -- throwing is a contract violation"
+        r != null
+        (r.result as Map).isError != true
+        parseContent(r).exists == false
+    }
+
+    def "CT-42: write creates new file with correct content"() {
+        given:
+        def path = tempDir.resolve('ct42.txt').toString()
+        def body = 'written by CT-42'
+
+        when:
+        def r = fileWriteService.handleToolCall('file_write',
+            [action: 'write', path: path, content: body], 'ct42')
+
+        then:
+        (r.result as Map).isError != true
+        new File(path).exists()
+        new File(path).text == body
+    }
+
+    def "CT-43: append adds content without truncating existing file"() {
+        given:
+        def f = writeFile('ct43.txt', 'original')
+
+        when:
+        def r = fileWriteService.handleToolCall('file_write',
+            [action: 'append', path: f.path, content: '\nappended'], 'ct43')
+
+        then:
+        (r.result as Map).isError != true
+        new File(f.path).text == 'original\nappended'
+    }
+
+    def "CT-44: head returns first N lines, not more"() {
+        given:
+        def lines = (1..20).collect { "line ${it}" }.join('\n')
+        def f = writeFile('ct44.txt', lines)
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'head', path: f.path, options: [lines: 5]], 'ct44')
+
+        then:
+        (r.result as Map).isError != true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.contains('line 1')
+        !txt.contains('line 6')
+    }
+
+    def "CT-45: tail returns last N lines, not more"() {
+        given:
+        def lines = (1..20).collect { "line ${it}" }.join('\n')
+        def f = writeFile('ct45.txt', lines)
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'tail', path: f.path, options: [lines: 5]], 'ct45')
+
+        then:
+        (r.result as Map).isError != true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.contains('line 20')
+        !txt.contains('line 14')
+    }
+
+    def "CT-46: diff of identical files returns identical:true"() {
+        given:
+        def f1 = writeFile('ct46a.txt', 'same content')
+        def f2 = writeFile('ct46b.txt', 'same content')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'diff', path: f1.path, options: [compareTo: f2.path]], 'ct46')
+
+        then:
+        (r.result as Map).isError != true
+        parseContent(r).identical == true
+    }
+
+    def "CT-47: diff of different files returns identical:false with non-empty diffs"() {
+        given:
+        def f1 = writeFile('ct47a.txt', 'line one\nline two')
+        def f2 = writeFile('ct47b.txt', 'line one\nline CHANGED')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'diff', path: f1.path, options: [compareTo: f2.path]], 'ct47')
+
+        then:
+        (r.result as Map).isError != true
+        def c = parseContent(r)
+        c.identical == false
+        (c.diffs as List).size() > 0
+    }
+
+    def "CT-48: info on existing file returns action:info with path and size"() {
+        given:
+        def f = writeFile('ct48.groovy', 'class Foo {}')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read', [action: 'info', path: f.path], 'ct48')
+
+        then:
+        (r.result as Map).isError != true
+        def c = parseContent(r)
+        c.action == 'info'
+        c.path != null
+        c.size != null
+    }
+
+    def "CT-49: grep returns only matching lines"() {
+        given:
+        def f = writeFile('ct49.txt', 'alpha line\nbeta line\ngamma line\nalpha again')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'grep', path: f.path, options: [pattern: 'alpha', contextLines: 0]], 'ct49')
+
+        then:
+        (r.result as Map).isError != true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.contains('alpha line')
+        txt.contains('alpha again')
+        !txt.contains('beta line')
+    }
+
+    def "CT-50: grep with no matches returns success with zero matches, not toolError"() {
+        given:
+        def f = writeFile('ct50.txt', 'nothing to see here')
+
+        when:
+        def r = fileReadService.handleToolCall('file_read',
+            [action: 'grep', path: f.path, options: [pattern: 'ZZZNOMATCH']], 'ct50')
+
+        then: "no-match is NOT an error"
+        r != null
+        (r.result as Map).isError != true
+    }
+
+    def "CT-51: checksum changes when file content changes"() {
+        given:
+        def f = writeFile('ct51.txt', 'original content')
+        def r1 = fileReadService.handleToolCall('file_read', [action: 'checksum', path: f.path], 'ct51a')
+        def hash1 = parseContent(r1).checksum as String
+
+        when: "modify file and re-checksum"
+        new File(f.path).text = 'modified content'
+        def r2 = fileReadService.handleToolCall('file_read', [action: 'checksum', path: f.path], 'ct51b')
+        def hash2 = parseContent(r2).checksum as String
+
+        then: "hashes differ after content change"
+        hash1 != null && hash2 != null
+        hash1 != hash2
+    }
+
+    // =======================================================================
+    // CT-52: idea #62 -- file_read action=multi with knownHashes must NOT
+    //   be blocked by the BLOCKED_UNRANGED_INDEXED_READ guard. The guard
+    //   exists to prevent large unranged content reads on indexed files;
+    //   knownHash-only multi reads return {unchanged:true} or minimal diff
+    //   data and carry no content-token risk.
+    //
+    // CT-53: idea #16 -- server_transform insert_before_match with
+    //   options.matchIsRegex=true must match via Pattern.find() not contains().
+    //   Anchored patterns like ^}$ must work. Invalid regex must return
+    //   structured toolError, not exception.
+    // =======================================================================
+
+    def "CT-52: file_read multi with knownHashes is NOT blocked by ontology-indexed guard"() {
+        given: "a real file that exists on disk"
+        def f = writeFile('ct52.groovy', 'class Ct52 { def foo() {} }')
+        // Simulate passing a knownHash for this path
+        def knownHash = fileReadService.handleToolCall('file_read',
+            [action: 'checksum', path: f.path], 'ct52-hash')
+        def hash = parseContent(knownHash).checksum as String
+        // Use first 12 chars as the canonical short hash format
+        def shortHash = hash?.take(12)
+
+        when: "multi read with knownHashes -- even if file were ontology-indexed, must not block"
+        def r = fileReadService.handleToolCall('file_read', [
+            action : 'multi',
+            options: [paths: [f.path], knownHashes: [(f.path): shortHash]]
+        ], 'ct52')
+
+        then: "response is NOT a BLOCKED_UNRANGED_INDEXED_READ error"
+        r != null
+        def ct52map = r.result as Map
+        // Must not be the blocked error -- either success or unchanged
+        !(ct52map.isError == true &&
+          (ct52map.content[0] as Map)?.text?.toString()?.contains('BLOCKED_UNRANGED_INDEXED_READ'))
+    }
+
+    def "CT-53a: insert_before_match with matchIsRegex=true matches anchored regex closing brace"() {
+        given:
+        def f = writeFile('ct53.groovy', 'class Foo {\n    def bar() {}\n}')
+        // Pattern: ^ followed by } followed by end-of-line
+        String regexPattern = /^}$/
+
+        when: "insert before the closing class brace using anchored regex"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'server_transform',
+            path   : f.path,
+            options: [
+                transform   : 'insert_before_match',
+                expectedHash: f.hash,
+                match       : regexPattern,
+                matchIsRegex: true,
+                content     : '    def inserted() { true }'
+            ]
+        ], 'ct53a')
+
+        then: "success and inserted content present before closing brace"
+        (r.result as Map).isError != true
+        def finalContent = new File(f.path).text
+        finalContent.contains('def inserted()')
+        finalContent.endsWith('}')
+        finalContent.indexOf('def inserted()') < finalContent.lastIndexOf('}')
+    }
+
+    def "CT-53b: insert_before_match with matchIsRegex=true and invalid regex returns structured toolError"() {
+        given:
+        def f = writeFile('ct53b.groovy', 'class Bar { def x() {} }')
+
+        when: "invalid regex pattern"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'server_transform',
+            path   : f.path,
+            options: [
+                transform   : 'insert_before_match',
+                expectedHash: f.hash,
+                match       : '[invalid(regex',
+                matchIsRegex: true,
+                content     : 'should not reach here'
+            ]
+        ], 'ct53b')
+
+        then: "structured toolError mentioning regex -- not uncaught exception"
+        r != null
+        (r.result as Map).isError == true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.toLowerCase().contains('regex') || txt.toLowerCase().contains('pattern') ||
+            txt.toLowerCase().contains('invalid')
+    }
+
+    def "CT-53c: insert_before_match without matchIsRegex still uses substring matching (regression)"() {
+        given:
+        def f = writeFile('ct53c.txt', 'line one\ntarget line\nline three')
+
+        when:
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'server_transform',
+            path   : f.path,
+            options: [
+                transform   : 'insert_before_match',
+                expectedHash: f.hash,
+                match       : 'target line',
+                content     : 'inserted before'
+            ]
+        ], 'ct53c')
+
+        then: "existing substring behaviour unchanged"
+        (r.result as Map).isError != true
+        new File(f.path).text.contains('inserted before\ntarget line')
+    }
+
 }
