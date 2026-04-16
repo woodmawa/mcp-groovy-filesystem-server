@@ -169,8 +169,12 @@ class FileStructureReader extends AbstractFileService {
         if (!isPathAllowed(normalized)) {
             return McpResponse.toolError(requestId, "Path not allowed: ${sanitize(normalized)}")
         }
-        if (!new File(normalized).exists()) {
+        def normalizedFile = new File(normalized)
+        if (!normalizedFile.exists()) {
             return McpResponse.toolError(requestId, "File not found: ${sanitize(normalized)}")
+        }
+        if (!normalizedFile.isFile()) {
+            return McpResponse.toolError(requestId, "Path is not a file: ${sanitize(normalized)}")
         }
 
         McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId)

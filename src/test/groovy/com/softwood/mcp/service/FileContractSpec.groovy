@@ -1579,4 +1579,123 @@ class FileContractSpec extends Specification {
         new File(f.path).text.contains('inserted before\ntarget line')
     }
 
+    // -------------------------------------------------------------------------
+    // CT-54..CT-58: directory-as-file errors and patch-without-hash behaviour
+    // Diagnosed from FS log analysis 2026-04-16.
+    // -------------------------------------------------------------------------
+
+    def "CT-54: grep on directory path returns structured toolError in content (not JSON-RPC error object)"() {
+        // Diagnosed: log showed 'Path is not a file' thrown as IllegalArgumentException
+        // which surfaced as JSON-RPC error{code:-32603} rather than isError:true in
+        // content[0].text. Claude Desktop cannot display JSON-RPC error objects.
+        given:
+        def dirPath = tempDir.resolve('ct54dir').toFile()
+        dirPath.mkdirs()
+
+        when: "grep is called with a directory instead of a file"
+        def r = fileReadService.handleToolCall('file_read', [
+            action : 'grep',
+            path   : dirPath.absolutePath,
+            options: [pattern: 'somePattern', contextLines: 0]
+        ], 'ct54')
+
+        then: "response is a content result -- isError:true in content, not a JSON-RPC error"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.toLowerCase().contains('file') || txt.toLowerCase().contains('directory') ||
+            txt.toLowerCase().contains('path')
+    }
+
+    def "CT-55: read on directory path returns structured toolError in content (not JSON-RPC error object)"() {
+        given:
+        def dirPath = tempDir.resolve('ct55dir').toFile()
+        dirPath.mkdirs()
+
+        when: "read is called with a directory path"
+        def r = fileReadService.handleToolCall('file_read', [
+            action : 'read',
+            path   : dirPath.absolutePath
+        ], 'ct55')
+
+        then: "structured toolError in content, not a JSON-RPC level error"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.toLowerCase().contains('file') || txt.toLowerCase().contains('directory') ||
+            txt.toLowerCase().contains('path')
+    }
+
+    def "CT-56: range on directory path returns structured toolError in content (not JSON-RPC error object)"() {
+        given:
+        def dirPath = tempDir.resolve('ct56dir').toFile()
+        dirPath.mkdirs()
+
+        when: "range is called with a directory path"
+        def r = fileReadService.handleToolCall('file_read', [
+            action : 'range',
+            path   : dirPath.absolutePath,
+            options: [startLine: 1, maxLines: 10]
+        ], 'ct56')
+
+        then: "structured toolError in content, not a JSON-RPC level error"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.toLowerCase().contains('file') || txt.toLowerCase().contains('directory') ||
+            txt.toLowerCase().contains('path')
+    }
+
+    def "CT-57: patch without expectedHash on .groovy file succeeds (degraded safety, no drift guard)"() {
+        // Diagnosed: log showed WARN 'doPatch called without expectedHash -- drift guard
+        // disabled'. Contract: omitting expectedHash must still succeed (not error).
+        // Caller accepts degraded safety; server must not reject the call.
+        given:
+        def f = writeFile('ct57.groovy', 'class Ct57 {\n    def old() { 1 }\n}')
+
+        when: "patch without expectedHash"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                // expectedHash deliberately omitted
+                replacements: [
+                    [startLine: 2, endLine: 2, newText: '    def old() { 99 }']
+                ]
+            ]
+        ], 'ct57')
+
+        then: "patch succeeds -- drift guard disabled but operation completes"
+        r != null
+        r.result != null
+        (r.result as Map).isError != true
+        new File(f.path).text.contains('99')
+    }
+
+    def "CT-58: get_method on directory path returns structured toolError in content (not JSON-RPC error object)"() {
+        // Complements CT-54..CT-56 -- confirms all file-reading actions handle
+        // directory paths consistently as toolError, not uncaught exceptions.
+        given:
+        def dirPath = tempDir.resolve('ct58dir').toFile()
+        dirPath.mkdirs()
+
+        when: "get_method is called with a directory path"
+        def r = fileReadService.handleToolCall('file_read', [
+            action : 'get_method',
+            path   : dirPath.absolutePath,
+            options: [method: 'someMethod']
+        ], 'ct58')
+
+        then: "structured toolError in content, not a JSON-RPC level error"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        txt.toLowerCase().contains('file') || txt.toLowerCase().contains('directory') ||
+            txt.toLowerCase().contains('path')
+    }
+
 }

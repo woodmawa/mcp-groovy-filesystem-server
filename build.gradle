@@ -9,7 +9,8 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.59'
+version = '0.8.60'
+// v0.8.60: CT-54..CT-58 from log analysis 2026-04-16. doGetMethod: add isFile() guard before hash-check (was missing -- directory paths returned 'method not found' instead of toolError). CT-57: patch without expectedHash confirmed working (degraded safety). CT-54/55/56: grep/read/range on dir already toolError-safe -- contracts added to lock that in. URLClassLoader fix: use Thread.currentThread().contextClassLoader as parent (not null) so java.sql.Driver is visible to sqlite-jdbc driver loaded in isolated CL.
 // v0.8.58: MCP-EFFICIENCY-BUILD-BRIEF-V1 Turn 4 -- New-3: _tok estimate injected into every textResponse payload (Map payloads only, chars/4). AbstractFileService.textResponse enriched. CT-32: append_section wrong option name returns structured error. FileContractSpec 32 tests. Practice #424 (section transforms use content not newContent). MCP-EFFICIENCY-BUILD-BRIEF-V1 Turn 2 -- Fix C (get_method now records real startLine/endLine to range cache, parseResponsePayload helper added). CT-30 (server_transform extension guard), CT-31 (replace_method wrong option name). Practice #422 (replace_method requires newBody not newMethod). file_search wrong-path error diagnosed (Claude bad path, not FS bug). MCP-EFFICIENCY-BUILD-BRIEF-V1 Fix E -- InsertBeforeMatchTransformer: matchLast=true (alias for occurrence=-1) and fromLine=N (1-based, skip occurrences before line N) options. Both compose: fromLine restricts window first, matchLast/occurrence resolves within window. FileContractSpec CT-27 (matchLast targets last occurrence), CT-28 (fromLine skips early occurrences), CT-29 (combined matchLast+fromLine) -- 74 tests total. FS-F6 fix -- FileWriteService generic catch(Exception) now wraps error in JsonBuilder([success:false,error:msg,action:...]) so all tool-level exceptions return parseable JSON, not raw strings. FileContractSpec CT-24 (large-file replace returns structured response), CT-25 (top-level oldText/newText promotion succeeds), CT-26 (multi_replace missing replacements returns structured error) -- all 71 tests pass.
 // v0.8.59: CT-33..CT-53 contract tests (checksum/stat/exists/diff/write/append/head/tail/info/grep -- 21 new, total 100).
 //   Idea #62: file_read action=multi with knownHashes or compact=true now exempt from BLOCKED_UNRANGED_INDEXED_READ guard.
@@ -466,8 +467,17 @@ tasks.register('copyToJarsDir') {
         if (jar.exists()) {
             def dbPath = 'C:/Users/willw/claude-sync/best_practices.db'
             try {
-                Class.forName('org.sqlite.JDBC')
-                def conn = java.sql.DriverManager.getConnection("jdbc:sqlite:${dbPath}")
+                // Load sqlite-jdbc from resolved runtime classpath -- avoids buildscript classpath issue
+                def sqliteJar = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts
+                    .find { it.name == 'sqlite-jdbc' }?.file
+                if (!sqliteJar) throw new IllegalStateException('sqlite-jdbc jar not found in runtimeClasspath')
+                // Use thread context classloader as parent so java.sql.* is visible to the driver
+                def sqliteCl = new URLClassLoader([sqliteJar.toURI().toURL()] as URL[],
+                    Thread.currentThread().contextClassLoader)
+                def driverClass = Class.forName('org.sqlite.JDBC', true, sqliteCl)
+                def driver = driverClass.getDeclaredConstructor().newInstance()
+                def props = new java.util.Properties()
+                def conn = (driver as java.sql.Driver).connect("jdbc:sqlite:${dbPath}", props)
                 def ps = conn.prepareStatement(
                     "INSERT OR REPLACE INTO server_versions (server_name, version, jar_path, updated_at) " +
                     "VALUES ('filesystem', ?, ?, datetime('now'))")
