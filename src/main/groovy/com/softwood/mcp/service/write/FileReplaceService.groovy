@@ -122,6 +122,12 @@ class FileReplaceService extends AbstractFileService {
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
 
+        if (!Files.exists(Paths.get(normalized))) {
+            return McpResponse.toolError(requestId,
+                ("replace: file not found: ${sanitize(normalized)}. " +
+                 'Use file_write action=write to create a new file.'))
+        }
+
         long fileSizeKb = Files.size(Paths.get(normalized)).intdiv(1024)
         if (fileSizeKb > replaceFileSizeThresholdKb) {
             return McpResponse.toolError(requestId,
@@ -243,6 +249,16 @@ class FileReplaceService extends AbstractFileService {
         if (hasCrLf && !WriteUtils.shouldNormaliseLf(target)) updated = updated.replace('\n', '\r\n')
 
         if (backup) WriteUtils.makeBackup(target)
+        // FS-T10: bare-box-drawing check -- blocks writes that would produce lines
+        // starting with raw U+2500..U+257F in code files (.groovy/.java/.kt).
+        // Root cause (G1 session): multi_replace oldText ending mid-divider left
+        // trailing \u2500\u2500\u2500 chars without // prefix -> Groovy compile error.
+        String bareBoxError = checkBareBoxDrawing(updated, normalized)
+        if (bareBoxError) {
+            log.warn('replace: bare-box-drawing check REJECTED {} -- {}', normalized, bareBoxError)
+            return McpResponse.toolError(requestId,
+                'replace bare_box_drawing check failed (file NOT modified): ' + bareBoxError)
+        }
         WriteUtils.atomicWrite(target, updated.getBytes(encoding))
 
         log.debug('replace: 1 occurrence in {} (line endings: {}, norm: {})', normalized,
@@ -490,6 +506,14 @@ class FileReplaceService extends AbstractFileService {
         Path target = Paths.get(normalized)
         if (backup) WriteUtils.makeBackup(target)
         if (hasCrLf) current = current.replace('\n', '\r\n')
+        // FS-T10: bare-box-drawing check (same guard as doReplace)
+        // Use LF-normalised 'current' before CRLF re-insertion for consistent detection.
+        String bareBoxError2 = checkBareBoxDrawing(current, normalized)
+        if (bareBoxError2) {
+            log.warn('multi_replace: bare-box-drawing check REJECTED {} -- {}', normalized, bareBoxError2)
+            return McpResponse.toolError(requestId,
+                'multi_replace bare_box_drawing check failed (file NOT modified): ' + bareBoxError2)
+        }
         WriteUtils.atomicWrite(target, current.getBytes(encoding))
         log.info('multi_replace: {} applied in {} (line endings: {})', applied, normalized, hasCrLf ? 'CRLF' : 'LF')
 
@@ -507,6 +531,51 @@ class FileReplaceService extends AbstractFileService {
     // -----------------------------------------------------------------------
     // Helper
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // FS-T10: bare-box-drawing checker
+    // -----------------------------------------------------------------------
+
+    /**
+     * Checks whether any line in the simulated post-replacement content starts
+     * (after leading whitespace) with a Unicode box-drawing character (U+2500..U+257F)
+     * that is NOT prefixed by a // comment marker on that line.
+     *
+     * Only enforced for code files: .groovy, .java, .kt
+     * Safe for .txt, .md, .adoc, .yml etc.
+     *
+     * @param content     LF-normalised simulated file content after all replacements
+     * @param filePath    absolute path (used to determine file type)
+     * @return            error string if bare box-drawing detected; null if clean
+     */
+    @CompileStatic
+    private static String checkBareBoxDrawing(String content, String filePath) {
+        if (!filePath) return null
+        String lc = filePath.toLowerCase(Locale.ROOT)
+        if (!lc.endsWith('.groovy') && !lc.endsWith('.java') && !lc.endsWith('.kt')) return null
+        String[] lines = content.split('\n', -1)
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i]
+            // Find first non-whitespace char
+            int firstNonWs = -1
+            for (int j = 0; j < line.length(); j++) {
+                if (line.charAt(j) != ' ' && line.charAt(j) != '\t') {
+                    firstNonWs = j
+                    break
+                }
+            }
+            if (firstNonWs < 0) continue  // blank/whitespace-only line
+            int cp = line.codePointAt(firstNonWs)
+            if (cp >= 0x2500 && cp <= 0x257F) {
+                return ('Line ' + (i + 1) + ' starts with bare box-drawing character U+' +
+                    Integer.toHexString(cp).toUpperCase(Locale.ROOT).padLeft(4, '0') +
+                    '. Section dividers must be inside // comments (e.g. "// \u2500\u2500 Section ").' +
+                    ' RECOVERY: ensure newText includes "// " prefix before \u2500 characters.' +
+                    ' [bare_box_drawing_hint]')
+            }
+        }
+        return null
+    }
 
     // -----------------------------------------------------------------------
     // FS-T9: brace-balance checker

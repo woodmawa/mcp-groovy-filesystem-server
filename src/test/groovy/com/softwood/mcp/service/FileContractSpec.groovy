@@ -10,7 +10,7 @@ import spock.lang.TempDir
 import java.nio.file.Path
 
 /**
- * FileContractSpec -- TDD contract tests for FS 0.8.56.
+ * FileContractSpec -- TDD contract tests for FS 0.8.61.
  *
  * These tests assert on what Claude Desktop ACTUALLY SEES:
  *   - Errors must come as isError:true in content, NOT as JSON-RPC error objects
@@ -24,6 +24,13 @@ import java.nio.file.Path
  * CT-30: added for FS 0.8.56 (server_transform extension guard).
  * CT-31: added for FS 0.8.57 (replace_method wrong option name).
  * CT-32: added for FS 0.8.57 (append_section wrong option name returns structured error).
+ * CT-33..CT-53: FileContractSpec continued (see inline).
+ * CT-54..CT-58: added for FS 0.8.60 (directory-path guard on read actions + patch without hash).
+ * CT-59..CT-63: added for FS 0.8.61 (replace happy-path, multi-match ambiguity guard,
+ *               no-hash degraded safety, multi_replace happy-path, missing-file guard).
+ *   Root cause: G4 build session hit 'Tool not found: str_replace' -- Claude used wrong
+ *   tool alias. These tests lock down the replace contract so the action surface is
+ *   verified independently of session tool-alias hygiene.
  *
  * TDD discipline:
  *   Run against current version first -- confirm new CTs fail.
@@ -1696,6 +1703,360 @@ class FileContractSpec extends Specification {
         def txt = ((r.result as Map).content[0] as Map).text.toString()
         txt.toLowerCase().contains('file') || txt.toLowerCase().contains('directory') ||
             txt.toLowerCase().contains('path')
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-59..CT-63: file_write action=replace happy-path and ambiguity guards
+    // Added FS 0.8.61 (G4 build session 2026-04-19)
+    // Root cause captured: prior session attempted 'str_replace' (Claude built-in
+    // tool alias) instead of file_write action=replace -- 'Tool not found' error.
+    // These tests harden the replace contract so regressions are caught by CI.
+    // -----------------------------------------------------------------------
+
+    def "CT-59: replace happy-path -- oldText found exactly once, file updated, new hash returned"() {
+        // Happy-path contract: replace succeeds when oldText matches exactly once
+        // and expectedHash is correct. Response must carry new file_content_hash.
+        given:
+        def f = writeFile('ct59.groovy', 'class Ct59 {\n    def methodA() { 1 }\n    def methodB() { 2 }\n}')
+
+        when: "oldText matches exactly once"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : 'def methodA() { 1 }',
+                newText     : 'def methodA() { 42 }',
+                expectedHash: f.hash
+            ]
+        ], 'ct59')
+
+        then: "replace succeeds with new hash in response"
+        r != null
+        r.result != null
+        (r.result as Map).isError != true
+        def txt = ((r.result as Map).content[0] as Map).text.toString()
+        def parsed = new groovy.json.JsonSlurper().parseText(txt) as Map
+        parsed.file_content_hash != null
+        parsed.file_content_hash != f.hash   // hash must change
+        new File(f.path).text.contains('42')
+        !new File(f.path).text.contains('{ 1 }')
+    }
+
+    def "CT-60: replace where oldText matches multiple times returns structured toolError (ambiguous match)"() {
+        // Safety contract: replace must refuse when oldText is ambiguous (appears >1 time).
+        // Silently replacing all occurrences would be destructive and unpredictable.
+        // FS must surface a clear toolError rather than corrupt the file.
+        given:
+        def f = writeFile('ct60.groovy',
+            'class Ct60 {\n    def dup() { 1 }\n    def other() { 1 }\n}')
+        // '{ 1 }' appears twice
+
+        when: "oldText matches more than once"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : '{ 1 }',
+                newText     : '{ 99 }',
+                expectedHash: f.hash
+            ]
+        ], 'ct60')
+
+        then: "structured toolError -- ambiguous/multiple match, file not modified"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def errTxt = ((r.result as Map).content[0] as Map).text.toString()
+        // FS actual message: 'replace: oldText appears N times at lines X, Y (must be unique).'
+        // Accept any of: 'appears', 'times', 'unique', 'multiple', 'ambiguous', 'more than one'
+        errTxt.toLowerCase().contains('appears')   || errTxt.toLowerCase().contains('times') ||
+            errTxt.toLowerCase().contains('unique')    || errTxt.toLowerCase().contains('multiple') ||
+            errTxt.toLowerCase().contains('ambiguous') || errTxt.toLowerCase().contains('more than one')
+        // File must be unchanged
+        new File(f.path).text == 'class Ct60 {\n    def dup() { 1 }\n    def other() { 1 }\n}'
+    }
+
+    def "CT-61: replace without expectedHash succeeds (degraded safety) and returns new hash"() {
+        // Mirrors CT-57 for replace: omitting expectedHash is legal but disables drift guard.
+        // Server must NOT reject the call -- caller accepts degraded safety.
+        // This contract ensures file_write action=replace is usable without a prior read.
+        given:
+        def f = writeFile('ct61.txt', 'alpha\nbeta\ngamma\n')
+
+        when: "expectedHash deliberately omitted"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText: 'beta',
+                newText: 'BETA'
+                // expectedHash omitted
+            ]
+        ], 'ct61')
+
+        then: "replace succeeds -- drift guard disabled but operation completes"
+        r != null
+        r.result != null
+        (r.result as Map).isError != true
+        new File(f.path).text.contains('BETA')
+        !new File(f.path).text.contains('beta')
+    }
+
+    def "CT-62: multi_replace happy-path -- two non-overlapping replacements applied atomically"() {
+        // Confirms multi_replace applies all entries in one atomic write.
+        // Both replacements must land; file_content_hash changes once.
+        given:
+        def f = writeFile('ct62.groovy',
+            'class Ct62 {\n    String name = "old"\n    int value = 0\n}')
+
+        when: "two non-overlapping replacements"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [
+                    [oldText: '"old"',  newText: '"new"'],
+                    [oldText: 'int value = 0', newText: 'int value = 99']
+                ]
+            ]
+        ], 'ct62')
+
+        then: "both replacements applied, new hash returned"
+        r != null
+        r.result != null
+        (r.result as Map).isError != true
+        def newContent = new File(f.path).text
+        newContent.contains('"new"')
+        newContent.contains('int value = 99')
+        !newContent.contains('"old"')
+        !newContent.contains('int value = 0')
+    }
+
+    def "CT-63: replace on non-existent file returns structured toolError (not NPE or JSON-RPC error)"() {
+        // Defensive contract: file_write action=replace must handle missing file gracefully.
+        // Historically vulnerable to NPE/uncaught exception -- must surface toolError.
+        given:
+        def missingPath = tempDir.resolve('ct63_missing.groovy').toFile().absolutePath
+
+        when: "file does not exist"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : missingPath,
+            options: [
+                oldText: 'anything',
+                newText: 'whatever'
+            ]
+        ], 'ct63')
+
+        then: "structured toolError in content, not NPE or JSON-RPC error"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def errTxt = ((r.result as Map).content[0] as Map).text.toString()
+        errTxt.toLowerCase().contains('not found') || errTxt.toLowerCase().contains('does not exist') ||
+            errTxt.toLowerCase().contains('no such file') || errTxt.toLowerCase().contains('missing')
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-64..CT-65: non-ASCII in oldText
+    // Added FS 0.8.62 (G4 build session 2026-04-19)
+    // Root cause: AwToCsSignalClient.resolveActiveSession() doc comment contained
+    // the section-sign char § (U+00A7 = 167 > 126). When that method's block was
+    // included in a replace oldText the non_ascii_hint fired, correctly blocking the
+    // replace and directing use of action=patch. Contracts lock in that behaviour.
+    // -----------------------------------------------------------------------
+
+    def "CT-64: replace where oldText contains non-ASCII chars returns toolError with non_ascii_hint"() {
+        // FS must detect non-ASCII in oldText and surface non_ascii_hint in the error.
+        // This is the canonical diagnostic for Spring @Value / Unicode doc-comment failures.
+        // The hint should recommend using action=patch (immune to encoding issues).
+        given:
+        // File contains a comment with the section-sign char (U+00A7 = \u00a7)
+        def f = writeFile('ct64.groovy',
+            'class Ct64 {\n    // see FS_CONTEXT_ARCHITECTURE.md \u00a72 for details\n    String name = "old"\n}')
+
+        when: "oldText spans the non-ASCII comment line"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : '// see FS_CONTEXT_ARCHITECTURE.md \u00a72 for details\n    String name = "missing"',
+                newText     : '// updated\n    String name = "new"',
+                expectedHash: f.hash
+            ]
+        ], 'ct64')
+
+        then: "structured toolError -- oldText not found, non_ascii_hint present"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def errPayload = new groovy.json.JsonSlurper().parseText(
+            ((r.result as Map).content[0] as Map).text.toString()) as Map
+        // non_ascii_hint must be present and mention 'patch'
+        errPayload.non_ascii_hint != null
+        (errPayload.non_ascii_hint as String).toLowerCase().contains('patch')
+        // File must be unchanged
+        new File(f.path).text.contains('\u00a7')
+        new File(f.path).text.contains('"old"')
+    }
+
+    def "CT-65: replace on ASCII-only not-found oldText omits non_ascii_hint"() {
+        // Complement of CT-64: when oldText is pure ASCII and simply not found,
+        // non_ascii_hint must NOT be present in the error (no false positives).
+        given:
+        def f = writeFile('ct65.groovy',
+            'class Ct65 {\n    String name = "old"\n}')
+
+        when: "oldText is ASCII-only but simply not in the file"
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : 'String name = "definitely_not_there"',
+                newText     : 'String name = "new"',
+                expectedHash: f.hash
+            ]
+        ], 'ct65')
+
+        then: "structured toolError -- oldText not found, non_ascii_hint absent"
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def errPayload = new groovy.json.JsonSlurper().parseText(
+            ((r.result as Map).content[0] as Map).text.toString()) as Map
+        // no non_ascii_hint for pure-ASCII not-found
+        errPayload.non_ascii_hint == null
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-66..CT-69: bare box-drawing chars at line-start in simulated result
+    // Added FS 0.8.63 (G1 build session 2026-04-19)
+    //
+    // ROOT CAUSE (this session):
+    //   multi_replace was called with oldText ending mid-way through a section
+    //   divider. The trailing \u2500\u2500\u2500... chars after the match boundary
+    //   were left in the file as BARE box-drawing characters without // prefix.
+    //   Groovy compiler rejected: "Unexpected character: '\u2500'"
+    //
+    // THE FIX:
+    //   After brace-check, before atomicWrite, run checkBareBoxDrawing() on the
+    //   simulated result for .groovy/.java/.kt files. Any line whose first
+    //   non-whitespace char is in U+2500..U+257F must be blocked.
+    //   Return structured error with bare_box_drawing_hint.
+    //
+    // APPLIES TO: both replace and multi_replace actions.
+    // EXEMPT:     .txt/.md/.adoc and other non-code files.
+    // -----------------------------------------------------------------------
+
+    def 'CT-66b: multi_replace where newText causes orphaned bare box-drawing line is blocked'() {
+        // This is the exact failure mode from the G1 build session:
+        // newText deliberately introduces a line starting with raw \u2500 chars.
+        given:
+        def f = writeFile('ct66b.groovy',
+            'class Ct66b {\n    String marker = "replace_me"\n}')
+
+        when: 'newText introduces a bare \u2500 line (missing // prefix)'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [
+                    [oldText: '    String marker = "replace_me"',
+                     newText: '    String marker = "fixed"\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500']
+                ]
+            ]
+        ], 'ct66b')
+
+        then: 'write is BLOCKED -- bare box-drawing detected in simulated result'
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def errText = ((r.result as Map).content[0] as Map).text.toString()
+        errText.contains('bare_box_drawing') || errText.toLowerCase().contains('box-drawing') ||
+            errText.toLowerCase().contains('box drawing')
+        new File(f.path).text.contains('"replace_me"')
+        !new File(f.path).text.contains('\u2500\u2500\u2500\u2500')
+    }
+
+    def 'CT-67: multi_replace retaining // prefix on box-drawing divider passes'() {
+        // Complement: correct replacement retaining // on divider must succeed.
+        given:
+        def f = writeFile('ct67.groovy',
+            'class Ct67 {\n    int budget = 0\n\n    // \u2500\u2500 Factory \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n}')
+
+        when: 'newText adds a field but does not touch the divider line'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [
+                    [oldText: '    int budget = 0',
+                     newText: '    int budget = 0\n    String extra = "added"']
+                ]
+            ]
+        ], 'ct67')
+
+        then: 'write succeeds -- no bare box-drawing in result'
+        r != null
+        r.result != null
+        (r.result as Map).isError != true
+        new File(f.path).text.contains('String extra = "added"')
+        new File(f.path).text.contains('// \u2500\u2500 Factory')
+    }
+
+    def 'CT-68: replace action producing bare box-drawing char at line start is blocked'() {
+        // Same check must apply to single replace, not just multi_replace.
+        given:
+        def f = writeFile('ct68.groovy',
+            'class Ct68 {\n    String marker = "replace_me"\n}')
+
+        when: 'newText in replace introduces a bare \u2500 line'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : '    String marker = "replace_me"',
+                newText     : '    String marker = "fixed"\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500',
+                expectedHash: f.hash
+            ]
+        ], 'ct68')
+
+        then: 'write is BLOCKED -- bare box-drawing in simulated result'
+        r != null
+        r.result != null
+        (r.result as Map).isError == true
+        def errText = ((r.result as Map).content[0] as Map).text.toString()
+        errText.contains('bare_box_drawing') || errText.toLowerCase().contains('box-drawing') ||
+            errText.toLowerCase().contains('box drawing')
+        new File(f.path).text.contains('"replace_me"')
+    }
+
+    def 'CT-69: bare box-drawing at line start in .txt file is allowed'() {
+        // Box-drawing chars are legitimate in plain text, AsciiDoc diagrams, etc.
+        // The check must NOT fire for non-code files.
+        given:
+        def f = writeFile('ct69.txt',
+            'Title\nOld line\nEnd')
+
+        when: 'newText introduces a raw \u2500 line in a .txt file'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText : 'Old line',
+                newText : '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500',
+                expectedHash: f.hash
+            ]
+        ], 'ct69')
+
+        then: 'write succeeds -- .txt files are exempt'
+        r != null
+        r.result != null
+        (r.result as Map).isError != true
+        new File(f.path).text.contains('\u2500\u2500\u2500\u2500')
     }
 
 }

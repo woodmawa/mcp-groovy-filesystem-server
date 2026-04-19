@@ -9,7 +9,25 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.60'
+version = '0.8.63'
+// v0.8.63: CT-66b..CT-69 bare-box-drawing-at-line-start contracts + FS-T10 check.
+//   Root cause (G1 session): multi_replace oldText ended mid-section-divider, leaving
+//   trailing \u2500\u2500\u2500 chars without // prefix -> Groovy 'Unexpected character'.
+//   Fix: checkBareBoxDrawing() runs on simulated result for .groovy/.java/.kt files
+//   before atomicWrite in both doReplace and doMultiReplace. Returns structured error
+//   with bare_box_drawing_hint if any line starts with U+2500..U+257F outside a comment.
+//   .txt/.md/.adoc exempt. CT-67 (correct // prefix passes) + CT-69 (.txt exempt) green.
+// v0.8.62: CT-64..CT-65 non-ASCII oldText contracts. CT-64: replace where oldText contains
+//   non-ASCII chars (e.g. section-sign U+00A7 in doc comments) returns toolError with
+//   non_ascii_hint field directing use of action=patch. CT-65: ASCII-only not-found omits
+//   non_ascii_hint (no false positives). Root cause: G4 session AwToCsSignalClient
+//   resolveActiveSession() doc comment had \u00a7 in oldText -- FS correctly blocked it.
+//   Behaviour was already correct; contracts added to lock it in. 112 tests total.
+// v0.8.61: CT-59..CT-63 replace contract tests (happy-path, multi-match ambiguity, no-hash degraded
+//   safety, multi_replace happy-path, missing-file guard). FileReplaceService.doReplace: Files.exists()
+//   check added before Files.size() -- missing file now returns toolError instead of uncaught
+//   NoSuchFileException (CT-63). CT-60 spec assertion updated to match FS actual wording
+//   ('appears N times / must be unique'). Practice #433. 110 tests total, all green.
 // v0.8.60: CT-54..CT-58 from log analysis 2026-04-16. doGetMethod: add isFile() guard before hash-check (was missing -- directory paths returned 'method not found' instead of toolError). CT-57: patch without expectedHash confirmed working (degraded safety). CT-54/55/56: grep/read/range on dir already toolError-safe -- contracts added to lock that in. URLClassLoader fix: use Thread.currentThread().contextClassLoader as parent (not null) so java.sql.Driver is visible to sqlite-jdbc driver loaded in isolated CL.
 // v0.8.58: MCP-EFFICIENCY-BUILD-BRIEF-V1 Turn 4 -- New-3: _tok estimate injected into every textResponse payload (Map payloads only, chars/4). AbstractFileService.textResponse enriched. CT-32: append_section wrong option name returns structured error. FileContractSpec 32 tests. Practice #424 (section transforms use content not newContent). MCP-EFFICIENCY-BUILD-BRIEF-V1 Turn 2 -- Fix C (get_method now records real startLine/endLine to range cache, parseResponsePayload helper added). CT-30 (server_transform extension guard), CT-31 (replace_method wrong option name). Practice #422 (replace_method requires newBody not newMethod). file_search wrong-path error diagnosed (Claude bad path, not FS bug). MCP-EFFICIENCY-BUILD-BRIEF-V1 Fix E -- InsertBeforeMatchTransformer: matchLast=true (alias for occurrence=-1) and fromLine=N (1-based, skip occurrences before line N) options. Both compose: fromLine restricts window first, matchLast/occurrence resolves within window. FileContractSpec CT-27 (matchLast targets last occurrence), CT-28 (fromLine skips early occurrences), CT-29 (combined matchLast+fromLine) -- 74 tests total. FS-F6 fix -- FileWriteService generic catch(Exception) now wraps error in JsonBuilder([success:false,error:msg,action:...]) so all tool-level exceptions return parseable JSON, not raw strings. FileContractSpec CT-24 (large-file replace returns structured response), CT-25 (top-level oldText/newText promotion succeeds), CT-26 (multi_replace missing replacements returns structured error) -- all 71 tests pass.
 // v0.8.59: CT-33..CT-53 contract tests (checksum/stat/exists/diff/write/append/head/tail/info/grep -- 21 new, total 100).
