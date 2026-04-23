@@ -162,7 +162,10 @@ class McpController {
                 String rawPath  = arguments.path as String
                 String pathHash = rawPath ? sha256Prefix(rawPath) : null
                 String outcome  = extractOutcome(response)
-                telemetryService.recordToolCall('unknown', toolName, charCount, arguments,
+                // D5 fix (v0.8.65): resolve real session ID via JDBC (transport-agnostic).
+                // Prior 'unknown' hardcode caused knownhash_pct/read_count to read 0 for FS calls.
+                String sessionId = telemetryService.readActiveSessionId() ?: 'unknown'
+                telemetryService.recordToolCall(sessionId, toolName, charCount, arguments,
                     action, pathHash, outcome)
             }
         } catch (Exception e) {

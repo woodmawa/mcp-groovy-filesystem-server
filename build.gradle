@@ -9,7 +9,21 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.63'
+version = '0.8.65'
+// v0.8.65: D5 fix -- McpController.handleRequest() session ID hardcode resolved.
+//   Prior: telemetryService.recordToolCall('unknown', ...) for ALL transports meant
+//   tool_call_telemetry rows had session_id='unknown', causing knownhash_pct and
+//   read_count in sessions_index to always read 0 for FS tool calls (mid-session-audit
+//   queries by real session ID, found nothing). Transport-invariant: both stdio and
+//   HTTP companion paths go through McpController so single fix covers both.
+//   Fix: resolve via telemetryService.readActiveSessionId() -- same JDBC transport-
+//   agnostic active_session read used by D1/D3/D4 in ContextServerClient. Falls back
+//   to 'unknown' if DB unavailable. knownhash_pct now reflects real unchanged-file hits.
+// v0.8.64: Tool hint clarity -- knownHash verbose description updated for action=range
+//   and action=get_method to explicitly state ZERO-TOKEN unchanged short-circuit behaviour.
+//   KNOWNHASH PATTERN line added to verbose description. Compact hint updated to list
+//   all supported actions (read|range|get_method|list). inputSchema knownHash property
+//   description now documents both hash sources and within-session chaining pattern.
 // v0.8.63: CT-66b..CT-69 bare-box-drawing-at-line-start contracts + FS-T10 check.
 //   Root cause (G1 session): multi_replace oldText ended mid-section-divider, leaving
 //   trailing \u2500\u2500\u2500 chars without // prefix -> Groovy 'Unexpected character'.

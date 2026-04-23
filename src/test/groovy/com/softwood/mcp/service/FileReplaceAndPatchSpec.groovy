@@ -331,6 +331,60 @@ class FileReplaceAndPatchSpec extends Specification {
     }
 
     // -----------------------------------------------------------------------
+    // CT-NEW-A -- replace oldText ending at EOF without trailing newline
+    //             newText must preserve ALL content that was after the match
+    // -----------------------------------------------------------------------
+
+    /**
+     * Documents the operator contract for replace when oldText ends at EOF.
+     * The tool performs an exact string substitution -- if oldText ends with a
+     * structural delimiter (e.g. closing triple-quote in a Modelfile SYSTEM block)
+     * and newText omits it, the delimiter is silently lost.
+     *
+     * This test asserts the CURRENT behaviour (no implicit suffix preservation)
+     * and serves as a regression anchor if behaviour changes.
+     */
+    def "replace succeeds but drops trailing delimiter when newText does not include it"() {
+        given: "file whose oldText ends at the very end of file (no trailing newline)"
+        def f = writeFile('ct-new-a.txt', 'PREFIX\nSOME CONTENT\nEND_DELIMITER')
+
+        when: "replace SOME CONTENT but forget to include END_DELIMITER in newText"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'SOME CONTENT\nEND_DELIMITER', newText: 'REPLACED CONTENT', expectedHash: f.hash]
+        ], 'ct-new-a')
+
+        then: "replace succeeds -- tool cannot know semantic intent"
+        r.error == null
+        def result = parseResult(r)
+        result.success == true
+
+        and: "END_DELIMITER is gone -- operator must include it in newText explicitly"
+        String out = new File(f.path as String).text
+        out == 'PREFIX\nREPLACED CONTENT'
+        !out.contains('END_DELIMITER')
+    }
+
+    def "replace preserves trailing delimiter when newText explicitly includes it"() {
+        given:
+        def f = writeFile('ct-new-b.txt', 'PREFIX\nSOME CONTENT\nEND_DELIMITER')
+
+        when: "replace SOME CONTENT and explicitly include END_DELIMITER in newText"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'SOME CONTENT\nEND_DELIMITER', newText: 'REPLACED CONTENT\nEND_DELIMITER', expectedHash: f.hash]
+        ], 'ct-new-b')
+
+        then:
+        r.error == null
+        def result = parseResult(r)
+        result.success == true
+        new File(f.path as String).text == 'PREFIX\nREPLACED CONTENT\nEND_DELIMITER'
+    }
+
+    // -----------------------------------------------------------------------
     // Fix G -- removed_lines snippet in patch response
     // -----------------------------------------------------------------------
 

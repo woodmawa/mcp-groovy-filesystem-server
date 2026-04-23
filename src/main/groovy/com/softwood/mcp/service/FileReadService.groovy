@@ -52,26 +52,27 @@ class FileReadService extends AbstractFileService implements ToolHandler {
             description: isDescriptionCompact() ? '''\
 Read files/directories.
 Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
-Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (skip unchanged — zero cost), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
+Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|range|get_method|list — ZERO tokens if unchanged — always use), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
 action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
 action=multi_grep: grep one pattern across options.paths[] in one call — returns only files with matches.
 All read actions return file_content_hash. Use options.expectedHash on writes to guard drift.''' : '''\
 Read files/directories.
 Actions: read|head|tail|range|grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
-- read: full content. >200 lines refused — use structure/get_method/range. force=true overrides. knownHash=<hash> returns {unchanged:true} instantly.
+- read: full content. >200 lines refused — use structure/get_method/range. force=true overrides. knownHash=<hash> returns {unchanged:true} instantly — ZERO tokens.
 - head/tail: first/last N lines (default 50). options.lines=N.
-- range: line slice. options.startLine (1-indexed), options.maxLines (default 100).
+- range: line slice. options.startLine (1-indexed), options.maxLines (default 100). knownHash=<file_content_hash> returns {unchanged:true} if file unchanged — ZERO tokens. Always pass after first read.
 - grep: regex in FILE (not dir). options.pattern required. options.contextLines for surrounding lines.
 - multi_grep: grep one pattern across multiple files. options.paths[] (max 20), options.pattern required, options.maxMatches (default 5 per file). Returns only files with matches. No path param needed.
 - multi: up to 10 files parallel. options.paths[]. options.knownHashes {path->hash} skips unchanged. Cap: 24000 chars.
 - stat: metadata only — path, exists, size, lines, lastModified, language. Cheapest existence check.
 - summary: line count + size only.
 - structure: code outline per entry (line/endLine/lineCount). compact=true = methods only. className=Foo filters.
-- get_method: complete named method body. Preferred over structure+range for editing.
+- get_method: complete named method body. Preferred over structure+range for editing. knownHash=<file_content_hash> returns {unchanged:true} if file unchanged — ZERO tokens. Always pass after first read.
 - list: directory listing [{name,type,size,lastModified}]. Dirs first, alpha sorted. Returns listing_hash. Pass as options.knownHash on repeat calls — returns {unchanged:true, listing_hash, count} (~15 tokens) when directory unmodified.
 - help: detailed usage guide. options.topic=<tool|all>.
 - chunk_read/finalise_read: chunked large-file paging.
-All read actions return file_content_hash (12-char SHA-256). Pass as options.expectedHash on writes.''',
+All read actions return file_content_hash (12-char SHA-256). Pass as options.expectedHash on writes.
+KNOWNHASH PATTERN: (1) bootstrap result has working_file_hashes[path].hash for prior-session files. (2) Every read response returns file_content_hash — capture it. (3) Pass as options.knownHash on ALL subsequent reads of the same file. Unchanged = {unchanged:true} = ZERO tokens.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -99,7 +100,7 @@ All read actions return file_content_hash (12-char SHA-256). Pass as options.exp
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
                                   compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (methods only, no endLine)'],
-                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from prior read. If unchanged, returns {unchanged:true} with no content — saves all tokens.'],
+                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from prior read. Supported on read|range|get_method|list. File unchanged = {unchanged:true}, ZERO tokens. Source: (1) bootstrap working_file_hashes[path].hash, (2) file_content_hash field of any read response. Chain within session.'],
                                   force       : [type: 'boolean', description: 'Override >200-line refusal on action=read.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],

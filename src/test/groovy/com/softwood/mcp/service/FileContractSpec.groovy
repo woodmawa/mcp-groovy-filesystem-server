@@ -46,8 +46,9 @@ import java.nio.file.Path
 @ActiveProfiles('test')
 class FileContractSpec extends Specification {
 
-    @Autowired FileWriteService fileWriteService
-    @Autowired FileReadService  fileReadService
+    @Autowired FileWriteService     fileWriteService
+    @Autowired FileReadService      fileReadService
+    @Autowired FileLifecycleService fileLifecycleService
 
     @TempDir Path tempDir
 
@@ -2057,6 +2058,78 @@ class FileContractSpec extends Specification {
         r.result != null
         (r.result as Map).isError != true
         new File(f.path).text.contains('\u2500\u2500\u2500\u2500')
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-70..72: file_lifecycle action=create contract tests (FS 0.8.63+)
+    // These pin the create contract so Claude always uses file_lifecycle/file_write
+    // for new files on the Windows filesystem rather than any sandbox-local tool.
+    // -----------------------------------------------------------------------
+
+    def 'CT-70: file_lifecycle action=create creates an empty file and returns success with path'() {
+        // Core contract: create must produce the file on disk and return success:true.
+        // Claude must use this (not any sandbox create_file tool) for FS writes.
+        given:
+        def target = tempDir.resolve('ct70.groovy').toFile()
+
+        when:
+        def r = fileLifecycleService.handleToolCall('file_lifecycle', [
+            action: 'create',
+            path  : target.absolutePath,
+            options: [type: 'file', verbose: true]
+        ], 'ct70')
+
+        then: 'response carries success=true and file exists on disk'
+        r != null
+        r.result != null
+        def payload = parseContent(r)
+        payload.success == true
+        payload.action  == 'create'
+        target.exists()
+        target.length() == 0L
+    }
+
+    def 'CT-71: file_lifecycle action=create with mkdirs=true creates missing parent directories'() {
+        // When mkdirs is true, create must create all missing parent dirs before the file.
+        // Without this, deeply nested new files silently fail or throw.
+        given:
+        def nested = tempDir.resolve('ct71/sub/dir/new.groovy').toFile()
+
+        when:
+        def r = fileLifecycleService.handleToolCall('file_lifecycle', [
+            action : 'create',
+            path   : nested.absolutePath,
+            options: [type: 'file', mkdirs: true, verbose: true]
+        ], 'ct71')
+
+        then:
+        r != null
+        r.result != null
+        def payload = parseContent(r)
+        payload.success == true
+        nested.exists()
+        nested.parentFile.isDirectory()
+    }
+
+    def 'CT-72: file_lifecycle action=create on existing file is idempotent -- does not overwrite content'() {
+        // Create on an already-existing file must not truncate it.
+        // This guards the pattern: create-then-write, where create fires twice by accident.
+        given: 'a file with content'
+        def f = writeFile('ct72.groovy', 'existing content')
+
+        when: 'create is called again on the same path'
+        def r = fileLifecycleService.handleToolCall('file_lifecycle', [
+            action : 'create',
+            path   : f.path,
+            options: [type: 'file', verbose: true]
+        ], 'ct72')
+
+        then: 'succeeds (idempotent) and original content is preserved'
+        r != null
+        r.result != null
+        def payload = parseContent(r)
+        payload.success == true
+        new File(f.path).text == 'existing content'
     }
 
 }
