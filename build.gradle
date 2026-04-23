@@ -9,7 +9,11 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.65'
+version = '0.8.66'
+// v0.8.66: CT-74 fix -- doPatch now validates startLine/endLine presence before int cast.
+//   Missing startLine/endLine returned raw NPE instead of structured toolError.
+//   Now returns 'Missing startLine in replacement entry' with usage hint.
+//   CT-73..CT-76 contract tests added to FileContractSpec.
 // v0.8.65: D5 fix -- McpController.handleRequest() session ID hardcode resolved.
 //   Prior: telemetryService.recordToolCall('unknown', ...) for ALL transports meant
 //   tool_call_telemetry rows had session_id='unknown', causing knownhash_pct and

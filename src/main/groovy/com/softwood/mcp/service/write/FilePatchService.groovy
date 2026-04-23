@@ -102,6 +102,16 @@ class FilePatchService extends AbstractFileService {
         // ---- Phase 1: Validate all ranges ----
         List<String> errors = []
         sorted.each { Map<String, Object> rep ->
+            // CT-74: explicit missing-key check before any int cast -- null as int = 0
+            // produces a confusing NPE or silent [0..0] range error.
+            if (!rep.containsKey('startLine') || rep.startLine == null) {
+                errors << 'Missing startLine in replacement entry -- patch requires {startLine, endLine, newText}'
+                return
+            }
+            if (!rep.containsKey('endLine') || rep.endLine == null) {
+                errors << 'Missing endLine in replacement entry -- patch requires {startLine, endLine, newText}'
+                return
+            }
             int start = rep.startLine as int
             int end   = rep.endLine   as int
             if (start < 1 || end < start || start > originalLineCount || end > originalLineCount) {

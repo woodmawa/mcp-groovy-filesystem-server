@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.48
+# mcp-groovy-filesystem-server v0.8.66
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).

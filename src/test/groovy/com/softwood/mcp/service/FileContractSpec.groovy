@@ -2132,4 +2132,102 @@ class FileContractSpec extends Specification {
         new File(f.path).text == 'existing content'
     }
 
+    def 'CT-73: replace with options={} (empty map, no oldText) returns toolError -- never a no-op success'() {
+        // Root cause: file_write action=replace options:{} silently hit doReplace,
+        // which returned toolError but the response contained a content_hash field
+        // that looked like a success hash. This pins the error surface contract.
+        given:
+        def f = writeFile('ct73.groovy', 'class Foo { void bar() { } }')
+
+        when: 'replace is called with completely empty options (no oldText, no newText)'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [:]
+        ], 'ct73')
+
+        then: 'toolError -- not a silent no-op or success'
+        assertToolError(r, 'oldText')
+
+        and: 'file is unchanged'
+        new File(f.path).text == 'class Foo { void bar() { } }'
+    }
+
+    def 'CT-74: patch entry missing startLine/endLine returns toolError with range hint, not NPE'() {
+        // null-as-int == 0, which triggers the range validator with [0..0].
+        // Error must be a visible toolError, not an NPE or silent partial write.
+        given:
+        def f = writeFile('ct74.groovy', 'line1\nline2\nline3\n')
+
+        when: 'patch entry is missing startLine and endLine'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash : f.hash,
+                replacements : [[newText: 'replaced']]
+            ]
+        ], 'ct74')
+
+        then: 'toolError surfaced -- not swallowed'
+        r.result != null
+        (r.result as Map).isError == true
+        def errText74 = ((r.result as Map).content[0] as Map).text as String
+        errText74.toLowerCase().contains('range') || errText74.toLowerCase().contains('startline')
+
+        and: 'file is unchanged'
+        new File(f.path).text == 'line1\nline2\nline3\n'
+    }
+
+    def 'CT-75: multi_replace entry with empty-string oldText is rejected -- never applied'() {
+        // String.replace(\'\', ...) in Java replaces at EVERY position -- catastrophic.
+        // The !oldText guard covers this but we pin the contract explicitly.
+        given:
+        def f = writeFile('ct75.groovy', 'class Bar { void baz() { } }')
+
+        when: 'multi_replace contains one entry with empty-string oldText'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [
+                expectedHash : f.hash,
+                replacements : [
+                    [oldText: '', newText: 'SHOULD NOT APPLY']
+                ]
+            ]
+        ], 'ct75')
+
+        then: 'toolError returned -- empty oldText rejected before any write'
+        r.result != null
+        (r.result as Map).isError == true
+
+        and: 'file content is completely unchanged'
+        new File(f.path).text == 'class Bar { void baz() { } }'
+    }
+
+    def 'CT-76: toolError response for replace contains no content_hash field that mimics a success hash'() {
+        // Observed: replace with missing oldText returned a McpResponse whose serialised
+        // text contained content_hash -- visually identical to a success response.
+        // Contract: isError:true content must not embed a content_hash/file_content_hash key.
+        given:
+        def f = writeFile('ct76.groovy', 'class Qux { }')
+
+        when: 'replace is called with no oldText (triggers toolError path)'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [:]
+        ], 'ct76')
+
+        then: 'response is an isError response'
+        r.result != null
+        (r.result as Map).isError == true
+
+        and: 'error content text does not contain a content_hash that looks like a write result'
+        def errText76 = ((r.result as Map).content[0] as Map).text as String
+        errText76.contains('oldText') || errText76.contains('required')
+        !errText76.contains('"content_hash"')
+        !errText76.contains('"file_content_hash"')
+    }
+
 }
