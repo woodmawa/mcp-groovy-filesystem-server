@@ -118,6 +118,20 @@ class FileReplaceService extends AbstractFileService {
         }
         if (!oldText) return McpResponse.toolError(requestId, 'options.oldText required for replace')
 
+        // CT-DR-1/CT-DR-2: Destructive-replace ratio guard (FS 0.8.67).
+        // Fires when oldText is large (>500 chars) AND newText is <20% of oldText length.
+        // This pattern (oldText=entire file, newText=small fragment) silently destroys content.
+        // Use action=write for full-file rewrites. Reduce oldText scope for legitimate shrinks.
+        int oldLen = (oldText as String).length()
+        int newLen = (newText as String).length()
+        if (oldLen > 500 && newLen < (int)(oldLen * 0.20d)) {
+            return McpResponse.toolError(requestId,
+                ("DESTRUCTIVE_REPLACE: newText (${newLen} chars) is less than 20% of oldText (${oldLen} chars). " +
+                 'This typically means a full-file replace with truncated newText, which destroys content. ' +
+                 'To rewrite the file use action=write with the full content. ' +
+                 'For a legitimate shrinking replace, reduce oldText scope to just the target block.'))
+        }
+
         String normalized = normalizeAndCheckPath(path)
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'

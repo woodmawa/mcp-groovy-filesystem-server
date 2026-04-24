@@ -409,4 +409,111 @@ class FileReplaceAndPatchSpec extends Specification {
         result.removed_lines != null
         (result.removed_lines as String).contains('old-content-here')
     }
+
+    // -----------------------------------------------------------------------
+    // CT-DR-1..CT-DR-4 -- Destructive replace ratio guard (FS 0.8.67)
+    //
+    // Root cause: replace with oldText=<entire file> + newText=<small fragment>
+    // silently wiped file content. Guard: when oldText.length > 500 AND
+    // newText.length < 20% of oldText.length, reject with DESTRUCTIVE_REPLACE
+    // error. Small-file and small-deletion replaces are unaffected.
+    // -----------------------------------------------------------------------
+
+    def 'CT-DR-1: replace with empty newText is rejected with DESTRUCTIVE_REPLACE'() {
+        given: 'a file with substantial content (>500 chars)'
+        String body = ('x' * 60 + '\n') * 10  // 610 chars
+        def f = writeFile('ct-dr-1.txt', body)
+
+        when: 'replace is called with oldText = full body and newText = empty'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : body,
+                newText     : '',
+                expectedHash: f.hash
+            ]
+        ], 'ct-dr-1')
+
+        then: 'FS rejects with DESTRUCTIVE_REPLACE -- file is untouched'
+        assertToolError(r, 'DESTRUCTIVE_REPLACE', 'action=write')
+
+        and: 'file content is unchanged'
+        new File(f.path as String).text == body
+    }
+
+    def 'CT-DR-2: replace where newText is <20% of large oldText is rejected with DESTRUCTIVE_REPLACE'() {
+        given: 'a large file (~1200 chars)'
+        String line = 'import com.example.SomeLongImportName\n'
+        String body = line * 30  // ~1140 chars
+        def f = writeFile('ct-dr-2.groovy', body)
+
+        and: 'newText is only the package header -- ~5% of oldText'
+        String smallNew = 'package com.example\n'
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : body,
+                newText     : smallNew,
+                expectedHash: f.hash
+            ]
+        ], 'ct-dr-2')
+
+        then: 'DESTRUCTIVE_REPLACE error returned'
+        assertToolError(r, 'DESTRUCTIVE_REPLACE', 'action=write')
+
+        and: 'file is untouched'
+        new File(f.path as String).text == body
+    }
+
+    def 'CT-DR-3: replace that legitimately shrinks content on a large file succeeds when ratio >= 20%'() {
+        given: 'a file with a method block to remove (total ~800 chars)'
+        String prefix  = 'class Foo {\n'
+        String method  = ('    // method body line\n') * 20  // ~480 chars
+        String suffix  = '}\n'
+        String body    = prefix + method + suffix
+        def f = writeFile('ct-dr-3.groovy', body)
+
+        and: 'newText replaces method with a one-liner -- ~30% of oldText length'
+        String shorterMethod = '    // removed\n'
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : method,
+                newText     : shorterMethod,
+                expectedHash: f.hash
+            ]
+        ], 'ct-dr-3')
+
+        then: 'replace succeeds -- ratio guard does not apply (newText >= 20% of oldText)'
+        r.error == null
+        new File(f.path as String).text == prefix + shorterMethod + suffix
+    }
+
+    def 'CT-DR-4: replace where newText < 20% but oldText is small (<= 500 chars) succeeds'() {
+        given: 'a small file (< 500 chars)'
+        String body = 'alpha = 1\nbeta = 2\ngamma = 3\n'  // ~30 chars
+        def f = writeFile('ct-dr-4.txt', body)
+
+        when: 'replace shrinks heavily but oldText is small -- guard must not fire'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : body,
+                newText     : 'x\n',
+                expectedHash: f.hash
+            ]
+        ], 'ct-dr-4')
+
+        then: 'succeeds -- size guard threshold not reached'
+        r.error == null
+        new File(f.path as String).text == 'x\n'
+    }
 }

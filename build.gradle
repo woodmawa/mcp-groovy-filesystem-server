@@ -9,7 +9,13 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.66'
+version = '0.8.67'
+// v0.8.67: CT-DR-1..CT-DR-4 destructive-replace ratio guard. doReplace now rejects when
+//   oldText.length > 500 AND newText.length < 20% of oldText.length -- the silent content-
+//   destruction pattern (oldText=entire file, newText=truncated fragment). Returns
+//   DESTRUCTIVE_REPLACE toolError with hint to use action=write for full-file rewrites.
+//   Root cause: replace with oldText=<whole file> + newText=<partial> wipes file body.
+//   Four contract tests added to FileReplaceAndPatchSpec (CT-DR-1..4).
 // v0.8.66: CT-74 fix -- doPatch now validates startLine/endLine presence before int cast.
 //   Missing startLine/endLine returned raw NPE instead of structured toolError.
 //   Now returns 'Missing startLine in replacement entry' with usage hint.
