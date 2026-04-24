@@ -142,6 +142,33 @@ class FilePatchService extends AbstractFileService {
                 ('patch validation failed (file NOT modified): ' + errors.join('; ')))
         }
 
+        // CT-78: expectedRemovedText content guard (FS 0.8.68).
+        // When a replacement entry supplies expectedRemovedText, verify the actual lines
+        // [startLine..endLine] match before applying. Prevents stale line-number mistakes
+        // from silently corrupting non-Groovy/Java files (no brace check on those).
+        // The field is optional -- omitting it preserves existing line-range behaviour.
+        for (Map<String, Object> rep : sorted) {
+            String expectedRemoved = rep.expectedRemovedText as String
+            if (expectedRemoved != null && !expectedRemoved.isEmpty()) {
+                int s = (rep.startLine as int) - 1
+                int e = (rep.endLine   as int) - 1
+                String actualRemoved = lines[s..e].join('\n')
+                    .replace('\r\n', '\n').replace('\r', '\n').trim()
+                String expectedTrimmed = expectedRemoved.replace('\r\n', '\n').replace('\r', '\n').trim()
+                if (actualRemoved != expectedTrimmed) {
+                    log.warn('patch: CONTENT_MISMATCH on {} lines {}-{}: expected [{...}] got [{...}]',
+                        normalized, rep.startLine, rep.endLine)
+                    return McpResponse.toolError(requestId,
+                        ('CONTENT_MISMATCH: expectedRemovedText for range [' + rep.startLine + '..' + rep.endLine + '] ' +
+                         'does not match actual file content. ' +
+                         'Actual (trimmed): [' + actualRemoved.take(120) + '] ' +
+                         'Expected (trimmed): [' + expectedTrimmed.take(120) + ']. ' +
+                         'Re-read lines ' + rep.startLine + '..' + rep.endLine + ' to get current content.'))
+                }
+            }
+        }
+
+        // FS-T2: Detect boundary patches (endLine == last line of file).
         // FS-T2: Detect boundary patches (endLine == last line of file).
         // Fix C: if same file was patched within 60s AND this is a boundary patch, BLOCK it.
         // Boundary patches on recently-patched files are the highest-risk corruption path.

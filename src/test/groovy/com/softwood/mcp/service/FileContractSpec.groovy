@@ -2230,4 +2230,97 @@ class FileContractSpec extends Specification {
         !errText76.contains('"file_content_hash"')
     }
 
+    // =========================================================================
+    // CT-77..CT-79: patch expectedRemovedText content guard (FS 0.8.68)
+    //
+    // Root cause: patch is line-number-based with no content verification for
+    // non-Groovy/Java files. Stale line numbers silently corrupt files -- the
+    // hash guard passes (hash is fresh) but the wrong content is replaced.
+    // Fix: optional expectedRemovedText per replacement entry. FS checks that
+    // lines[startLine..endLine] joined with \n match this value before applying.
+    // Mismatch = CONTENT_MISMATCH error, file untouched.
+    // =========================================================================
+
+    def 'CT-77: patch with matching expectedRemovedText succeeds and applies replacement'() {
+        given: 'a text file with known content'
+        def f = writeFile('ct77.txt',
+            'alpha\nbeta\ngamma\n')
+
+        when: 'patch with expectedRemovedText exactly matching line 2'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [[
+                    startLine          : 2,
+                    endLine            : 2,
+                    newText            : 'BETA',
+                    expectedRemovedText: 'beta'
+                ]]
+            ]
+        ], 'ct77')
+
+        then: 'patch succeeds -- content matched and was replaced'
+        r.result != null
+        (r.result as Map).isError != true
+        new File(f.path as String).text.contains('BETA')
+        !new File(f.path as String).text.contains('beta')
+    }
+
+    def 'CT-78: patch with non-matching expectedRemovedText is rejected, file untouched'() {
+        given: 'a text file'
+        def f = writeFile('ct78.txt',
+            'alpha\nbeta\ngamma\n')
+
+        when: 'patch targets line 2 but expectedRemovedText does not match'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [[
+                    startLine          : 2,
+                    endLine            : 2,
+                    newText            : 'BETA',
+                    expectedRemovedText: 'this does not match beta'
+                ]]
+            ]
+        ], 'ct78')
+
+        then: 'FS rejects with CONTENT_MISMATCH'
+        r.result != null
+        (r.result as Map).isError == true
+        def errText78 = ((r.result as Map).content[0] as Map).text as String
+        errText78.contains('CONTENT_MISMATCH') || errText78.contains('expectedRemovedText')
+
+        and: 'file is completely unchanged'
+        new File(f.path as String).text == 'alpha\nbeta\ngamma\n'
+    }
+
+    def 'CT-79: patch without expectedRemovedText succeeds -- field is optional, no regression'() {
+        given:
+        def f = writeFile('ct79.txt',
+            'alpha\nbeta\ngamma\n')
+
+        when: 'patch without expectedRemovedText -- existing behaviour unchanged'
+        def r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [[
+                    startLine: 2,
+                    endLine  : 2,
+                    newText  : 'BETA'
+                ]]
+            ]
+        ], 'ct79')
+
+        then: 'patch succeeds -- field omitted, no guard applied'
+        r.result != null
+        (r.result as Map).isError != true
+        new File(f.path as String).text.contains('BETA')
+    }
+
 }

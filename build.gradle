@@ -9,7 +9,12 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.67'
+version = '0.8.68'
+// v0.8.68: CT-77..CT-79 patch expectedRemovedText content guard. doPatch validates
+//   each replacement entry's optional expectedRemovedText against lines[start..end].
+//   Mismatch = CONTENT_MISMATCH toolError, file untouched. Prevents stale line-number
+//   mistakes silently corrupting non-Groovy/Java files (no brace-delta on those).
+//   Field is opt-in -- omitting it preserves existing line-range behaviour (CT-79).
 // v0.8.67: CT-DR-1..CT-DR-4 destructive-replace ratio guard. doReplace now rejects when
 //   oldText.length > 500 AND newText.length < 20% of oldText.length -- the silent content-
 //   destruction pattern (oldText=entire file, newText=truncated fragment). Returns
