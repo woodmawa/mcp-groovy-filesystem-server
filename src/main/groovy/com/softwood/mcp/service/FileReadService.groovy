@@ -202,10 +202,15 @@ KNOWNHASH PATTERN: (1) bootstrap result has working_file_hashes[path].hash for p
                                 if (hasKnownHash || compactMode) return // exempt -- no content risk
                                 String stem = new File(p).name.replaceAll('\\.\\w+$', '')
                                 if (contextServerClient.isOntologyIndexed(stem)) {
-                                    blocked << [error: 'BLOCKED_UNRANGED_INDEXED_READ',
+                                    // FS 0.8.69 FIX-6A: include known_hash hint so caller can pass
+                                    // options.knownHash on retry to get ~15-token unchanged response.
+                                    Map<String, Object> blockedEntry = [error: 'BLOCKED_UNRANGED_INDEXED_READ',
                                                 file : p,
                                                 hint : 'This file is ontology-indexed. Use: context_read scope=ontology action=locate query="' + stem + '" then file_read action=range startLine/endLine.',
                                                 locate_query: stem] as Map<String, Object>
+                                    String knownHash = contextServerClient.getKnownHashForPath(np)
+                                    if (knownHash) blockedEntry.known_hash = knownHash
+                                    blocked << blockedEntry
                                 }
                             } catch (Exception ignored) {}
                         }

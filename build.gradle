@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.68'
+version = '0.8.69'
 // v0.8.68: CT-77..CT-79 patch expectedRemovedText content guard. doPatch validates
 //   each replacement entry's optional expectedRemovedText against lines[start..end].
 //   Mismatch = CONTENT_MISMATCH toolError, file untouched. Prevents stale line-number

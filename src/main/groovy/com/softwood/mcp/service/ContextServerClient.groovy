@@ -643,6 +643,51 @@ class ContextServerClient {
         return false
     }
 
+    // FS 0.8.69 FIX-6A: look up the known content_hash for a path from CS file_hash_registry,
+    // via context_read scope=ontology action=file-hash. Used to enrich BLOCKED_UNRANGED_INDEXED_READ
+    // errors so Claude can pass options.knownHash on a retry. Sync, 500ms hard timeout. Fail-silent.
+    String getKnownHashForPath(String normalizedPath) {
+        if (!contextServerReachable || !normalizedPath) return null
+        try {
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_read',
+                          arguments: [scope: 'ontology', action: 'file-hash', query: normalizedPath]]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) {
+                        Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
+                        if (data?.get('found') == true) {
+                            return data.get('content_hash') as String
+                        }
+                    }
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            if (contextServerReachable) {
+                contextServerReachable = false
+                log.info('ContextServerClient: CS unreachable -- hash hint disabled for session')
+            }
+        } catch (Exception e) {
+            log.debug('getKnownHashForPath failed (non-fatal): {}', e.message)
+        }
+        return null
+    }
+
     // Fix F (v0.8.54): notify CS that a file has been written and needs reindexing.
     // Fire-and-forget via asyncWriter -- never blocks the write path.
     void invalidateFileAsync(String filePath) {
