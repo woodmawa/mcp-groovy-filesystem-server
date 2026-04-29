@@ -10,6 +10,17 @@ plugins {
  */
 group = 'com.softwood'
 version = '0.8.69'
+// v0.8.69: FIX-6A -- BLOCKED_UNRANGED_INDEXED_READ error now includes known_hash field
+//   for each blocked file when CS has a registry entry for the path. FS calls CS via
+//   ContextServerClient.getKnownHashForPath(normalizedPath) -- context_read scope=ontology
+//   action=file-hash query=<path> -- 500ms timeout, fail-silent. Allows caller to pass
+//   options.knownHash on retry and get ~15-token unchanged short-circuit if unmodified.
+//   No direct SQLite coupling: CS owns file_hash_registry, exposes via tool call.
+//   CT-FW-REPLACE-1..4 -- newText absent vs explicit empty string guard in doReplace and
+//   doMultiReplace. Previously (options.newText as String ?: '') silently treated missing
+//   newText as '' -- no error, oldText quietly deleted from file. Fix: containsKey('newText')
+//   guard. Absent key = hard error ('newText missing'). Explicit newText:'' = allowed
+//   (deliberate deletion). 4 new tests in FileReplaceAndPatchSpec; 21/21 passing.
 // v0.8.68: CT-77..CT-79 patch expectedRemovedText content guard. doPatch validates
 //   each replacement entry's optional expectedRemovedText against lines[start..end].
 //   Mismatch = CONTENT_MISMATCH toolError, file untouched. Prevents stale line-number
