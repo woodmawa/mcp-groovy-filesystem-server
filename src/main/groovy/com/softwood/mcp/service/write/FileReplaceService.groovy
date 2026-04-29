@@ -109,8 +109,20 @@ class FileReplaceService extends AbstractFileService {
         return normOrig.replace(normOld, newText)
     }
 
+    /**
+     * doReplace -- single-site string replacement.
+     *
+     * CT-FW-REPLACE-1 (FS 0.8.69): options.newText key absent entirely is a hard error.
+     * Callers that genuinely want deletion must pass newText:'' explicitly.
+     * CT-FW-REPLACE-2 (FS 0.8.69): options.newText:'' (explicit empty) is allowed -- deliberate deletion.
+     * CT-DR-1/CT-DR-2 (FS 0.8.67): large oldText with newText < 20% size is rejected -- destructive ratio guard.
+     */
     McpResponse doReplace(String path, Map<String, Object> options, Object requestId) {
         String oldText      = options.oldText as String
+        // CT-FW-REPLACE-1: newText absent (key missing entirely) is an error -- caller likely forgot the param.
+        // Explicit empty string (newText: '') is allowed and means deletion.
+        if (!options.containsKey('newText')) return McpResponse.toolError(requestId,
+            'options.newText missing for replace -- pass newText:\'\' explicitly if deletion is intended')
         String newText      = (options.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
         String expectedHash = options.expectedHash as String
         if (!expectedHash) {
@@ -308,6 +320,13 @@ class FileReplaceService extends AbstractFileService {
     // multi_replace
     // -----------------------------------------------------------------------
 
+    /**
+     * doMultiReplace -- atomic multi-site replacement in one call.
+     *
+     * CT-FW-REPLACE-3 (FS 0.8.69): per-entry newText key absent is a validation error.
+     * CT-FW-REPLACE-4 (FS 0.8.69): per-entry newText:'' (explicit empty) is allowed -- deliberate deletion.
+     * All entries are pre-validated before the file is touched (fail-fast, file unchanged on error).
+     */
     McpResponse doMultiReplace(String path, Map<String, Object> options, Object requestId) {
         List<Map<String, Object>> replacements = (options.replacements as List<Map<String, Object>>) ?: []
         if (!replacements) return McpResponse.toolError(requestId, 'options.replacements required for multi_replace')
@@ -350,6 +369,8 @@ class FileReplaceService extends AbstractFileService {
         replacements.eachWithIndex { Map<String, Object> rep, int i ->
             String oldText = (rep.oldText as String)?.replace('\r\n', '\n')?.replace('\r', '\n')
             if (!oldText) { validationErrors << ('Entry ' + i + ': missing oldText'); return }
+            // CT-FW-REPLACE-2: newText key absent entirely is an error; explicit '' is allowed (deletion).
+            if (!rep.containsKey('newText')) { validationErrors << ('Entry ' + i + ': missing newText -- pass newText:\'\' explicitly if deletion is intended'); return }
             int count = WriteUtils.countOccurrences(snapshot, oldText)
             if (count == 0) {
                 // Pass 1: NFC

@@ -21,6 +21,8 @@ import java.nio.file.Path
  * Fix E   -- tail_content on boundary patch responses
  * Fix F   -- pre-apply brace balance check rejects unbalanced Groovy boundary patch
  * Fix G   -- removed_lines snippet in patch response
+ * CT-DR-1..4 -- destructive-replace ratio guard (FS 0.8.67)
+ * CT-FW-REPLACE-1..4 -- newText absent vs explicit empty string guard (FS 0.8.69)
  *
  * Spock rules (practice #407):
  *   - @CompileDynamic on spec class
@@ -515,5 +517,97 @@ class FileReplaceAndPatchSpec extends Specification {
         then: 'succeeds -- size guard threshold not reached'
         r.error == null
         new File(f.path as String).text == 'x\n'
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-FW-REPLACE-1..4: newText absent vs explicit empty string (FS 0.8.69)
+    // Root cause: (options.newText as String ?: '') silently treated missing
+    // newText as '' -- no error, oldText quietly deleted from file.
+    // Fix: containsKey('newText') guard -- absent = hard error,
+    //      explicit newText:'' = allowed (deliberate deletion).
+    // -----------------------------------------------------------------------
+
+    def 'CT-FW-REPLACE-1: replace with newText key absent is rejected with clear error'() {
+        given: 'a file to replace into'
+        def f = writeFile('ct-fwr-1.txt', 'line one\nline two\n')
+
+        when: 'replace called without newText key at all'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : 'line one',
+                // newText deliberately absent
+                expectedHash: f.hash
+            ]
+        ], 'ct-fwr-1')
+
+        then: 'hard error -- file must be unchanged'
+        assertToolError(r, 'newText', 'missing')
+        new File(f.path as String).text == 'line one\nline two\n'
+    }
+
+    def 'CT-FW-REPLACE-2: replace with explicit newText empty string is allowed (deletion)'() {
+        given: 'a file to delete a token from'
+        def f = writeFile('ct-fwr-2.txt', 'keep this\ndelete this\nkeep too\n')
+
+        when: 'replace called with newText explicitly set to empty string'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : 'delete this\n',
+                newText     : '',
+                expectedHash: f.hash
+            ]
+        ], 'ct-fwr-2')
+
+        then: 'succeeds -- explicit empty newText is a deliberate deletion'
+        r.error == null
+        new File(f.path as String).text == 'keep this\nkeep too\n'
+    }
+
+    def 'CT-FW-REPLACE-3: multi_replace entry with newText key absent is rejected with clear error'() {
+        given: 'a file with two replaceable tokens'
+        def f = writeFile('ct-fwr-3.txt', 'alpha\nbeta\ngamma\n')
+
+        when: 'multi_replace where first entry is fine but second has no newText key'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [
+                    [oldText: 'alpha', newText: 'ALPHA'],
+                    [oldText: 'beta']   // newText key absent
+                ]
+            ]
+        ], 'ct-fwr-3')
+
+        then: 'validation error -- file must be unchanged'
+        assertToolError(r, 'newText', 'missing')
+        new File(f.path as String).text == 'alpha\nbeta\ngamma\n'
+    }
+
+    def 'CT-FW-REPLACE-4: multi_replace entry with explicit newText empty string is allowed (deletion)'() {
+        given: 'a file where one token should be deleted'
+        def f = writeFile('ct-fwr-4.txt', 'keep\nremove\nkeep2\n')
+
+        when: 'multi_replace with one entry having newText explicitly empty'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [
+                    [oldText: 'keep\n', newText: 'KEEP\n'],   // unique: only first line
+                    [oldText: 'remove\n', newText: '']         // explicit empty = deletion
+                ]
+            ]
+        ], 'ct-fwr-4')
+
+        then: 'succeeds -- explicit empty newText is deliberate deletion'
+        r.error == null
+        new File(f.path as String).text == 'KEEP\nkeep2\n'
     }
 }
