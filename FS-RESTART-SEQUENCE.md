@@ -1,8 +1,8 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 2.0
-**Last updated:** 2026-04-04
+**Version:** 2.2
+**Last updated:** 2026-04-30
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
 
@@ -21,7 +21,7 @@ Phase 1 (Claude-driven, pre-restart)
 ```
 
 The `deploy-state.json` file (§4) persists deploy context across the restart.
-The `mcp-deploy:3.6` template (§5) implements the full two-phase sequence.
+The `mcp-deploy:4.1` template (§5) implements the full two-phase sequence.
 
 ---
 
@@ -106,7 +106,7 @@ from flow node                   Has separate WorkingMemory, FlowExecutionServic
 If flow_management start fails with -32602:
   → Check AW stdio log: mcp-server-mcp-agentic-workflow.log
   → Look for: "bad argument: FlowBuilder: missing required params for flow 'X': [param]"
-  --> NOT a transport issue -- it's a missing param (e.g. jarPrefix for mcp-deploy:3.6)
+  --> NOT a transport issue -- it's a missing param (e.g. jarPrefix for mcp-deploy:4.1)
 ```
 
 ---
@@ -232,9 +232,9 @@ If exists and `phase=AWAITING_RESTART`:
 
 ---
 
-## 6. mcp-deploy:3.7 — Canonical Deploy Flow
+## 6. mcp-deploy:4.1 — Canonical Deploy Flow
 
-**Template:** `mcp-deploy:3.7` in `agentic-workflow.db`
+**Template:** `mcp-deploy:4.1` in `agentic-workflow.db`
 **Ontology:** `context_read scope=ontology action=search query=mcp-deploy symbolType=flow-template`
 
 ### Required params (NO defaults — omitting any causes -32602 error)
@@ -296,7 +296,7 @@ flow_management action=start mode=flow templateName=mcp-deploy version=3.5
 1. Edit code
 2. gradlew.bat compileGroovy --no-daemon        ← compile check, NO 2>&1
 3. gradlew.bat packageMcpbThin installMcpbLocal ← build + install + auto-updates mcp-http-servers.json
-4. flow_management start mcp-deploy:3.7         ← config sync, deploy-state, docs
+4. flow_management start mcp-deploy:4.1         ← config sync, deploy-state, docs
 5. HUMAN GATE: close DT, reopen DT
 6. New session: detect deploy-state.json → verify → update DB → delete file
 ```
@@ -338,7 +338,7 @@ When `flow_management start` fails with `Tool execution failed`:
 | `AppData/.../claude_desktop_config.json` | DT config — mcpServers (empty in MCPB era) | Not touched |
 | `claude-sync/mcp-http-servers.json` | HTTP companion config — jar names, ports | **`copyToJarsDir` Gradle task (v0.8.48, auto)** — was `update-http-servers` flow node |
 | `claude-sync/mcp-http-servers-runtime.json` | Live PID state — v2 format | `ServerLifecycleService.writeRuntimeState()` |
-| `claude-sync/deploy-state.json` | Cross-restart deploy state | mcp-deploy:3.5 + post-restart session |
+| `claude-sync/deploy-state.json` | Cross-restart deploy state | mcp-deploy:4.1 + post-restart session |
 | `claude-sync/best_practices.db server_versions` | Canonical version record | `sync-server-versions` node |
 | `claude-sync/claude_code_mcp_config.json` | CC fallback config | `update-cc-config` node (PRE-BUILD) |
 | `~/.claude.json` | Claude Code settings | `update-claude-json` node |
@@ -370,6 +370,7 @@ field — `2>&1` is never needed.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.2 | 2026-04-30 | mcp-deploy ref updated to 4.1; `expectedHash` mandatory rule added to §9 compile/build section; FS versions 0.8.66–0.8.73 documented; CT-EH-1 `expectedHash` mandatory enforcement noted |
 | 2.1 | 2026-04-13 | mcp-deploy ref updated to 3.7; `mcp-http-servers.json` now auto-updated by `copyToJarsDir` Gradle task (v0.8.48) — removed from manual steps; Config File Reference table updated; `McpResponse.toolError()` and error contract changes documented |
 | 2.0 | 2026-04-04 | Full rewrite: FS↔Context architecture section, session ID resolution design, AW transport routing, mcp-deploy:3.5 with jarPrefix, Windows pipe deadlock rule, UTF-8 stdio fix, all changes from v0.8.34–0.8.40 documented |
 | 1.1 | 2026-04-01 | mcp-deploy:3.4 validated end-to-end. Phase 1 node graph, config file table, AW 1.4.38 GString fix, Phase 2 auto-detect, cross-restart mechanism validated in production |

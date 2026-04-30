@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.66
+# mcp-groovy-filesystem-server v0.8.73
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -96,7 +96,53 @@ with `oldText not found` even when the text was visually identical.
 
 ## What's New
 
-### v0.8.48 — TDD hardening: error surfacing, multi_replace safety, brace pre-write (2026-04-13)
+### v0.8.73 — CT-EH-1: expectedHash mandatory for replace|patch|multi_replace (2026-04-30)
+
+**Root cause closed: absent `expectedHash` allowed silent double-writes and cross-group file-hash bleed.**
+
+- `FileReplaceService.doReplace`, `doMultiReplace` and `FilePatchService.doPatch`: `expectedHash` is now a **hard requirement**. Missing = immediate `toolError` (was: log warn and proceed). Eliminates the entire class of silent double-write and drift bugs.
+- `FileWriteService.promoteTopLevelParams` bug fixed: when both `expectedHash` and `oldText`/`newText` are top-level (not nested in `options`), the `case 'replace'` block was rebuilding `merged` from empty `options`, dropping the already-promoted `expectedHash`. Fixed by seeding from `merged ?: options`.
+- **CT-EH-1a/b/c:** reject `replace`/`multi_replace`/`patch` when `expectedHash` absent — file unchanged.
+- **CT-EH-2:** stale `expectedHash` → drift guard fires, file unchanged.
+- **CT-EH-3:** correct `expectedHash` → succeeds (guard not over-blocking).
+- **CT-57/CT-61** updated: old contract was "warn and proceed"; new contract is "reject with error".
+- **CT-63** updated: dummy `expectedHash` supplied so file-not-found error fires (not hash guard).
+- `FileWriteService.getToolDefinitions()` compact and verbose descriptions updated: `expectedHash` now described as MANDATORY.
+- CS `tool_descriptions` row inserted for `file_write` with mandatory language; `help_sections tool_desc_file_read` last line corrected.
+- Full suite: 153 tests, 0 failures.
+
+### v0.8.72 — CT-RW-1..5: replace structural safety (2026-04-30)
+
+- **CT-RW-1:** `replace` on `.groovy`/`.java` with unbalanced brace in `newText` is now a **hard error** (file NOT modified) — same as `patch`/`multi_replace`. Previously only a warning.
+- **CT-RW-3:** `DESTRUCTIVE_REPLACE` guard now accepts `force=true` escape hatch for legitimate large deletions. Guard still active without `force`.
+- **CT-RW-4:** `DESTRUCTIVE_REPLACE` error message now includes `'pass options.force=true'` hint.
+- **CT-RW-5:** replace with `oldText` not found returns clear not-found error (pre-existing behaviour, now contract-tested).
+- Full suite: 143 tests, 0 failures.
+
+### v0.8.71 — Patch paren-delta guard; replace guard-order fix (2026-04-30)
+
+- **CT-80/CT-81:** `FilePatchService.doPatch` now checks parenthesis delta per replacement on `.groovy`/`.java`, same as brace delta (CT-14). Catches dropped closing `)` on method-call GStrings (e.g. `prepareStatement("""..""")`).
+- **CT-2/CT-19/CT-73/CT-76:** fixed guard order in `FileReplaceService.doReplace` — `oldText` checked before `newText`, so empty-options calls surface `'oldText required'` not `'newText missing'`.
+
+### v0.8.70 — DB-driven tool descriptions via ContextServerClient (2026-04-29)
+
+`FileReadService.getToolDefinitions()` now DB-driven via `ContextServerClient.getHelpSection()`. `@PostConstruct init()` loads `tool_desc_file_read` row from CS `help_sections` on startup. Falls back to `DEFAULT_DESC` static constant if CS unreachable.
+
+### v0.8.69 — FIX-6A: known_hash in BLOCKED_UNRANGED_INDEXED_READ (2026-04-29)
+
+`BLOCKED_UNRANGED_INDEXED_READ` error now includes `known_hash` field for each blocked file when CS has a registry entry for the path. FS calls CS via `ContextServerClient.getKnownHashForPath(normalizedPath)` — `context_read scope=ontology action=file-hash`. Allows caller to pass `knownHash` immediately without a separate read.
+
+### v0.8.68 — CT-77..CT-79: patch `expectedRemovedText` content guard (2026-04-26)
+
+`doPatch` validates each replacement entry's optional `expectedRemovedText` against `lines[start..end]`. Mismatch = `CONTENT_MISMATCH` toolError, file untouched. Prevents stale line-number mistakes silently corrupting files. Field is opt-in.
+
+### v0.8.67 — CT-DR-1..CT-DR-4: destructive-replace ratio guard (2026-04-22)
+
+`doReplace` rejects when `oldText.length > 500` AND `newText.length < 20% of oldText.length` — the silent content-destruction pattern (`oldText=entire file`, `newText=truncated fragment`). Returns `DESTRUCTIVE_REPLACE` error. `force=true` escape hatch added (CT-DR-3). Four contract tests.
+
+### v0.8.66 — CT-74: patch missing startLine/endLine guard (2026-04-21)
+
+`doPatch` now validates `startLine`/`endLine` presence before int cast. Missing field returned raw NPE instead of structured toolError. Now returns `'Missing startLine in replacement entry'` with usage hint.
 
 **Root cause analysis (8 RCAs) and full TDD contract spec delivered.** All tool handler errors now visible to Claude Desktop.
 
@@ -351,6 +397,14 @@ Also copies jar to `claude-sync/jars/` via `copyToJarsDir` task (for HTTP compan
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.73** | CT-EH-1 — `expectedHash` mandatory for `replace`\|`patch`\|`multi_replace` (hard error when absent). `promoteTopLevelParams` bug fixed — top-level `expectedHash`+`oldText` now both land in `options`. 5 new CT-EH contract tests. CS `tool_descriptions` + `help_sections` updated. 153 tests, 0 failures. |
+| **0.8.72** | CT-RW-1..5 — replace structural safety: unbalanced brace = hard error; `DESTRUCTIVE_REPLACE` `force=true` hatch; guard-order fix; not-found contract test. |
+| **0.8.71** | CT-80/CT-81 — patch paren-delta guard on `.groovy`/`.java`. CT-2/CT-19/CT-73/CT-76 — `doReplace` guard order fix (`oldText` before `newText`). |
+| **0.8.70** | `FileReadService` tool description DB-driven via CS `help_sections` (`tool_desc_file_read` row). Falls back to compiled-in default if CS unreachable. |
+| **0.8.69** | FIX-6A — `BLOCKED_UNRANGED_INDEXED_READ` error includes `known_hash` from CS file registry. FS→CS via `getKnownHashForPath()`. |
+| **0.8.68** | CT-77..CT-79 — `doPatch` `expectedRemovedText` content guard. Mismatch = `CONTENT_MISMATCH` toolError, file untouched. |
+| **0.8.67** | CT-DR-1..CT-DR-4 — `DESTRUCTIVE_REPLACE` ratio guard: rejects `oldText>500` + `newText<20%`. `force=true` escape hatch. |
+| **0.8.66** | CT-74 — `doPatch` missing `startLine`/`endLine` guard (was NPE, now structured toolError). |
 | **0.8.48** | `McpResponse.toolError()` — all tool errors now `isError:true` content (DT-visible). `multi_replace`: suffix/prefix overlap detection + simulation pass (entry-makes-entry-unfindable aborts batch). Brace check runs on simulated result **before** write. `requires_reread:true` on boundary patches. Position-order apply in `doMultiReplace`. `FileTransformService` errors surfaced. `copyToJarsDir` auto-updates `mcp-http-servers.json`. TDD: `FileContractSpec` CT-1..CT-13. 54 tests, 0 failures. |
 | **0.8.47** | Fix A'' — per-position unicode replace in `doReplace`/`doMultiReplace` (NFC/NFKC). Fix B — per-entry normalisation tracking. Fix C — sequential boundary patch blocked. Fix D — `lines_shifted`. Fix E — `tail_content`. Fix F — pre-apply brace check (.groovy/.java). Fix G — `removed_lines` snippet. |
 | **0.8.45** | `FileReplaceService.checkBraceBalance()` — brace-balance warning on `replace` and `multi_replace`. Emits `brace_warning` when `newText` net brace count differs from `oldText`. Prevents silent method-boundary corruption. |

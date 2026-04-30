@@ -1662,10 +1662,9 @@ class FileContractSpec extends Specification {
             txt.toLowerCase().contains('path')
     }
 
-    def "CT-57: patch without expectedHash on .groovy file succeeds (degraded safety, no drift guard)"() {
-        // Diagnosed: log showed WARN 'doPatch called without expectedHash -- drift guard
-        // disabled'. Contract: omitting expectedHash must still succeed (not error).
-        // Caller accepts degraded safety; server must not reject the call.
+    def "CT-57: patch without expectedHash is rejected -- expectedHash is mandatory (FS 0.8.73)"() {
+        // CT-EH-1 upgrade: omitting expectedHash is now a hard error, not degraded-safety.
+        // All mutating actions require expectedHash to prevent silent double-writes.
         given:
         def f = writeFile('ct57.groovy', 'class Ct57 {\n    def old() { 1 }\n}')
 
@@ -1681,11 +1680,13 @@ class FileContractSpec extends Specification {
             ]
         ], 'ct57')
 
-        then: "patch succeeds -- drift guard disabled but operation completes"
+        then: "rejected with mandatory-field error -- file unchanged"
         r != null
         r.result != null
-        (r.result as Map).isError != true
-        new File(f.path).text.contains('99')
+        (r.result as Map).isError == true
+        def errTxt = ((r.result as Map).content[0] as Map).text.toString()
+        errTxt.toLowerCase().contains('expectedhash') && errTxt.toLowerCase().contains('required')
+        new File(f.path).text == 'class Ct57 {\n    def old() { 1 }\n}'
     }
 
     def "CT-58: get_method on directory path returns structured toolError in content (not JSON-RPC error object)"() {
@@ -1782,10 +1783,8 @@ class FileContractSpec extends Specification {
         new File(f.path).text == 'class Ct60 {\n    def dup() { 1 }\n    def other() { 1 }\n}'
     }
 
-    def "CT-61: replace without expectedHash succeeds (degraded safety) and returns new hash"() {
-        // Mirrors CT-57 for replace: omitting expectedHash is legal but disables drift guard.
-        // Server must NOT reject the call -- caller accepts degraded safety.
-        // This contract ensures file_write action=replace is usable without a prior read.
+    def "CT-61: replace without expectedHash is rejected -- expectedHash is mandatory (FS 0.8.73)"() {
+        // CT-EH-1 upgrade: omitting expectedHash is now a hard error for replace too.
         given:
         def f = writeFile('ct61.txt', 'alpha\nbeta\ngamma\n')
 
@@ -1800,12 +1799,13 @@ class FileContractSpec extends Specification {
             ]
         ], 'ct61')
 
-        then: "replace succeeds -- drift guard disabled but operation completes"
+        then: "rejected with mandatory-field error -- file unchanged"
         r != null
         r.result != null
-        (r.result as Map).isError != true
-        new File(f.path).text.contains('BETA')
-        !new File(f.path).text.contains('beta')
+        (r.result as Map).isError == true
+        def errTxt = ((r.result as Map).content[0] as Map).text.toString()
+        errTxt.toLowerCase().contains('expectedhash') && errTxt.toLowerCase().contains('required')
+        new File(f.path).text == 'alpha\nbeta\ngamma\n'
     }
 
     def "CT-62: multi_replace happy-path -- two non-overlapping replacements applied atomically"() {
@@ -1841,7 +1841,8 @@ class FileContractSpec extends Specification {
 
     def "CT-63: replace on non-existent file returns structured toolError (not NPE or JSON-RPC error)"() {
         // Defensive contract: file_write action=replace must handle missing file gracefully.
-        // Historically vulnerable to NPE/uncaught exception -- must surface toolError.
+        // Pass expectedHash='deadbeef0000' -- a clearly wrong hash that won't match any file.
+        // The file-not-found check runs before drift guard so the right error is returned.
         given:
         def missingPath = tempDir.resolve('ct63_missing.groovy').toFile().absolutePath
 
@@ -1850,8 +1851,9 @@ class FileContractSpec extends Specification {
             action : 'replace',
             path   : missingPath,
             options: [
-                oldText: 'anything',
-                newText: 'whatever'
+                oldText     : 'anything',
+                newText     : 'whatever',
+                expectedHash: 'deadbeef0000'   // CT-EH-1: mandatory; file-not-found fires before drift check
             ]
         ], 'ct63')
 

@@ -46,8 +46,12 @@ class FilePatchService extends AbstractFileService {
         String encoding     = options.encoding as String ?: 'UTF-8'
         boolean backup      = options.backup as boolean ?: false
         String expectedHash = options.expectedHash as String
+        // CT-EH-1 (FS 0.8.73): expectedHash mandatory for all mutating actions.
         if (!expectedHash) {
-            log.warn('doPatch called without expectedHash for {} -- drift guard disabled. Caller should pass expectedHash from last read.', path)
+            return McpResponse.toolError(requestId,
+                ('options.expectedHash required for patch. ' +
+                 'Read the target lines first (file_read action=range) and pass ' +
+                 'the returned file_content_hash as options.expectedHash.'))
         }
 
         List<Map<String, Object>> replacements = (options.replacements instanceof List)

@@ -189,12 +189,14 @@ class FileServicesSmokeSpec extends Specification {
         File tmp = File.createTempFile('patch-test', '.txt')
         tmp.deleteOnExit()
         tmp.text = 'line1\nline2\nline3\nline4\nline5'
+        String hash = java.security.MessageDigest.getInstance('SHA-256')
+            .digest(tmp.bytes).encodeHex().toString()[0..11]
 
         when: "replace lines 2-3 with two new lines"
         McpResponse r = fileWriteService.handleToolCall('file_write', [
             action : 'patch',
             path   : tmp.absolutePath,
-            options: [verbose: true, replacements: [
+            options: [verbose: true, expectedHash: hash, replacements: [
                 [startLine: 2, endLine: 3, newText: 'replaced2\nreplaced3']
             ]]
         ], 'test-patch-1')
@@ -214,12 +216,14 @@ class FileServicesSmokeSpec extends Specification {
         File tmp = File.createTempFile('patch-noarg', '.txt')
         tmp.deleteOnExit()
         tmp.text = 'hello'
+        String hash = java.security.MessageDigest.getInstance('SHA-256')
+            .digest(tmp.bytes).encodeHex().toString()[0..11]
 
         when:
         McpResponse r = fileWriteService.handleToolCall('file_write', [
             action : 'patch',
             path   : tmp.absolutePath,
-            options: [:]
+            options: [expectedHash: hash]
         ], 'test-patch-2')
 
         then: "isError:true tool error visible to Claude (RCA-1 fix: was textResponse error map)"

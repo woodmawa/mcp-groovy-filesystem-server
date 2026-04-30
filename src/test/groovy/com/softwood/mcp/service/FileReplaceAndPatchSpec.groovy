@@ -60,6 +60,12 @@ class FileReplaceAndPatchSpec extends Specification {
         new groovy.json.JsonSlurper().parseText(r.result.content[0].text as String) as Map
     }
 
+    /** Compute the 12-char SHA-256 prefix hash of a file -- mirrors WriteUtils.fileHash(). */
+    private static String computeFileHash(File f) {
+        byte[] bytes = f.bytes
+        java.security.MessageDigest.getInstance('SHA-256').digest(bytes).encodeHex().toString()[0..11]
+    }
+
     /** Assert a response carries a visible tool-level error (RCA-1 new contract). */
     private void assertToolError(McpResponse r, String... keywords) {
         assert r.result != null :
@@ -313,8 +319,9 @@ class FileReplaceAndPatchSpec extends Specification {
         File gf = tempDir.resolve('fix-f1.groovy').toFile()
         gf.text = groovyContent
         String hash = fileReadService.handleToolCall('file_read',
-            [action: 'info', path: gf.absolutePath], 'setup-hash').with {
-            new groovy.json.JsonSlurper().parseText(it.result.content[0].text as String).file_content_hash as String
+            [action: 'checksum', path: gf.absolutePath], 'setup-hash').with {
+            def r = new groovy.json.JsonSlurper().parseText(it.result.content[0].text as String)
+            (r.checksum as String)[0..11]   // WriteUtils.computeHash uses first 12 chars
         }
 
         when: "boundary patch that opens a brace but forgets to close it"
@@ -609,5 +616,274 @@ class FileReplaceAndPatchSpec extends Specification {
         then: 'succeeds -- explicit empty newText is deliberate deletion'
         r.error == null
         new File(f.path as String).text == 'KEEP\nkeep2\n'
+    }
+
+// ============================================================================
+// CT-RW-1..5 -- replace structural safety (FS 0.8.72)
+//
+// Root cause: these failures all occurred during CS 0.41.0 CICC build:
+//   CT-RW-1: replace on .groovy with unbalanced newText only emitted brace_warning
+//            (advisory). It should be a hard error like patch/multi_replace to stop
+//            corrupt files being written.
+//   CT-RW-3/4: DESTRUCTIVE_REPLACE guard blocked legitimate large deletions (cleanup
+//            of orphan DDL blocks) because newText was tiny. No escape hatch existed.
+//   CT-RW-5: Applying replace twice to the same anchor string silently succeeded on
+//            the second call with a *different* part of the file because the original
+//            anchor was gone -- producing a second orphan DDL block.
+// ============================================================================
+
+    // -----------------------------------------------------------------------
+    // CT-RW-1: replace on .groovy with unbalanced brace in newText → hard error
+    // -----------------------------------------------------------------------
+
+    def 'CT-RW-1: replace on .groovy file where newText has unbalanced open brace is rejected'() {
+        given: 'a Groovy source file with a simple class'
+        String original = '''\
+class Foo {
+    void hello() {
+        println "hi"
+    }
+}
+'''
+        def f = writeFile('ct-rw-1.groovy', original)
+
+        when: 'replace that adds a method but forgets the closing brace'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : '    void hello() {\n        println "hi"\n    }\n',
+                newText     : '    void hello() {\n        println "hi"\n    }\n\n    void broken() {\n        // missing close brace\n',
+                expectedHash: f.hash
+            ]
+        ], 'ct-rw-1')
+
+        then: 'hard error returned -- file NOT modified'
+        assertToolError(r, 'brace')
+        new File(f.path as String).text == original
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-RW-2: replace on .groovy where brace delta is balanced → allowed
+    // -----------------------------------------------------------------------
+
+    def 'CT-RW-2: replace on .groovy with balanced brace delta succeeds'() {
+        given: 'a Groovy source file'
+        String original = '''\
+class Foo {
+    void hello() {
+        println "hi"
+    }
+}
+'''
+        def f = writeFile('ct-rw-2.groovy', original)
+
+        when: 'replace swaps one method body for another with equal brace count'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : '    void hello() {\n        println "hi"\n    }\n',
+                newText     : '    void hello() {\n        println "world"\n    }\n',
+                expectedHash: f.hash
+            ]
+        ], 'ct-rw-2')
+
+        then: 'succeeds -- balanced braces'
+        r.error == null
+        def result = parseResult(r)
+        result.success == true
+        new File(f.path as String).text.contains('println "world"')
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-RW-3: DESTRUCTIVE_REPLACE with force=true is allowed
+    // -----------------------------------------------------------------------
+
+    def 'CT-RW-3: DESTRUCTIVE_REPLACE with force=true bypasses ratio guard'() {
+        given: 'a large file (>500 chars)'
+        String bigOld = ('// orphan block line\n') * 40  // ~800 chars
+        String bigFile = 'class Schema {\n' + bigOld + '}\n'
+        def f = writeFile('ct-rw-3.groovy', bigFile)
+
+        when: 'replace with newText far below 20% of oldText, but force=true'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : bigOld,
+                newText     : '// cleaned\n',
+                expectedHash: f.hash,
+                force       : true        // escape hatch
+            ]
+        ], 'ct-rw-3')
+
+        then: 'succeeds -- force bypasses ratio guard'
+        r.error == null
+        def result = parseResult(r)
+        result.success == true
+        new File(f.path as String).text == 'class Schema {\n// cleaned\n}\n'
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-RW-4: DESTRUCTIVE_REPLACE without force is still blocked
+    // -----------------------------------------------------------------------
+
+    def 'CT-RW-4: DESTRUCTIVE_REPLACE without force is rejected with DESTRUCTIVE_REPLACE'() {
+        given: 'a large file (>500 chars)'
+        String bigOld = ('// orphan block line\n') * 40  // ~800 chars
+        String bigFile = 'class Schema {\n' + bigOld + '}\n'
+        def f = writeFile('ct-rw-4.groovy', bigFile)
+
+        when: 'replace with newText far below 20% of oldText, no force'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [
+                oldText     : bigOld,
+                newText     : '// cleaned\n',
+                expectedHash: f.hash
+                // no force
+            ]
+        ], 'ct-rw-4')
+
+        then: 'rejected -- file unchanged'
+        assertToolError(r, 'DESTRUCTIVE_REPLACE')
+        new File(f.path as String).text == bigFile
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-RW-5: replace where oldText not found (e.g. already replaced in prior call)
+    //          must return a clear error, not silently match a different region
+    // -----------------------------------------------------------------------
+
+    def 'CT-RW-5: replace where oldText is not found returns clear not-found error'() {
+        given: 'a file that no longer contains the target anchor'
+        String original = 'line one\nline two\nline three\n'
+        def f = writeFile('ct-rw-5.txt', original)
+
+        when: 'first replace succeeds and removes the anchor'
+        def r1 = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'line two\n', newText: 'LINE TWO\n', expectedHash: f.hash]
+        ], 'ct-rw-5-first')
+        assert r1.error == null : "first replace should succeed"
+
+        and: 'second replace uses the same original anchor (now absent)'
+        String newHash = parseResult(r1).file_content_hash as String
+        McpResponse r2 = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'line two\n', newText: 'AGAIN\n', expectedHash: newHash]
+        ], 'ct-rw-5-second')
+
+        then: 'second replace fails with not-found -- file unchanged from after first replace'
+        assertToolError(r2, 'not found', 'oldText')
+        new File(f.path as String).text == 'line one\nLINE TWO\nline three\n'
+    }
+
+    // =========================================================================
+    // CT-EH-1: expectedHash mandatory for all mutating actions (FS 0.8.73)
+    // Root cause: without expectedHash, concurrent or double-writes go undetected.
+    // All three mutating services must reject calls that omit it.
+    // =========================================================================
+
+    def 'CT-EH-1a: replace without expectedHash is rejected with clear error'() {
+        given: 'a file to replace into'
+        File f = tempDir.resolve('ct-eh-1a.txt').toFile()
+        f.text = 'hello world\n'
+
+        when: 'replace called with no expectedHash'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'hello', newText: 'goodbye']
+        ], 'ct-eh-1a')
+
+        then: 'rejected with mandatory-field error'
+        assertToolError(r, 'expectedHash', 'required')
+
+        and: 'file is unchanged'
+        f.text == 'hello world\n'
+    }
+
+    def 'CT-EH-1b: multi_replace without expectedHash is rejected with clear error'() {
+        given: 'a file to multi_replace into'
+        File f = tempDir.resolve('ct-eh-1b.txt').toFile()
+        f.text = 'foo bar baz\n'
+
+        when: 'multi_replace called with no expectedHash'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [replacements: [[oldText: 'foo', newText: 'FOO']]]
+        ], 'ct-eh-1b')
+
+        then: 'rejected with mandatory-field error'
+        assertToolError(r, 'expectedHash', 'required')
+
+        and: 'file is unchanged'
+        f.text == 'foo bar baz\n'
+    }
+
+    def 'CT-EH-1c: patch without expectedHash is rejected with clear error'() {
+        given: 'a file to patch'
+        File f = tempDir.resolve('ct-eh-1c.txt').toFile()
+        f.text = 'alpha\nbeta\ngamma\n'
+
+        when: 'patch called with no expectedHash'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [replacements: [[startLine: 2, endLine: 2, newText: 'BETA']]]
+        ], 'ct-eh-1c')
+
+        then: 'rejected with mandatory-field error'
+        assertToolError(r, 'expectedHash', 'required')
+
+        and: 'file is unchanged'
+        f.text == 'alpha\nbeta\ngamma\n'
+    }
+
+    def 'CT-EH-2: replace with stale expectedHash is rejected -- drift guard fires'() {
+        given: 'a file that changes between read and write'
+        File f = tempDir.resolve('ct-eh-2.txt').toFile()
+        f.text = 'version one\n'
+        String staleHash = computeFileHash(f)
+
+        and: 'file is modified externally after the hash was captured'
+        f.text = 'version two\n'
+
+        when: 'replace submitted with the stale hash'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'version', newText: 'EDITED', expectedHash: staleHash]
+        ], 'ct-eh-2')
+
+        then: 'drift guard rejects the call'
+        assertToolError(r, 'expectedHash mismatch', 'changed')
+
+        and: 'file is unchanged from the external modification'
+        f.text == 'version two\n'
+    }
+
+    def 'CT-EH-3: replace with correct expectedHash succeeds -- confirms guard is not blocking valid writes'() {
+        given: 'a file with known content'
+        File f = tempDir.resolve('ct-eh-3.txt').toFile()
+        f.text = 'replace me please\n'
+        String hash = computeFileHash(f)
+
+        when: 'replace submitted with correct hash'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'replace me', newText: 'replaced', expectedHash: hash]
+        ], 'ct-eh-3')
+
+        then: 'succeeds'
+        r.error == null
+        f.text == 'replaced please\n'
     }
 }

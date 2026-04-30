@@ -127,22 +127,31 @@ class FileReplaceService extends AbstractFileService {
             'options.newText missing for replace -- pass newText:\'\' explicitly if deletion is intended')
         String newText      = (options.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
         String expectedHash = options.expectedHash as String
+        // CT-EH-1 (FS 0.8.73): expectedHash is mandatory for all mutating actions.
+        // A replace without it means the caller hasn't read the file -- silent corruption risk.
+        // Always read first (action=range/get_method), pass the returned file_content_hash here.
         if (!expectedHash) {
-            log.warn('doReplace called without expectedHash for {} -- drift guard disabled. Caller should pass expectedHash from last read.', path)
+            return McpResponse.toolError(requestId,
+                ('options.expectedHash required for replace. ' +
+                 'Read the target section first (file_read action=range or get_method) and pass ' +
+                 'the returned file_content_hash as options.expectedHash.'))
         }
 
         // CT-DR-1/CT-DR-2: Destructive-replace ratio guard (FS 0.8.67).
         // Fires when oldText is large (>500 chars) AND newText is <20% of oldText length.
         // This pattern (oldText=entire file, newText=small fragment) silently destroys content.
         // Use action=write for full-file rewrites. Reduce oldText scope for legitimate shrinks.
+        // CT-RW-3 (FS 0.8.72): force=true bypasses ratio guard for legitimate large deletions.
         int oldLen = (oldText as String).length()
         int newLen = (newText as String).length()
-        if (oldLen > 500 && newLen < (int)(oldLen * 0.20d)) {
+        boolean forceReplace = options.containsKey('force') ? (options.force as boolean) : false
+        if (!forceReplace && oldLen > 500 && newLen < (int)(oldLen * 0.20d)) {
             return McpResponse.toolError(requestId,
                 ("DESTRUCTIVE_REPLACE: newText (${newLen} chars) is less than 20% of oldText (${oldLen} chars). " +
                  'This typically means a full-file replace with truncated newText, which destroys content. ' +
                  'To rewrite the file use action=write with the full content. ' +
-                 'For a legitimate shrinking replace, reduce oldText scope to just the target block.'))
+                 'For a legitimate shrinking replace, reduce oldText scope to just the target block. ' +
+                 'To force a large deletion pass options.force=true.'))
         }
 
         String normalized = normalizeAndCheckPath(path)
@@ -286,6 +295,17 @@ class FileReplaceService extends AbstractFileService {
             return McpResponse.toolError(requestId,
                 'replace bare_box_drawing check failed (file NOT modified): ' + bareBoxError)
         }
+        // CT-RW-1 (FS 0.8.72): pre-write brace check for .groovy/.java files.
+        // For patch and multi_replace this is already a hard error. Align replace to same standard.
+        // Non-code files (txt, md, sql) still get advisory warning only (post-write).
+        if (normalized.endsWith('.groovy') || normalized.endsWith('.java')) {
+            String braceErr = checkBraceBalance(updated, oldText, newText, 'replace')
+            if (braceErr) {
+                log.warn('replace: brace check REJECTED {} -- {}', normalized, braceErr)
+                return McpResponse.toolError(requestId,
+                    'replace brace check failed (file NOT modified): ' + braceErr)
+            }
+        }
         WriteUtils.atomicWrite(target, updated.getBytes(encoding))
 
         log.debug('replace: 1 occurrence in {} (line endings: {}, norm: {})', normalized,
@@ -336,7 +356,13 @@ class FileReplaceService extends AbstractFileService {
         boolean backup      = options.backup as boolean ?: false
         String encoding     = options.encoding as String ?: 'UTF-8'
         String expectedHash = options.expectedHash as String
-
+        // CT-EH-1 (FS 0.8.73): expectedHash mandatory for all mutating actions.
+        if (!expectedHash) {
+            return McpResponse.toolError(requestId,
+                ('options.expectedHash required for multi_replace. ' +
+                 'Read the file first (file_read action=range or checksum) and pass ' +
+                 'the returned file_content_hash as options.expectedHash.'))
+        }
         long fileSizeKb = Files.size(Paths.get(normalized)).intdiv(1024)
         if (fileSizeKb > replaceFileSizeThresholdKb) {
             return McpResponse.toolError(requestId,

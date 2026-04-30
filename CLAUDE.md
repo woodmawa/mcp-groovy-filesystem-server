@@ -5,7 +5,7 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.8.70` (check `build.gradle` to confirm)
+- **Current version:** `0.8.73` (check `build.gradle` to confirm)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -164,7 +164,7 @@ file_read action=range path=Foo.groovy options={startLine:1,maxLines:50,knownHas
 
 ## Editing rules
 
-- **Always** pass `options.expectedHash` on every mutating action — get it from the prior read's `file_content_hash`
+- **Always** pass `options.expectedHash` on every mutating action — **MANDATORY for `replace`/`patch`/`multi_replace`** (absent = hard `toolError`, FS 0.8.73). Get it from the prior read's `file_content_hash`.
 - **Preferred for method edits:** `get_method` → `patch` (line-addressed, always unique)
 - **For small unique insertions:** `grep` to confirm one match → `replace` with hash
 - **For multiple changes to one file:** `multi_replace` in one call (pre-validates all before writing)
@@ -227,6 +227,10 @@ Five-config rule — on every version bump update ALL of:
 ```
 # Confirm version
 server_lifecycle action=status verbose=true  → jar should show new version
+
+# Test expectedHash mandatory (v0.8.73) -- must reject
+file_write action=replace path=<any file> options={oldText:'anything', newText:'X'}
+→ isError:true, text contains 'expectedHash' and 'required'
 
 # Test error surfacing (v0.8.48 contract)
 file_write action=replace path=<any file> options={oldText:'NOTEXIST', expectedHash:<hash>}

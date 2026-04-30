@@ -9,7 +9,32 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.71'
+version = '0.8.73'
+// v0.8.73: CT-EH-1 -- expectedHash is now MANDATORY for replace|patch|multi_replace (FS TDD).
+//   Root cause: absent expectedHash allowed silent double-writes and cross-session file bleed.
+//   FileReplaceService.doReplace: warn->toolError when expectedHash absent.
+//   FileReplaceService.doMultiReplace: same.
+//   FilePatchService.doPatch: same.
+//   FileWriteService.promoteTopLevelParams: fix -- when oldText+expectedHash both top-level,
+//     case 'replace' block now seeds from merged (not raw options), so expectedHash carried forward.
+//   CT-EH-1a/b/c: reject replace|multi_replace|patch when expectedHash absent.
+//   CT-EH-2: stale expectedHash -> drift guard fires, file unchanged.
+//   CT-EH-3: correct expectedHash -> succeeds (guard not over-blocking).
+//   CT-57/CT-61: updated from 'succeeds without hash' to 'rejected, file unchanged'.
+//   CT-63: updated to pass dummy expectedHash so file-not-found fires (not hash guard).
+//   FileServicesSmokeSpec patch tests: expectedHash added.
+//   FileWriteService.getToolDefinitions: compact+verbose descriptions updated to reflect mandatory.
+//   CS tool_descriptions row inserted for file_write with correct mandatory language.
+//   CS help_sections tool_desc_file_read updated: last line corrected from 'optional' to 'mandatory'.
+//   Full suite: 153 tests, 0 failures.
+// v0.8.72: CT-RW-1..5 -- replace structural safety (TDD).
+//   CT-RW-1: replace on .groovy/.java with unbalanced brace in newText is now a hard error
+//            (file NOT modified) -- same as patch/multi_replace. Previously only a warning.
+//   CT-RW-3: DESTRUCTIVE_REPLACE guard now accepts force=true escape hatch for legitimate
+//            large deletions (e.g. removing orphan DDL blocks). Guard still active without force.
+//   CT-RW-4: DESTRUCTIVE_REPLACE error message now includes 'pass options.force=true' hint.
+//   CT-RW-5: replace with oldText not found returns clear not-found error (pre-existing behaviour, now contract-tested).
+//   Full suite: 143 tests, 0 failures.
 // v0.8.71: CT-80/CT-81 -- patch paren-delta guard (FilePatchService). Patch on .groovy/.java
 //   now checks parenthesis delta per replacement, same as brace delta (CT-14). Catches dropped
 //   closing ) on method-call GStrings (e.g. prepareStatement("""...""")). FIX-E3 root cause.

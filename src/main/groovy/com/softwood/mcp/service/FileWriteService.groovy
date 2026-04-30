@@ -67,9 +67,9 @@ Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|f
 - multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Preferred for multiple text swaps in one file. Does NOT shift line numbers. Use instead of sequential patch calls where possible.
 - server_transform: server-side transform — file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
 - chunk_write/finalise_write/abort_write: large-file chunked writes. chunk_status: verify received chunks before finalise.
-All mutating actions return content_hash. Pass options.expectedHash to reject if file changed since last read.
-SAFE EDITING: expectedHash always. get_method -> patch for code. grep -> replace for unique strings. multi_replace for multiple changes. Never sequential replaces without re-reading between them.
-CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — read it before retrying. Do NOT fall through to patch.''',
+All mutating actions return content_hash. options.expectedHash is MANDATORY for replace|patch|multi_replace -- read the file first and pass the returned file_content_hash. Missing expectedHash is a hard error (CT-EH-1, FS 0.8.73).
+SAFE EDITING: always read before write, always pass expectedHash. get_method -> patch for code. grep -> replace for unique strings. multi_replace for multiple changes.
+CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read it before retrying. Do NOT fall through to patch.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -83,7 +83,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                               properties: [
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
-                                  expectedHash: [type: 'string',  description: '12-char SHA-256 prefix from prior read/write. Rejects edit if file changed.'],
+                                  expectedHash: [type: 'string',  description: 'MANDATORY for replace|patch|multi_replace: 12-char SHA-256 prefix from prior read/write. Absent = hard error. Always read the file first and pass the returned file_content_hash.'],
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
                                   sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write, chunk_status)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
@@ -201,7 +201,10 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint — rea
                 if (!options.oldText && !options.old_str) {
                     String topOld = (arguments.oldText ?: arguments.old_str) as String
                     if (topOld) {
-                        merged = new HashMap<String, Object>(options)
+                        // CT-EH-1 fix: seed from merged (which may already carry promoted expectedHash),
+                        // not from options directly -- prevents expectedHash being dropped when
+                        // both expectedHash and oldText/newText are all at top level.
+                        merged = new HashMap<String, Object>(merged ?: options)
                         merged.oldText = topOld
                         String topNew = (arguments.newText ?: arguments.new_str) as String
                         if (topNew != null) merged.newText = topNew
