@@ -9,7 +9,16 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.74'
+version = '0.8.75'
+// v0.8.75: Race condition fix -- retry-with-backoff in FileReadService and FileWriteService init().
+//   Root cause: @PostConstruct fires before CS HTTP companion (:8082) is ready to accept
+//   connections. ServerLifecycleService.autoStartHttpCompanions() spawns the companion
+//   process but returns immediately after fork -- :8082 is not yet listening when
+//   FileReadService/FileWriteService init() call getHelpSection().
+//   Fix: both init() methods now retry 3 times (0ms / 300ms / 700ms) before falling back
+//   to DEFAULT_DESC. Covers the typical 200-500ms companion startup window.
+//   Safe: Thread.sleep on Spring @PostConstruct thread; no blocking on hot path.
+//   Fallback unchanged -- DEFAULT_DESC_* always used if all retries fail.
 // v0.8.74: DB-driven tool description for FileWriteService (idea #109 completion).
 //   @PostConstruct init() loads tool_desc_file_write (compact) and
 //   tool_desc_file_write_verbose from CS help_sections at FS startup.

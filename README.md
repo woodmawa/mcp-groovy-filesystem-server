@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.74
+# mcp-groovy-filesystem-server v0.8.75
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -96,7 +96,11 @@ with `oldText not found` even when the text was visually identical.
 
 ## What's New
 
-### v0.8.74 — DB-driven tool description for FileWriteService — idea #109 complete (2026-04-30)
+### v0.8.75 — Race condition fix: retry-with-backoff in FileReadService and FileWriteService init() (2026-04-30)
+
+**Root cause:** `@PostConstruct init()` fires before CS HTTP companion (`:8082`) is ready. `ServerLifecycleService.autoStartHttpCompanions()` returns after fork — `:8082` is not yet listening when `FileReadService` / `FileWriteService` call `getHelpSection()`. First attempt gets `ConnectException`, falls back to `DEFAULT_DESC`, and the session runs on the hardcoded string for its entire lifetime.
+
+**Fix:** Both `FileReadService.init()` and `FileWriteService.init()` now retry with backoff: 3 attempts at 0ms / 300ms / 700ms before falling back to `DEFAULT_DESC_*`. Covers the typical 200–500ms companion startup window. `Thread.sleep` on `@PostConstruct` thread only — zero impact on the hot path.
 
 **Both `file_read` and `file_write` tool descriptions are now loaded from CS `help_sections` at startup — no rebuild needed to update them.**
 
@@ -407,6 +411,7 @@ Also copies jar to `claude-sync/jars/` via `copyToJarsDir` task (for HTTP compan
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.75** | Race condition fix: retry-with-backoff (0ms/300ms/700ms) in `FileReadService.init()` and `FileWriteService.init()`. Prevents `@PostConstruct` firing before CS HTTP companion is ready, which caused silent fallback to `DEFAULT_DESC` for the whole session. |
 | **0.8.74** | DB-driven `file_write` tool description (idea #109 complete). `@PostConstruct init()` loads `tool_desc_file_write` + `tool_desc_file_write_verbose` from CS `help_sections`. Falls back to `DEFAULT_DESC_*` if CS unreachable. Update description without rebuild via `context_write scope=help`. Both `file_read` (0.8.70) and `file_write` (0.8.74) now DB-driven. |
 | **0.8.73** | CT-EH-1 — `expectedHash` mandatory for `replace`\|`patch`\|`multi_replace` (hard error when absent). `promoteTopLevelParams` bug fixed — top-level `expectedHash`+`oldText` now both land in `options`. 5 new CT-EH contract tests. CS `tool_descriptions` + `help_sections` updated. 153 tests, 0 failures. |
 | **0.8.72** | CT-RW-1..5 — replace structural safety: unbalanced brace = hard error; `DESTRUCTIVE_REPLACE` `force=true` hatch; guard-order fix; not-found contract test. |

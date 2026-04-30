@@ -1,7 +1,7 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 2.3
+**Version:** 2.4
 **Last updated:** 2026-04-30
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
@@ -405,6 +405,7 @@ baked into the source. These are kept in sync with the help_sections rows.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.4 | 2026-04-30 | Race condition fix documented: `@PostConstruct init()` retry-with-backoff (v0.8.75). Both `FileReadService` and `FileWriteService` retry 3x before falling back to `DEFAULT_DESC`. FS-RESTART-SEQUENCE §9b updated: DB-driven descriptions now reliable at DT start. |
 | 2.3 | 2026-04-30 | DB-driven tool descriptions: `file_write` now loads description from CS `help_sections` at startup (v0.8.74, idea #109). Both `file_read` (v0.8.70) and `file_write` (v0.8.74) DB-driven. Update without rebuild: `context_write scope=help type=section action=update section_key=tool_desc_file_write content=<new>` then restart DT. Tool description live-edit procedure added to §9. |
 | 2.2 | 2026-04-30 | mcp-deploy ref updated to 4.1; `expectedHash` mandatory rule added to §9 compile/build section; FS versions 0.8.66–0.8.73 documented; CT-EH-1 `expectedHash` mandatory enforcement noted |
 | 2.1 | 2026-04-13 | mcp-deploy ref updated to 3.7; `mcp-http-servers.json` now auto-updated by `copyToJarsDir` Gradle task (v0.8.48) — removed from manual steps; Config File Reference table updated; `McpResponse.toolError()` and error contract changes documented |

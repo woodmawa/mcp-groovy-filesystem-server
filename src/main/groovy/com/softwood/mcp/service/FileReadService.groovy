@@ -62,19 +62,27 @@ All read actions return file_content_hash. Use options.expectedHash on writes to
 
     @PostConstruct
     void init() {
-        try {
-            String loaded = contextServerClient?.getHelpSection('tool_desc_file_read')
-            if (loaded) {
-                toolDescription = loaded
-                log.debug('FileReadService: loaded tool description from CS help_sections (tool_desc_file_read)')
-            } else {
-                toolDescription = DEFAULT_DESC
-                log.debug('FileReadService: CS unavailable or section missing -- using DEFAULT_DESC')
+        // Retry with backoff: CS HTTP companion may not be ready at FS @PostConstruct time.
+        // 3 attempts at 0ms / 300ms / 700ms = max ~1s wait before falling back to DEFAULT_DESC.
+        int[] delays = [0, 300, 700]
+        for (int i = 0; i < delays.length; i++) {
+            if (delays[i] > 0) {
+                try { Thread.sleep(delays[i]) } catch (InterruptedException ignored) { Thread.currentThread().interrupt() }
             }
-        } catch (Exception e) {
-            toolDescription = DEFAULT_DESC
-            log.debug('FileReadService.init failed (non-fatal) -- using DEFAULT_DESC: {}', e.message)
+            try {
+                String loaded = contextServerClient?.getHelpSection('tool_desc_file_read')
+                if (loaded) {
+                    toolDescription = loaded
+                    log.debug('FileReadService: loaded tool description from CS help_sections (attempt {})', i + 1)
+                    return
+                }
+                log.debug('FileReadService: CS section missing on attempt {} -- retrying', i + 1)
+            } catch (Exception e) {
+                log.debug('FileReadService.init attempt {} failed (non-fatal): {}', i + 1, e.message)
+            }
         }
+        toolDescription = DEFAULT_DESC
+        log.debug('FileReadService: CS unavailable after retries -- using DEFAULT_DESC fallback')
     }
 
     FileReadService(PathService pathService) {

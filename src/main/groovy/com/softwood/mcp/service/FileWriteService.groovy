@@ -75,19 +75,34 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
 
     @PostConstruct
     void init() {
-        try {
-            String compact = contextServerClient?.getHelpSection('tool_desc_file_write')
-            String verbose = contextServerClient?.getHelpSection('tool_desc_file_write_verbose')
-            toolDescriptionCompact = compact ?: DEFAULT_DESC_COMPACT
-            toolDescriptionVerbose = verbose ?: DEFAULT_DESC_VERBOSE
-            if (compact) log.debug('FileWriteService: loaded compact description from CS help_sections')
-            if (verbose) log.debug('FileWriteService: loaded verbose description from CS help_sections')
-            if (!compact || !verbose) log.debug('FileWriteService: CS section(s) missing -- using DEFAULT_DESC fallback')
-        } catch (Exception e) {
-            toolDescriptionCompact = DEFAULT_DESC_COMPACT
-            toolDescriptionVerbose = DEFAULT_DESC_VERBOSE
-            log.debug('FileWriteService.init failed (non-fatal) -- using DEFAULT_DESC: {}', e.message)
+        // CS HTTP companion may not be ready immediately at DT startup -- the companion
+        // is spawned as a child process by ServerLifecycleService.autoStartHttpCompanions()
+        // which returns after fork, before :8082 is actually listening.
+        // Retry with backoff: 3 attempts at 0ms / 300ms / 700ms = max ~1s wait.
+        // Falls back to DEFAULT_DESC_* if all attempts fail (CS unreachable or missing row).
+        int[] delays = [0, 300, 700]
+        for (int i = 0; i < delays.length; i++) {
+            if (delays[i] > 0) {
+                try { Thread.sleep(delays[i]) } catch (InterruptedException ignored) { Thread.currentThread().interrupt() }
+            }
+            try {
+                String compact = contextServerClient?.getHelpSection('tool_desc_file_write')
+                String verbose = contextServerClient?.getHelpSection('tool_desc_file_write_verbose')
+                if (compact && verbose) {
+                    toolDescriptionCompact = compact
+                    toolDescriptionVerbose = verbose
+                    log.debug('FileWriteService: loaded tool descriptions from CS help_sections (attempt {})', i + 1)
+                    return
+                }
+                log.debug('FileWriteService: CS section(s) missing on attempt {} -- retrying', i + 1)
+            } catch (Exception e) {
+                log.debug('FileWriteService.init attempt {} failed (non-fatal): {}', i + 1, e.message)
+            }
         }
+        // All retries exhausted -- use baked-in defaults
+        if (!toolDescriptionCompact) toolDescriptionCompact = DEFAULT_DESC_COMPACT
+        if (!toolDescriptionVerbose) toolDescriptionVerbose = DEFAULT_DESC_VERBOSE
+        log.debug('FileWriteService: CS unavailable after retries -- using DEFAULT_DESC fallback')
     }
 
     // -----------------------------------------------------------------------
