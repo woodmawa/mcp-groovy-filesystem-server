@@ -31,6 +31,11 @@ import java.nio.file.Path
  *   Root cause: G4 build session hit 'Tool not found: str_replace' -- Claude used wrong
  *   tool alias. These tests lock down the replace contract so the action surface is
  *   verified independently of session tool-alias hygiene.
+ * CT-77..CT-79: added for FS 0.8.68 (patch expectedRemovedText content guard).
+ * CT-80..CT-81: added for FS 0.8.71 (patch parenthesis-delta guard).
+ *   Root cause: FIX-E3 (2026-04-30) patch on SqliteKnowledgeStore dropped the closing )
+ *   of prepareStatement("""). Brace delta (CT-14) was balanced so no check fired. Paren
+ *   delta now checked per-replacement on .groovy/.java files, same as brace delta.
  *
  * TDD discipline:
  *   Run against current version first -- confirm new CTs fail.
@@ -2321,6 +2326,83 @@ class FileContractSpec extends Specification {
         r.result != null
         (r.result as Map).isError != true
         new File(f.path as String).text.contains('BETA')
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-80: patch drops a closing paren from a method-call argument string,
+    //        causing a parenthesis-delta mismatch -> BLOCKED
+    //
+    // This is the exact failure mode from FIX-E3 (2026-04-30): a patch on
+    // SqliteKnowledgeStore replaced lines ending in LIMIT ?""")
+    // but newText omitted the closing ) of prepareStatement(...). The brace
+    // delta was balanced (no { or }), so CT-14 didn't fire. The paren drop
+    // corrupted the file silently. CT-80 closes that gap.
+    // -----------------------------------------------------------------------
+    def 'CT-80: patch that drops a closing paren from a method-call arg string is blocked'() {
+        given: 'a Groovy file where a method call closes with )'
+        def f = writeFile('ct80.groovy',
+            'class Dao {\n' +
+            '    void query(Connection conn) {\n' +
+            '        PreparedStatement stmt = conn.prepareStatement("""\n' +
+            '            SELECT * FROM foo\n' +
+            '            WHERE id = ?"""' + ')\n' +
+            '        stmt.executeQuery()\n' +
+            '    }\n' +
+            '}\n')
+
+        when: 'patch replaces the WHERE line and the closing paren line but newText omits the closing )'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [[
+                    startLine: 5,   // line: '            WHERE id = ?""")'  -- has one closing )
+                    endLine  : 5,
+                    // newText keeps the triple-quote close but drops the ) -- paren delta: removed=0 open, 1 close => -1; new=0 => mismatch
+                    newText  : '            WHERE id = ?"""'
+                ]]
+            ]
+        ], 'ct80')
+
+        then: 'patch is rejected -- paren delta mismatch detected'
+        assertToolError(r, 'paren')
+        new File(f.path as String).text == readFileContent(f.path)
+    }
+
+    // -----------------------------------------------------------------------
+    // CT-81: companion to CT-80 -- patch that keeps balanced parens succeeds
+    // -----------------------------------------------------------------------
+    def 'CT-81: patch that preserves paren balance on a Groovy method-call line succeeds'() {
+        given: 'same Groovy file'
+        def f = writeFile('ct81.groovy',
+            'class Dao {\n' +
+            '    void query(Connection conn) {\n' +
+            '        PreparedStatement stmt = conn.prepareStatement("""\n' +
+            '            SELECT * FROM foo\n' +
+            '            WHERE id = ?"""' + ')\n' +
+            '        stmt.executeQuery()\n' +
+            '    }\n' +
+            '}\n')
+
+        when: 'patch replaces WHERE clause AND keeps the closing ) -- paren delta matches'
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [[
+                    startLine: 5,
+                    endLine  : 5,
+                    newText  : '            WHERE name = ?"""' + ')'
+                ]]
+            ]
+        ], 'ct81')
+
+        then: 'patch succeeds and file contains new WHERE clause'
+        r.result != null
+        (r.result as Map).isError != true
+        new File(f.path as String).text.contains('WHERE name = ?')
     }
 
 }

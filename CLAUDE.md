@@ -5,7 +5,7 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.8.66` (check `build.gradle` to confirm)
+- **Current version:** `0.8.70` (check `build.gradle` to confirm)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -137,10 +137,28 @@ file_write action=server_transform path=<file>
 | FIX-A | `doRead` refuses files >200 lines — use `structure`/`get_method`/`range`. `force=true` overrides. |
 | FIX-B | `_session_read_tokens` injected into every read response. Warns at 40K/80K. |
 | FIX-C | McpController hard cap: 64K chars max on any single tool response. |
-| FIX-D | `knownHash` on read/structure/get_method/list: returns `{unchanged:true}` if unchanged — zero cost. |
+| FIX-D | `knownHash` on read/range/get_method/list: returns `{unchanged:true}` if unchanged — ZERO tokens consumed. |
 
-**Always pass `knownHash` on re-reads.** Get the hash from `file_content_hash` (files) or
-`listing_hash` (directories) in the previous response and pass it back as `options.knownHash`.
+### knownHash — NOT OPTIONAL
+
+`knownHash` is a **telemetry obligation**, not a hint. `knownhash_pct` is tracked per session and mid-session-audit reports FAILING if it drops below 30%.
+
+**Sources (in priority order):**
+1. `bootstrap globals` — session-bootstrap loads `working_file_hashes[path].hash` for all prior-session working files into AW globals at start
+2. `file_content_hash` — returned in every `file_read` response; capture and chain within session
+3. `listing_hash` — returned by `action=list`; pass back for directory re-checks
+
+**Rule:** Every repeat read (`read`/`range`/`get_method`/`list`) MUST pass `options.knownHash`.
+Unchanged file → `{unchanged:true}` = zero tokens. Not passing it on a repeat read is a measurable regression.
+
+```
+# Correct pattern — chain the hash
+file_read action=range path=Foo.groovy options={startLine:1,maxLines:50}
+→ {content:"...", file_content_hash:"abc123456789", ...}
+
+file_read action=range path=Foo.groovy options={startLine:1,maxLines:50,knownHash:"abc123456789"}
+→ {unchanged:true}   # zero tokens if file unchanged
+```
 
 ---
 

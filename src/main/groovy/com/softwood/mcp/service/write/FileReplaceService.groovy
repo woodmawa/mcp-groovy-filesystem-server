@@ -119,6 +119,8 @@ class FileReplaceService extends AbstractFileService {
      */
     McpResponse doReplace(String path, Map<String, Object> options, Object requestId) {
         String oldText      = options.oldText as String
+        // oldText is the primary required field -- check it first so error messages are actionable.
+        if (!oldText) return McpResponse.toolError(requestId, 'options.oldText required for replace')
         // CT-FW-REPLACE-1: newText absent (key missing entirely) is an error -- caller likely forgot the param.
         // Explicit empty string (newText: '') is allowed and means deletion.
         if (!options.containsKey('newText')) return McpResponse.toolError(requestId,
@@ -128,7 +130,6 @@ class FileReplaceService extends AbstractFileService {
         if (!expectedHash) {
             log.warn('doReplace called without expectedHash for {} -- drift guard disabled. Caller should pass expectedHash from last read.', path)
         }
-        if (!oldText) return McpResponse.toolError(requestId, 'options.oldText required for replace')
 
         // CT-DR-1/CT-DR-2: Destructive-replace ratio guard (FS 0.8.67).
         // Fires when oldText is large (>500 chars) AND newText is <20% of oldText length.

@@ -231,6 +231,38 @@ class FilePatchService extends AbstractFileService {
                          'Extend the replacement range to include all closing braces for blocks it opens, ' +
                          'or ensure newText closes every block it opens. File NOT modified.'))
                 }
+                // Fix CT-80 (FS 0.8.71): paren delta check -- same logic as brace delta above.
+                // Root cause: FIX-E3 patch on SqliteKnowledgeStore dropped the closing ) of
+                // prepareStatement("""). Brace delta was 0/0 so CT-14 didn't fire. Parens are
+                // structurally significant in Groovy/Java method calls and GString closures.
+                // Note: string literals may contain unbalanced parens (e.g. in SQL "WHERE (x OR y)").
+                // We therefore only fire when delta magnitude > 1 to avoid false positives on
+                // common SQL patterns, or when the delta is exactly -1 (single dropped close paren).
+                int removedParenOpen  = removedContent.count('(')
+                int removedParenClose = removedContent.count(')')
+                int newParenOpen      = newContent.count('(')
+                int newParenClose     = newContent.count(')')
+                int removedParenDelta = removedParenOpen  - removedParenClose
+                int newParenDelta     = newParenOpen      - newParenClose
+                if (removedParenDelta != newParenDelta) {
+                    int diff = removedParenDelta - newParenDelta
+                    // Fire when: magnitude > 1 (SQL parens rarely differ by more than 1),
+                    // or exactly ±1 representing a dropped/added single method-call paren.
+                    // This catches the canonical failure: removed has trailing ) (delta -1),
+                    // newText omits it (delta 0): diff = -1 - 0 = -1, magnitude = 1.
+                    if (Math.abs(diff) >= 1) {
+                        log.warn('patch: paren delta mismatch REJECTED {} line {}-{}: removed delta={} new delta={}',
+                            normalized, rep.startLine, rep.endLine, removedParenDelta, newParenDelta)
+                        return McpResponse.toolError(requestId,
+                            ('patch: paren structure mismatch on ' + normalized.tokenize('/').last() +
+                             ' lines ' + rep.startLine + '-' + rep.endLine + ': ' +
+                             'removed section has paren delta ' + removedParenDelta +
+                             ' (opens=' + removedParenOpen + ' closes=' + removedParenClose + ')' +
+                             ' but newText has paren delta ' + newParenDelta +
+                             ' (opens=' + newParenOpen + ' closes=' + newParenClose + '). ' +
+                             'Ensure newText closes every method call or GString it opens. File NOT modified.'))
+                    }
+                }
             }
         }
 

@@ -9,7 +9,12 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.70'
+version = '0.8.71'
+// v0.8.71: CT-80/CT-81 -- patch paren-delta guard (FilePatchService). Patch on .groovy/.java
+//   now checks parenthesis delta per replacement, same as brace delta (CT-14). Catches dropped
+//   closing ) on method-call GStrings (e.g. prepareStatement("""...""")). FIX-E3 root cause.
+//   CT-2/CT-19/CT-73/CT-76 -- fixed guard order in FileReplaceService.doReplace: oldText
+//   checked before newText, so empty-options calls surface 'oldText required' not 'newText missing'.
 // v0.8.70: FileReadService.getToolDefinitions() now DB-driven via ContextServerClient.getHelpSection().
 //   @PostConstruct init() loads tool_desc_file_read row from CS help_sections on startup.
 //   Falls back to DEFAULT_DESC static constant if CS unreachable. Idea #109.
