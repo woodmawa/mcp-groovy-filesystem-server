@@ -1,7 +1,7 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 2.2
+**Version:** 2.3
 **Last updated:** 2026-04-30
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
@@ -366,10 +366,46 @@ field — `2>&1` is never needed.
 
 ---
 
+## 9b. Updating Tool Descriptions Without a Rebuild (v0.8.74+)
+
+`file_read` (v0.8.70) and `file_write` (v0.8.74) load their tool descriptions from CS
+`help_sections` at FS startup. This means you can correct or improve the descriptions
+served to Claude without touching source code or rebuilding the jar.
+
+**Section keys:**
+
+| Tool | Compact key | Verbose key |
+|------|-------------|-------------|
+| `file_read` | `tool_desc_file_read` | (not split — single section) |
+| `file_write` | `tool_desc_file_write` | `tool_desc_file_write_verbose` |
+
+**To update (no rebuild, no jar deploy):**
+
+```
+# Update the compact file_write description
+context_write scope=help type=section action=update
+    section_key=tool_desc_file_write
+    content=<new description text>
+
+# Or via execute_sql for longer content
+context_lifecycle action=execute_sql allowWrite=true
+    sql="UPDATE help_sections SET content='...',updated_at=datetime('now')
+         WHERE section_key='tool_desc_file_write'"
+```
+
+**Then restart DT** — FS reads the sections in `@PostConstruct init()` at startup, so a DT
+restart is required to pick up changes. No build, no jar, no deploy.
+
+Fallback: if CS is unreachable at startup, FS uses the `DEFAULT_DESC_*` static constants
+baked into the source. These are kept in sync with the help_sections rows.
+
+---
+
 ## 10. Change Log
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.3 | 2026-04-30 | DB-driven tool descriptions: `file_write` now loads description from CS `help_sections` at startup (v0.8.74, idea #109). Both `file_read` (v0.8.70) and `file_write` (v0.8.74) DB-driven. Update without rebuild: `context_write scope=help type=section action=update section_key=tool_desc_file_write content=<new>` then restart DT. Tool description live-edit procedure added to §9. |
 | 2.2 | 2026-04-30 | mcp-deploy ref updated to 4.1; `expectedHash` mandatory rule added to §9 compile/build section; FS versions 0.8.66–0.8.73 documented; CT-EH-1 `expectedHash` mandatory enforcement noted |
 | 2.1 | 2026-04-13 | mcp-deploy ref updated to 3.7; `mcp-http-servers.json` now auto-updated by `copyToJarsDir` Gradle task (v0.8.48) — removed from manual steps; Config File Reference table updated; `McpResponse.toolError()` and error contract changes documented |
 | 2.0 | 2026-04-04 | Full rewrite: FS↔Context architecture section, session ID resolution design, AW transport routing, mcp-deploy:3.5 with jarPrefix, Windows pipe deadlock rule, UTF-8 stdio fix, all changes from v0.8.34–0.8.40 documented |

@@ -1,4 +1,4 @@
-# mcp-groovy-filesystem-server v0.8.73
+# mcp-groovy-filesystem-server v0.8.74
 
 Spring Boot / Groovy MCP server providing filesystem, developer toolchain, and server lifecycle operations
 to Claude Desktop and Claude Code via STDIO (primary) and Streamable HTTP (HTTP companion mode).
@@ -96,7 +96,17 @@ with `oldText not found` even when the text was visually identical.
 
 ## What's New
 
-### v0.8.73 — CT-EH-1: expectedHash mandatory for replace|patch|multi_replace (2026-04-30)
+### v0.8.74 — DB-driven tool description for FileWriteService — idea #109 complete (2026-04-30)
+
+**Both `file_read` and `file_write` tool descriptions are now loaded from CS `help_sections` at startup — no rebuild needed to update them.**
+
+- `FileWriteService.@PostConstruct init()` calls `ContextServerClient.getHelpSection('tool_desc_file_write')` (compact) and `getHelpSection('tool_desc_file_write_verbose')` at FS startup. Falls back to `DEFAULT_DESC_COMPACT` / `DEFAULT_DESC_VERBOSE` static constants if CS is unreachable.
+- `getToolDefinitions()` now uses `toolDescriptionCompact` / `toolDescriptionVerbose` fields instead of hardcoded inline strings.
+- `help_sections` rows seeded in CS: `tool_desc_file_write` (compact, 496 chars) and `tool_desc_file_write_verbose` (full, 1110 chars).
+- `ContextServerClient.getHelpSection()` already implemented in v0.8.70 — reused unchanged.
+- **To update `file_write` description without a build:** `context_write scope=help type=section action=update section_key=tool_desc_file_write content=<new>` then restart DT.
+- Idea #109 (`Add DB-driven tool description loading to FileWriteService`) marked `delivered` in v0.8.74. `delivered_in` and evolution trail updated in CS ideas table.
+- `FileReadService` (v0.8.70) + `FileWriteService` (v0.8.74) are now both DB-driven. `FileSearchService` / `ExecuteService` remain hardcoded (lower priority — descriptions rarely change).
 
 **Root cause closed: absent `expectedHash` allowed silent double-writes and cross-group file-hash bleed.**
 
@@ -397,6 +407,7 @@ Also copies jar to `claude-sync/jars/` via `copyToJarsDir` task (for HTTP compan
 
 | Version | Highlights |
 |---------|-----------|
+| **0.8.74** | DB-driven `file_write` tool description (idea #109 complete). `@PostConstruct init()` loads `tool_desc_file_write` + `tool_desc_file_write_verbose` from CS `help_sections`. Falls back to `DEFAULT_DESC_*` if CS unreachable. Update description without rebuild via `context_write scope=help`. Both `file_read` (0.8.70) and `file_write` (0.8.74) now DB-driven. |
 | **0.8.73** | CT-EH-1 — `expectedHash` mandatory for `replace`\|`patch`\|`multi_replace` (hard error when absent). `promoteTopLevelParams` bug fixed — top-level `expectedHash`+`oldText` now both land in `options`. 5 new CT-EH contract tests. CS `tool_descriptions` + `help_sections` updated. 153 tests, 0 failures. |
 | **0.8.72** | CT-RW-1..5 — replace structural safety: unbalanced brace = hard error; `DESTRUCTIVE_REPLACE` `force=true` hatch; guard-order fix; not-found contract test. |
 | **0.8.71** | CT-80/CT-81 — patch paren-delta guard on `.groovy`/`.java`. CT-2/CT-19/CT-73/CT-76 — `doReplace` guard order fix (`oldText` before `newText`). |

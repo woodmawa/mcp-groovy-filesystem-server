@@ -8,6 +8,7 @@ import com.softwood.mcp.service.transform.FileTransformService
 import com.softwood.mcp.service.write.FileReplaceService
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import jakarta.annotation.PostConstruct
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 
@@ -41,23 +42,20 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     private static final Set<String> MUTATING_ACTIONS =
         ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write', 'server_transform', 'write_office'] as Set
 
-    FileWriteService(PathService pathService) {
-        super(pathService)
-    }
+    // v0.8.74: DB-driven tool description -- loaded from CS help_sections at startup.
+    // section_key='tool_desc_file_write' for compact, 'tool_desc_file_write_verbose' for verbose.
+    // Falls back to DEFAULT_DESC_* if CS unreachable. Update without rebuild via:
+    //   context_write scope=help type=section action=update section_key=tool_desc_file_write content=<new>
+    private String toolDescriptionCompact
+    private String toolDescriptionVerbose
 
-    // -----------------------------------------------------------------------
-    // ToolHandler
-    // -----------------------------------------------------------------------
-
-    @Override
-    List<Map<String, Object>> getToolDefinitions() {
-        return [[\
-            name       : 'file_write',
-            description: isDescriptionCompact() ? '''\
+    private static final String DEFAULT_DESC_COMPACT = '''\
 Write/modify files.
 Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
 Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating — required).
-server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import''' : '''\
+server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import'''
+
+    private static final String DEFAULT_DESC_VERBOSE = '''\
 Write/modify files.
 Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
 - write(path, content): overwrite entire file
@@ -69,7 +67,38 @@ Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|f
 - chunk_write/finalise_write/abort_write: large-file chunked writes. chunk_status: verify received chunks before finalise.
 All mutating actions return content_hash. options.expectedHash is MANDATORY for replace|patch|multi_replace -- read the file first and pass the returned file_content_hash. Missing expectedHash is a hard error (CT-EH-1, FS 0.8.73).
 SAFE EDITING: always read before write, always pass expectedHash. get_method -> patch for code. grep -> replace for unique strings. multi_replace for multiple changes.
-CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read it before retrying. Do NOT fall through to patch.''',
+CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read it before retrying. Do NOT fall through to patch.'''
+
+    FileWriteService(PathService pathService) {
+        super(pathService)
+    }
+
+    @PostConstruct
+    void init() {
+        try {
+            String compact = contextServerClient?.getHelpSection('tool_desc_file_write')
+            String verbose = contextServerClient?.getHelpSection('tool_desc_file_write_verbose')
+            toolDescriptionCompact = compact ?: DEFAULT_DESC_COMPACT
+            toolDescriptionVerbose = verbose ?: DEFAULT_DESC_VERBOSE
+            if (compact) log.debug('FileWriteService: loaded compact description from CS help_sections')
+            if (verbose) log.debug('FileWriteService: loaded verbose description from CS help_sections')
+            if (!compact || !verbose) log.debug('FileWriteService: CS section(s) missing -- using DEFAULT_DESC fallback')
+        } catch (Exception e) {
+            toolDescriptionCompact = DEFAULT_DESC_COMPACT
+            toolDescriptionVerbose = DEFAULT_DESC_VERBOSE
+            log.debug('FileWriteService.init failed (non-fatal) -- using DEFAULT_DESC: {}', e.message)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ToolHandler
+    // -----------------------------------------------------------------------
+
+    @Override
+    List<Map<String, Object>> getToolDefinitions() {
+        return [[\
+            name       : 'file_write',
+            description: isDescriptionCompact() ? toolDescriptionCompact : toolDescriptionVerbose,
             inputSchema: [
                 type      : 'object',
                 properties: [

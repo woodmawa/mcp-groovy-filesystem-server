@@ -9,7 +9,17 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.73'
+version = '0.8.74'
+// v0.8.74: DB-driven tool description for FileWriteService (idea #109 completion).
+//   @PostConstruct init() loads tool_desc_file_write (compact) and
+//   tool_desc_file_write_verbose from CS help_sections at FS startup.
+//   Falls back to DEFAULT_DESC_COMPACT/VERBOSE static constants if CS unreachable.
+//   help_sections rows seeded: tool_desc_file_write + tool_desc_file_write_verbose.
+//   Tool description for file_write is now updatable via CS context_write without
+//   a build or jar deploy. DT restart required to reload after CS section update.
+//   ContextServerClient.getHelpSection() already implemented (v0.8.70) -- reused.
+//   FileReadService (v0.8.70) + FileWriteService (v0.8.74) are now both DB-driven.
+//   Idea #109 status updated to delivered.
 // v0.8.73: CT-EH-1 -- expectedHash is now MANDATORY for replace|patch|multi_replace (FS TDD).
 //   Root cause: absent expectedHash allowed silent double-writes and cross-session file bleed.
 //   FileReplaceService.doReplace: warn->toolError when expectedHash absent.
