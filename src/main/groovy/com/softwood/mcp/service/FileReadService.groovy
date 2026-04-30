@@ -11,6 +11,7 @@ import groovy.json.JsonSlurper
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Autowired
+import jakarta.annotation.PostConstruct
 import org.springframework.stereotype.Service
 
 /**
@@ -37,6 +38,45 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Autowired(required = false) ContextServerClient  contextServerClient
     @Autowired com.softwood.mcp.service.office.OfficeDocumentHandler officeHandler
 
+    // v0.8.70: DB-driven tool description. Loaded from CS help_sections at startup.
+    // Falls back to DEFAULT_DESC if CS is unreachable on first boot.
+    private String toolDescription
+
+    // DEFAULT_DESC kept in sync with tool_desc_file_read section_key in help_sections.
+    // Update via: context_lifecycle execute_sql UPDATE help_sections SET content=? WHERE section_key='tool_desc_file_read'
+    private static final String DEFAULT_DESC = '''\
+Read files/directories.
+Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
+
+KNOWNHASH IS EXPECTED ON EVERY REPEAT READ - NOT OPTIONAL.
+Sources: (1) bootstrap globals working_file_hashes[path].hash for prior-session files.
+         (2) file_content_hash field returned by every read response - capture and chain within session.
+Usage:   Pass as options.knownHash on read|range|get_method|list.
+Result:  Unchanged file returns {unchanged:true} = ZERO tokens consumed.
+Metric:  knownhash_pct tracked per session. FAILING in mid-session-audit if <30%.
+
+Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|range|get_method|list - ZERO tokens if unchanged - ALWAYS pass on repeat reads), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
+action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
+action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches.
+All read actions return file_content_hash. Use options.expectedHash on writes to guard drift.'''
+
+    @PostConstruct
+    void init() {
+        try {
+            String loaded = contextServerClient?.getHelpSection('tool_desc_file_read')
+            if (loaded) {
+                toolDescription = loaded
+                log.debug('FileReadService: loaded tool description from CS help_sections (tool_desc_file_read)')
+            } else {
+                toolDescription = DEFAULT_DESC
+                log.debug('FileReadService: CS unavailable or section missing -- using DEFAULT_DESC')
+            }
+        } catch (Exception e) {
+            toolDescription = DEFAULT_DESC
+            log.debug('FileReadService.init failed (non-fatal) -- using DEFAULT_DESC: {}', e.message)
+        }
+    }
+
     FileReadService(PathService pathService) {
         super(pathService)
     }
@@ -49,30 +89,7 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[\
             name       : 'file_read',
-            description: isDescriptionCompact() ? '''\
-Read files/directories.
-Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
-Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|range|get_method|list — ZERO tokens if unchanged — always use), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
-action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
-action=multi_grep: grep one pattern across options.paths[] in one call — returns only files with matches.
-All read actions return file_content_hash. Use options.expectedHash on writes to guard drift.''' : '''\
-Read files/directories.
-Actions: read|head|tail|range|grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
-- read: full content. >200 lines refused — use structure/get_method/range. force=true overrides. knownHash=<hash> returns {unchanged:true} instantly — ZERO tokens.
-- head/tail: first/last N lines (default 50). options.lines=N.
-- range: line slice. options.startLine (1-indexed), options.maxLines (default 100). knownHash=<file_content_hash> returns {unchanged:true} if file unchanged — ZERO tokens. Always pass after first read.
-- grep: regex in FILE (not dir). options.pattern required. options.contextLines for surrounding lines.
-- multi_grep: grep one pattern across multiple files. options.paths[] (max 20), options.pattern required, options.maxMatches (default 5 per file). Returns only files with matches. No path param needed.
-- multi: up to 10 files parallel. options.paths[]. options.knownHashes {path->hash} skips unchanged. Cap: 24000 chars.
-- stat: metadata only — path, exists, size, lines, lastModified, language. Cheapest existence check.
-- summary: line count + size only.
-- structure: code outline per entry (line/endLine/lineCount). compact=true = methods only. className=Foo filters.
-- get_method: complete named method body. Preferred over structure+range for editing. knownHash=<file_content_hash> returns {unchanged:true} if file unchanged — ZERO tokens. Always pass after first read.
-- list: directory listing [{name,type,size,lastModified}]. Dirs first, alpha sorted. Returns listing_hash. Pass as options.knownHash on repeat calls — returns {unchanged:true, listing_hash, count} (~15 tokens) when directory unmodified.
-- help: detailed usage guide. options.topic=<tool|all>.
-- chunk_read/finalise_read: chunked large-file paging.
-All read actions return file_content_hash (12-char SHA-256). Pass as options.expectedHash on writes.
-KNOWNHASH PATTERN: (1) bootstrap result has working_file_hashes[path].hash for prior-session files. (2) Every read response returns file_content_hash — capture it. (3) Pass as options.knownHash on ALL subsequent reads of the same file. Unchanged = {unchanged:true} = ZERO tokens.''',
+            description: toolDescription,
             inputSchema: [
                 type      : 'object',
                 properties: [

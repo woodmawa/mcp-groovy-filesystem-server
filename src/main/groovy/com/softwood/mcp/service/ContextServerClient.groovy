@@ -716,6 +716,50 @@ class ContextServerClient {
     }
 
 
+    /**
+     * v0.8.70: Load a help_sections content string from CS by section key.
+     * Used by FileReadService.init() to load tool_desc_file_read at startup.
+     * Returns null (fail-silent) if CS unreachable, section missing, or any error.
+     */
+    String getHelpSection(String sectionKey) {
+        if (!contextServerReachable || !sectionKey) return null
+        try {
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_read',
+                          arguments: [scope: 'help', topic: sectionKey]]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = 2000
+                conn.readTimeout    = 2000
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) {
+                        Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
+                        // context_read scope=help returns {topic, content, section_key, ...}
+                        String sectionContent = data?.get('content') as String
+                        if (sectionContent) return sectionContent
+                    }
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            log.debug('getHelpSection: CS unreachable -- using DEFAULT_DESC fallback')
+        } catch (Exception e) {
+            log.debug('getHelpSection failed (non-fatal): {}', e.message)
+        }
+        return null
+    }
+
     @PreDestroy
     void shutdown() {
         asyncWriter.shutdown()

@@ -9,7 +9,10 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.8.69'
+version = '0.8.70'
+// v0.8.70: FileReadService.getToolDefinitions() now DB-driven via ContextServerClient.getHelpSection().
+//   @PostConstruct init() loads tool_desc_file_read row from CS help_sections on startup.
+//   Falls back to DEFAULT_DESC static constant if CS unreachable. Idea #109.
 // v0.8.69: FIX-6A -- BLOCKED_UNRANGED_INDEXED_READ error now includes known_hash field
 //   for each blocked file when CS has a registry entry for the path. FS calls CS via
 //   ContextServerClient.getKnownHashForPath(normalizedPath) -- context_read scope=ontology
