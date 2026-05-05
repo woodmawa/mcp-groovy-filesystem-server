@@ -233,6 +233,10 @@ class FileStructureReader extends AbstractFileService {
             gmResp._truncatedNote = ("Method body truncated at ${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Use action=range with startLine=${startLine} and maxLines to read the rest." as String)
         }
         helper.injectSessionTokenMeter(gmResp, content.length())
+        // get_method is partial-content -- no autoStore (Option A, brief §18.3)
+        helper.storeAndHintKnownHash(gmResp, normalized, options)
+        // FIX-6 (FS 0.8.80): shadow probe -- validates hash accuracy without changing semantics
+        helper.shadowAutoKhProbe(gmResp, normalized, 'get_method')
         return textResponse(requestId, gmResp)
     }
 }

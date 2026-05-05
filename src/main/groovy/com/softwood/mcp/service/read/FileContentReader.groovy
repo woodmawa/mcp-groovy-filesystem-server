@@ -20,9 +20,29 @@ import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 /**
- * FileContentReader - handles read, head, tail, range, grep, multi actions.
+ * FileContentReader - handles read, head, tail, range, grep, multi_grep, get_method,
+ * structure, chunk_read, and finalise_read actions.
+ *
+ * <p>All content-returning methods delegate hash hint injection and token metering to
+ * {@link ReadResponseHelper}. The helper decides whether to emit a {@code _knownhash_hint}
+ * and whether to return {@code {unchanged:true}} on a matching knownHash.</p>
+ *
+ * <h3>Range cache contract</h3>
+ * <p>{@code doRange} does NOT fire auto-lookup (FIX-KH-AUTO is whole-file only). If a
+ * caller passes {@code options.knownHash} to {@code doRange} and the file is unchanged,
+ * the response is {@code {unchanged:true}} -- i.e. the range content is suppressed.
+ * Callers MUST NOT pass knownHash to action=range. The session range cache in CS handles
+ * range deduplication automatically via {@code recordRangeCacheAsync} in FileReadService.</p>
+ *
+ * <h3>grep single-pass contract (v0.9.0)</h3>
+ * <p>{@code doGrep} uses a single rotating-window pass for both the contextLines=0 and
+ * contextLines>0 cases. The before-window deque and pending-after collector list are
+ * initialised unconditionally; both are empty/no-op when contextLines=0. This eliminates
+ * the two-branch duplication (D8) and ensures grep behaviour is identical regardless of
+ * whether context lines are requested.</p>
  *
  * v0.7.44 - extracted from FileReadService as part of read/ subpackage split.
+ * v0.9.0  - PR 3.1: doGrep unified to single rotating-window pass (D8).
  */
 @Service
 @Slf4j
@@ -77,7 +97,8 @@ class FileContentReader extends AbstractFileService {
         String normalized = validateFilePath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
 
-        McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId)
+        // FIX-KH-AUTO: doRead is a whole-file action -- pass autoLookup=true
+        McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId, true)
         if (unchanged != null) return unchanged
 
         long fileSize    = Files.size(Paths.get(normalized))
@@ -142,6 +163,8 @@ class FileContentReader extends AbstractFileService {
             helper.maybeAddSizeWarning(resp, content.length())
         }
         helper.injectSessionTokenMeter(resp, content.length())
+        // FIX-KH-AUTO: autoStore=true for whole-file read
+        helper.storeAndHintKnownHash(resp, normalized, options, true)
         return textResponse(requestId, resp)
     }
 
@@ -306,6 +329,10 @@ class FileContentReader extends AbstractFileService {
             helper.maybeAddSizeWarning(resp, joined.length())
         }
         helper.injectSessionTokenMeter(resp, joined.length())
+        // range is partial-content -- no autoStore (Option A, brief §18.3)
+        helper.storeAndHintKnownHash(resp, normalized, options)
+        // FIX-6 (FS 0.8.80): shadow probe -- validates hash accuracy without changing semantics
+        helper.shadowAutoKhProbe(resp, normalized, 'range')
         return textResponse(requestId, resp)
     }
 
@@ -323,22 +350,23 @@ class FileContentReader extends AbstractFileService {
         String encoding  = options.encoding as String ?: 'UTF-8'
         Pattern compiled = safeCompilePattern(patternStr)
 
+        // Single-pass rotating-window: handles contextLines=0 as degenerate case (empty deque, no pending).
         List<Map<String, Object>> matches = []
         int lineNum           = 0
         int totalContentChars = 0
         boolean sizeCapped    = false
+        ArrayDeque<String> beforeBuf  = new ArrayDeque<>(contextLines > 0 ? contextLines + 1 : 1)
+        List<Map<String, Object>> pendingAfter = []   // [{matchEntry, remaining, afterList}]
 
-        if (contextLines > 0) {
-            ArrayDeque<String> beforeBuf  = new ArrayDeque<>(contextLines + 1)
-            List<Map<String, Object>> pendingAfter = []
+        new File(normalized).withReader(encoding) { Reader r ->
+            BufferedReader br = new BufferedReader(r)
+            String line
+            while ((line = br.readLine()) != null) {
+                lineNum++
+                String sanitized = truncateAndSanitize(line)
 
-            new File(normalized).withReader(encoding) { Reader r ->
-                BufferedReader br = new BufferedReader(r)
-                String line
-                while ((line = br.readLine()) != null) {
-                    lineNum++
-                    String sanitized = truncateAndSanitize(line)
-
+                // Advance any pending after-collectors
+                if (!pendingAfter.isEmpty()) {
                     Iterator<Map<String, Object>> pit = pendingAfter.iterator()
                     while (pit.hasNext()) {
                         Map<String, Object> p = pit.next()
@@ -346,62 +374,42 @@ class FileContentReader extends AbstractFileService {
                         p.remaining = (p.remaining as int) - 1
                         if ((p.remaining as int) <= 0) pit.remove()
                     }
-
-                    if (matches.size() < maxMatches && !sizeCapped && compiled.matcher(line).find()) {
-                        List<String> before   = new ArrayList<>(beforeBuf as Collection<String>)
-                        List<String> afterList = []
-                        Map<String, Object> entry = [line: lineNum, content: sanitized, before: before, after: afterList] as Map<String, Object>
-                        totalContentChars += sanitized.length()
-                        if (totalContentChars > partialReadCapChars) {
-                            sizeCapped = true
-                        } else {
-                            matches << entry
-                            if (contextLines > 0) pendingAfter << ([matchEntry: entry, remaining: contextLines, afterList: afterList] as Map<String, Object>)
-                        }
-                    }
-
-                    beforeBuf.addLast(sanitized)
-                    if (beforeBuf.size() > contextLines) beforeBuf.pollFirst()
                 }
-            }
 
-            Map<String, Object> resp = isCompact(options)
-                ? [matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
-                : [action: 'grep', path: normalized, pattern: sanitize(patternStr), contextLines: contextLines,
-                   matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
-            if (sizeCapped) {
-                resp._sizeCapped = true
-                resp._sizeCappedNote = ("grep results capped at ~${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Reduce maxMatches or narrow pattern." as String)
-            }
-            return textResponse(requestId, resp)
-        }
-
-        // No context - simple streaming path
-        new File(normalized).withReader(encoding) { Reader r ->
-            BufferedReader br = new BufferedReader(r)
-            String line
-            while ((line = br.readLine()) != null && matches.size() < maxMatches && !sizeCapped) {
-                lineNum++
-                if (compiled.matcher(line).find()) {
-                    String sanitized = truncateAndSanitize(line)
+                // Check match cap before the pattern test to avoid over-reading
+                if (matches.size() < maxMatches && !sizeCapped && compiled.matcher(line).find()) {
                     totalContentChars += sanitized.length()
                     if (totalContentChars > partialReadCapChars) {
                         sizeCapped = true
                     } else {
-                        matches << ([line: lineNum, content: sanitized] as Map<String, Object>)
+                        List<String> before    = contextLines > 0 ? new ArrayList<>(beforeBuf as Collection<String>) : []
+                        List<String> afterList = contextLines > 0 ? [] : null
+                        Map<String, Object> entry = contextLines > 0
+                            ? ([line: lineNum, content: sanitized, before: before, after: afterList] as Map<String, Object>)
+                            : ([line: lineNum, content: sanitized] as Map<String, Object>)
+                        matches << entry
+                        if (contextLines > 0) pendingAfter << ([remaining: contextLines, afterList: afterList] as Map<String, Object>)
                     }
+                }
+
+                // Maintain the before-window (no-op when contextLines=0)
+                if (contextLines > 0) {
+                    beforeBuf.addLast(sanitized)
+                    if (beforeBuf.size() > contextLines) beforeBuf.pollFirst()
                 }
             }
         }
-        Map<String, Object> resp2 = isCompact(options)
+
+        Map<String, Object> resp = isCompact(options)
             ? [matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
             : [action: 'grep', path: normalized, pattern: sanitize(patternStr),
                matchCount: matches.size(), matches: matches, file_content_hash: structureCache.getHash(normalized)] as Map<String, Object>
+        if (contextLines > 0) resp.contextLines = contextLines
         if (sizeCapped) {
-            resp2._sizeCapped = true
-            resp2._sizeCappedNote = ("grep results capped at ~${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Reduce maxMatches or narrow pattern." as String)
+            resp._sizeCapped = true
+            resp._sizeCappedNote = ("grep results capped at ~${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Reduce maxMatches or narrow pattern." as String)
         }
-        return textResponse(requestId, resp2)
+        return textResponse(requestId, resp)
     }
 
     // -----------------------------------------------------------------------

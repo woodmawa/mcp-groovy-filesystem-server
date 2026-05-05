@@ -113,8 +113,8 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 throw new SecurityException("Working directory '${sanitize(workingDir)}' is not in the allowed list. Allowed directories: ${allowed}")
             }
 
-            // Security validation
-            securityService.validateScript(script, workingDir)
+            // Security validation -- pass executor type for per-executor pattern rules
+            securityService.validateScript(script, workingDir, action)
 
             // Extract env overrides from options (was previously silently ignored)
             Map<String, String> envOverrides = options.env ? (options.env as Map<String, String>) : null

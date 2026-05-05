@@ -17,13 +17,21 @@ import org.springframework.stereotype.Service
  *
  * Thin dispatcher: owns getToolDefinitions/canHandle/handleToolCall/promoteTopLevelParams only.
  * All action implementations live in the service/write/ subpackage:
- *   - FileContentWriter : write, append
- *   - FileReplaceService: replace, multi_replace
- *   - FilePatchService  : patch
- *   - FileChunkWriter   : chunk_write, finalise_write, abort_write
- *   - WriteUtils        : atomicWrite, makeBackup, shouldNormaliseLf, computeHash, fileHash, countOccurrences
+ *   - FileContentWriter    : write, append
+ *   - FileReplaceService   : replace, multi_replace  (uses WriteContext + WriteCommitter + TextMatcher)
+ *   - FilePatchService     : patch                   (uses WriteContext + WriteCommitter + StructuralGuard)
+ *   - FileChunkWriter      : chunk_write, finalise_write, abort_write
+ *   - FileTransformService : server_transform
+ *   - WriteContext         : per-call file load (size cap, encoding guard, CRLF detect, hash)
+ *   - WriteCommitter       : pre-commit drift re-check + atomic write delegation
+ *   - TextMatcher          : Unicode-safe oldText resolution with original-span mapping
+ *   - StructuralGuard      : brace/paren delta pre-write hard rejects for code files
+ *   - DestructiveChangeGuard: ratio guard across all mutating actions
+ *   - MultiReplaceValidator : multi_replace pre-validation (uniqueness, overlap, simulation)
+ *   - WriteUtils           : atomicWrite, makeBackup, shouldNormaliseLf, computeHash
  *
  * v0.7.44 - refactored to dispatch-only; implementations split to write/ subpackage.
+ * v0.9.0  - dispatcher catches InvalidOptionsException from normaliseOptions.
  */
 @Service
 @Slf4j
@@ -78,9 +86,10 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
         // CS HTTP companion may not be ready immediately at DT startup -- the companion
         // is spawned as a child process by ServerLifecycleService.autoStartHttpCompanions()
         // which returns after fork, before :8082 is actually listening.
-        // Retry with backoff: 3 attempts at 0ms / 300ms / 700ms = max ~1s wait.
+        // DT cold-start launches all servers in parallel -- CS :8082 typically needs 2-4s.
+        // 5 attempts at 0/500/1000/2000/3000ms = max ~6.5s wait before falling back to DEFAULT_DESC.
         // Falls back to DEFAULT_DESC_* if all attempts fail (CS unreachable or missing row).
-        int[] delays = [0, 300, 700]
+        int[] delays = [0, 500, 1000, 2000, 3000]
         for (int i = 0; i < delays.length; i++) {
             if (delays[i] > 0) {
                 try { Thread.sleep(delays[i]) } catch (InterruptedException ignored) { Thread.currentThread().interrupt() }
@@ -103,6 +112,32 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
         if (!toolDescriptionCompact) toolDescriptionCompact = DEFAULT_DESC_COMPACT
         if (!toolDescriptionVerbose) toolDescriptionVerbose = DEFAULT_DESC_VERBOSE
         log.debug('FileWriteService: CS unavailable after retries -- using DEFAULT_DESC fallback')
+    }
+
+    /**
+     * Called by ServerLifecycleService after HTTP companions are confirmed up.
+     * Gives FileWriteService a second chance to load descriptions from CS
+     * (the @PostConstruct retry loop fires before CS HTTP companion exists).
+     * @return true if successfully reloaded from CS, false otherwise
+     */
+    boolean reloadDescriptionsFromCs() {
+        try {
+            String compact = contextServerClient?.getHelpSection('tool_desc_file_write')
+            String verbose = contextServerClient?.getHelpSection('tool_desc_file_write_verbose')
+            if (compact && verbose) {
+                toolDescriptionCompact = compact
+                toolDescriptionVerbose = verbose
+                log.debug('FileWriteService: tool descriptions reloaded from CS (post-companion-start)')
+                return true
+            } else if (compact) {
+                toolDescriptionCompact = compact
+                log.debug('FileWriteService: compact description reloaded from CS (verbose missing)')
+                return true
+            }
+        } catch (Exception e) {
+            log.debug('FileWriteService.reloadDescriptionsFromCs failed (non-fatal): {}', e.message)
+        }
+        return false
     }
 
     // -----------------------------------------------------------------------
@@ -162,9 +197,15 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
             String action               = arguments.action as String
             String path                 = (arguments.path ?: (arguments.options instanceof Map ? (arguments.options as Map).path : null)) as String
             String content              = arguments.content as String
-            Map<String, Object> options = normaliseOptions(arguments.options)
+            Map<String, Object> options
+            try {
+                options = normaliseOptions(arguments.options)
+            } catch (InvalidOptionsException e) {
+                return McpResponse.toolError(requestId, e.message)
+            }
 
             options = promoteTopLevelParams(action, arguments, options)
+
 
             // Guard: all actions except abort_write require a valid path
             if (!path && action != 'abort_write' && action != 'chunk_status') {
@@ -250,8 +291,12 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                         // both expectedHash and oldText/newText are all at top level.
                         merged = new HashMap<String, Object>(merged ?: options)
                         merged.oldText = topOld
-                        String topNew = (arguments.newText ?: arguments.new_str) as String
-                        if (topNew != null) merged.newText = topNew
+                        // CT-OPT-2/3 fix (FS 0.9.0): use explicit hasProperty check, not ?:
+                        // The ?: operator treats '' (empty string) as falsy, swallowing deliberate
+                        // content-deletion requests. arguments.newText may be '' intentionally.
+                        Object rawNew = arguments.containsKey('newText') ? arguments.newText
+                            : (arguments.containsKey('new_str') ? arguments.new_str : null)
+                        if (rawNew != null) merged.newText = rawNew as String
                         boolean isSnake = arguments.old_str != null
                         log.debug('replace: promoted top-level {}/*{} into options (variant: top-level {})',
                             isSnake ? 'old_str' : 'oldText', isSnake ? 'new_str' : 'newText',

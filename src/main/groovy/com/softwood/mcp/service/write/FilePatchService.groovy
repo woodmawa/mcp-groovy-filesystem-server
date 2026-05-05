@@ -28,6 +28,11 @@ import java.nio.file.Paths
  *           FS-T3 NOTE: server ALREADY applies replacements bottom-to-top regardless
  *           of supplied order. Caller line-number drift between turns is the real hazard
  *           -- always re-read (range/get_method) immediately before patching.
+ * v0.9.0  - PR 1.1: recentPatches replaced with bounded LRU (DestructiveChangeGuard.boundedLruMap, D6).
+ *           PR 1.3: per-replacement brace/paren delta logic delegates to StructuralGuard (D5).
+ *           PR 1.4: doPatch uses WriteContext.load() instead of inline load sequence (D1, D3, D4).
+ *                   normalizeAndCheckPath removed from FilePatchService.
+ *           Phase 2: doPatch calls WriteCommitter.commit() for pre-commit drift check (D11).
  */
 @Service
 @Slf4j
@@ -35,25 +40,14 @@ import java.nio.file.Paths
 class FilePatchService extends AbstractFileService {
 
     /** Track recent patches to warn about sequential patching without intervening re-reads. */
-    private final Map<String, Long> recentPatches = Collections.synchronizedMap(new LinkedHashMap<String, Long>())
+    // v0.9.0: bounded LRU (200 entries) replaces unbounded LinkedHashMap (D6)
+    private final Map<String, Long> recentPatches = DestructiveChangeGuard.boundedLruMap()
 
     FilePatchService(PathService pathService) {
         super(pathService)
     }
 
     McpResponse doPatch(String path, String content, Map<String, Object> options, Object requestId) {
-        String normalized   = normalizeAndCheckPath(path)
-        String encoding     = options.encoding as String ?: 'UTF-8'
-        boolean backup      = options.backup as boolean ?: false
-        String expectedHash = options.expectedHash as String
-        // CT-EH-1 (FS 0.8.73): expectedHash mandatory for all mutating actions.
-        if (!expectedHash) {
-            return McpResponse.toolError(requestId,
-                ('options.expectedHash required for patch. ' +
-                 'Read the target lines first (file_read action=range) and pass ' +
-                 'the returned file_content_hash as options.expectedHash.'))
-        }
-
         List<Map<String, Object>> replacements = (options.replacements instanceof List)
             ? options.replacements as List<Map<String, Object>>
             : []
@@ -64,33 +58,39 @@ class FilePatchService extends AbstractFileService {
                 'Use action=multi_replace for string-based edits, or supply a replacements array.')
         }
 
+        // PR 1.4 (FS 0.9.0): WriteContext.load() replaces duplicated load sequence (D1/D3/D4/D13).
+        WriteContext.LoadResult lrPatch = WriteContext.load(path, options, this, requestId)
+        if (lrPatch.error) return lrPatch.error
+        WriteContext ctxPatch   = lrPatch.ctx
+        String normalized       = ctxPatch.normalized
+        String encoding         = ctxPatch.encoding
+        boolean backup          = options.backup as boolean ?: false
+        String  expectedHash    = options.expectedHash as String
+
+        McpResponse hashErrPatch = ctxPatch.checkHash(expectedHash, requestId)
+        if (hashErrPatch) return hashErrPatch
+
         log.debug('patch: starting on {} with {} replacement(s)', normalized, replacements.size())
 
-        // ---- Read file + detect line endings ----
-        byte[] rawBytes
-        try {
-            rawBytes = Files.readAllBytes(Paths.get(normalized))
-        } catch (Exception e) {
-            log.error('patch: failed to read {}: {}', normalized, sanitize(e.message))
-            return McpResponse.toolError(requestId, 'patch: could not read file: ' + sanitize(e.message))
-        }
+        // D10 fix: destructive guard using ctx.content (already decoded by WriteContext)
+        boolean forcePatch = options.containsKey('force') ? (options.force as boolean) : false
+        List<String> guardLines = ctxPatch.content.split('\n', -1).toList()
+        int patchRemovedLen = (replacements.collect { Map rep ->
+            int s = rep.startLine ? (rep.startLine as int) : 0
+            int e = rep.endLine   ? (rep.endLine   as int) : 0
+            int from = Math.max(0, s - 1)
+            int to   = Math.min(guardLines.size(), e)
+            (from < to) ? guardLines.subList(from, to).join('\n').length() : 0
+        } as List<Integer>).sum() as int
+        int patchAddedLen = (replacements.collect { Map rep ->
+            (rep.newText as String ?: '').length()
+        } as List<Integer>).sum() as int
+        String drPatchError = DestructiveChangeGuard.check('patch', patchRemovedLen, patchAddedLen, forcePatch, path)
+        if (drPatchError) return McpResponse.toolError(requestId, drPatchError)
 
-        // ---- Optional drift guard ----
-        if (expectedHash) {
-            def md = java.security.MessageDigest.getInstance('SHA-256')
-            String actualHash = md.digest(rawBytes).encodeHex().toString()[0..11]
-            if (actualHash != expectedHash) {
-                log.warn('patch: drift guard rejected {}: expected hash {} but file is now {}', normalized, expectedHash, actualHash)
-                return McpResponse.toolError(requestId,
-                    'expectedHash mismatch: file has changed since your last read (expected ' + expectedHash + ', got ' + actualHash + '). ' +
-                    'Re-read the target lines with action=range or action=get_method to get the current content_hash, then retry.')
-            }
-            log.debug('patch: drift guard OK for {} (hash {})', normalized, actualHash)
-        }
-
-        String rawContent          = new String(rawBytes, encoding)
-        boolean hasCrLf            = rawContent.contains('\r\n')
-        String normalised          = rawContent.replace('\r\n', '\n').replace('\r', '\n')
+        boolean hasCrLf            = ctxPatch.hasCrLf
+        String  rawContent         = ctxPatch.content  // LF-normalised
+        String  normalised         = rawContent         // alias used by downstream logic
         boolean hadTrailingNewline = normalised.endsWith('\n')
         String toSplit             = hadTrailingNewline ? normalised[0..-2] : normalised
         List<String> lines         = toSplit ? new ArrayList<String>(Arrays.asList(toSplit.split('\n', -1))) : [] as List<String>
@@ -202,73 +202,28 @@ class FilePatchService extends AbstractFileService {
             }
         }
 
-        // Fix F (extended v0.8.49): per-replacement brace delta check for ALL Groovy/Java patches.
-        // Whole-file brace count stays balanced when a replacement swaps a brace-balanced removed
-        // section for a brace-balanced newText. But a patch can be structurally broken even with
-        // balanced totals -- e.g. removing 'if (x) {\n    body' (net +1 open) and replacing with
-        // just 'if (x) {\n    newBody' (also net +1 open) leaves the orphaned } from the original
-        // block closing the wrong scope. Correct check: for each replacement, the brace delta of
-        // (removedLines) must equal the brace delta of (newText). If they differ, the patch
-        // structurally corrupts the file even if the global count stays balanced. CT-14/CT-15.
-        if (normalized.endsWith('.groovy') || normalized.endsWith('.java')) {
+        // PR 1.3 (FS 0.9.0): delegate structural checks to StructuralGuard (D5 fix).
+        // checkBraceDelta + checkParenDelta with conservative string-strip heuristic.
+        // All guards are pre-write hard rejects -- no advisory path.
+        if (StructuralGuard.isCodeFile(normalized)) {
             for (Map<String, Object> rep : sorted) {
                 int s = (rep.startLine as int) - 1
                 int e = (rep.endLine   as int) - 1
                 String removedContent = lines[s..e].join('\n')
                 String newContent     = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
-                int removedOpen  = removedContent.count('{')
-                int removedClose = removedContent.count('}')
-                int newOpen      = newContent.count('{')
-                int newClose     = newContent.count('}')
-                int removedDelta = removedOpen  - removedClose   // +ve = more opens in removed
-                int newDelta     = newOpen      - newClose       // +ve = more opens in newText
-                if (removedDelta != newDelta) {
-                    log.warn('patch: brace delta mismatch REJECTED {} line {}-{}: removed delta={} new delta={}',
-                        normalized, rep.startLine, rep.endLine, removedDelta, newDelta)
-                    return McpResponse.toolError(requestId,
-                        ('patch: brace structure mismatch on ' + normalized.tokenize('/').last() +
-                         ' lines ' + rep.startLine + '-' + rep.endLine + ': ' +
-                         'removed section has brace delta ' + removedDelta +
-                         ' (opens=' + removedOpen + ' closes=' + removedClose + ')' +
-                         ' but newText has brace delta ' + newDelta +
-                         ' (opens=' + newOpen + ' closes=' + newClose + '). ' +
-                         'Extend the replacement range to include all closing braces for blocks it opens, ' +
-                         'or ensure newText closes every block it opens. File NOT modified.'))
+                String braceErr = StructuralGuard.checkBraceDelta(removedContent, newContent, normalized)
+                if (braceErr) {
+                    log.warn('patch: brace guard REJECTED {} -- {}', normalized, braceErr)
+                    return McpResponse.toolError(requestId, 'patch: ' + braceErr)
                 }
-                // Fix CT-80 (FS 0.8.71): paren delta check -- same logic as brace delta above.
-                // Root cause: FIX-E3 patch on SqliteKnowledgeStore dropped the closing ) of
-                // prepareStatement("""). Brace delta was 0/0 so CT-14 didn't fire. Parens are
-                // structurally significant in Groovy/Java method calls and GString closures.
-                // Note: string literals may contain unbalanced parens (e.g. in SQL "WHERE (x OR y)").
-                // We therefore only fire when delta magnitude > 1 to avoid false positives on
-                // common SQL patterns, or when the delta is exactly -1 (single dropped close paren).
-                int removedParenOpen  = removedContent.count('(')
-                int removedParenClose = removedContent.count(')')
-                int newParenOpen      = newContent.count('(')
-                int newParenClose     = newContent.count(')')
-                int removedParenDelta = removedParenOpen  - removedParenClose
-                int newParenDelta     = newParenOpen      - newParenClose
-                if (removedParenDelta != newParenDelta) {
-                    int diff = removedParenDelta - newParenDelta
-                    // Fire when: magnitude > 1 (SQL parens rarely differ by more than 1),
-                    // or exactly ±1 representing a dropped/added single method-call paren.
-                    // This catches the canonical failure: removed has trailing ) (delta -1),
-                    // newText omits it (delta 0): diff = -1 - 0 = -1, magnitude = 1.
-                    if (Math.abs(diff) >= 1) {
-                        log.warn('patch: paren delta mismatch REJECTED {} line {}-{}: removed delta={} new delta={}',
-                            normalized, rep.startLine, rep.endLine, removedParenDelta, newParenDelta)
-                        return McpResponse.toolError(requestId,
-                            ('patch: paren structure mismatch on ' + normalized.tokenize('/').last() +
-                             ' lines ' + rep.startLine + '-' + rep.endLine + ': ' +
-                             'removed section has paren delta ' + removedParenDelta +
-                             ' (opens=' + removedParenOpen + ' closes=' + removedParenClose + ')' +
-                             ' but newText has paren delta ' + newParenDelta +
-                             ' (opens=' + newParenOpen + ' closes=' + newParenClose + '). ' +
-                             'Ensure newText closes every method call or GString it opens. File NOT modified.'))
-                    }
+                String parenErr = StructuralGuard.checkParenDelta(removedContent, newContent, normalized)
+                if (parenErr) {
+                    log.warn('patch: paren guard REJECTED {} -- {}', normalized, parenErr)
+                    return McpResponse.toolError(requestId, 'patch: ' + parenErr)
                 }
             }
         }
+
 
         // ---- Phase 2: Apply bottom-up ----
         int applied       = 0
@@ -302,7 +257,8 @@ class FilePatchService extends AbstractFileService {
         byte[] resultBytes = assembled.getBytes(encoding)
         try {
             if (backup) WriteUtils.makeBackup(targetPath)
-            WriteUtils.atomicWrite(targetPath, resultBytes)
+            WriteCommitter.CommitResult crPatch = WriteCommitter.commit(ctxPatch, resultBytes, requestId)
+            if (!crPatch.succeeded()) return crPatch.error
             log.debug('patch: atomic write succeeded for {}', normalized)
         } catch (Exception e) {
             log.error('patch: write failed for {}: {}', normalized, sanitize(e.message))
@@ -395,10 +351,4 @@ class FilePatchService extends AbstractFileService {
     // -----------------------------------------------------------------------
     // Helper
     // -----------------------------------------------------------------------
-
-    private String normalizeAndCheckPath(String path) {
-        String normalized = pathService.normalizePath(path)
-        if (!isPathAllowed(normalized)) throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
-        return normalized
-    }
 }

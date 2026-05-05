@@ -5,6 +5,7 @@ import com.softwood.mcp.service.read.FileContentReader
 import com.softwood.mcp.service.read.FileMetaReader
 import com.softwood.mcp.service.read.FileStructureReader
 import com.softwood.mcp.service.read.ReadResponseHelper
+import com.softwood.mcp.service.StructureCache
 import com.woodmawa.mcp.toon.ToonEncoder
 import com.woodmawa.mcp.toon.ToonOptions
 import groovy.json.JsonSlurper
@@ -19,12 +20,25 @@ import org.springframework.stereotype.Service
  *
  * Thin dispatcher: owns getToolDefinitions/canHandle/handleToolCall only.
  * All action implementations live in the service/read/ subpackage:
- *   - FileContentReader  : read, head, tail, range, grep, multi
- *   - FileStructureReader: structure, get_method
+ *   - FileContentReader  : read, head, tail, range, grep, multi_grep, get_method
+ *   - FileStructureReader: structure
  *   - FileMetaReader     : info, summary, exists, project_root, allowed_dirs, normalize, diff, checksum
- *   - ReadResponseHelper : chunk_read, finalise_read, hash-gate, token meter
+ *   - ReadResponseHelper : chunk_read, finalise_read, hash-gate, token meter, _knownhash_hint
+ *
+ * <h3>knownHash routing rules (FS 0.9.0)</h3>
+ * <ul>
+ *   <li>action=read (whole-file): pass options.knownHash from prior file_content_hash.
+ *       Returns {unchanged:true} with ZERO token cost if file is unchanged.</li>
+ *   <li>action=get_method: same as read -- knownHash supported, returns unchanged:true.</li>
+ *   <li>action=range: do NOT pass options.knownHash. Range deduplication is handled by
+ *       the CS session range cache (recordRangeCacheAsync, fired unconditionally here
+ *       even on unchanged:true responses). Passing knownHash to range suppresses content.</li>
+ *   <li>action=list: listing_hash supported, returns unchanged:true when directory is unmodified.</li>
+ * </ul>
  *
  * v0.7.44 - refactored to dispatch-only; implementations split to read/ subpackage.
+ * v0.9.0  - DEFAULT_DESC and tool param description updated to correct knownHash routing.
+ *           range dispatch comment confirms recordRangeCacheAsync fires on unchanged:true.
  */
 @Service
 @Slf4j
@@ -36,6 +50,14 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     @Autowired FileMetaReader       metaReader
     @Autowired ReadResponseHelper   responseHelper
     @Autowired(required = false) ContextServerClient  contextServerClient
+    // FIX-KH-RANGE-AUTO (FS 0.8.81): in-memory cache of current file hashes.
+    // required=false so unit/integration tests without a live StructureCache bean can run.
+    @Autowired(required = false) StructureCache structureCache
+
+    /** Setter for test injection without ReflectionTestUtils (field is @CompileStatic). */
+    void setContextServerClient(ContextServerClient c) { this.contextServerClient = c }
+    /** Setter for test injection of a stub StructureCache. */
+    void setStructureCache(StructureCache s)           { this.structureCache = s }
     @Autowired com.softwood.mcp.service.office.OfficeDocumentHandler officeHandler
 
     // v0.8.70: DB-driven tool description. Loaded from CS help_sections at startup.
@@ -48,23 +70,30 @@ class FileReadService extends AbstractFileService implements ToolHandler {
 Read files/directories.
 Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
 
-KNOWNHASH IS EXPECTED ON EVERY REPEAT READ - NOT OPTIONAL.
+KNOWNHASH IS MANDATORY ON EVERY REPEAT READ (practice #497).
 Sources: (1) bootstrap globals working_file_hashes[path].hash for prior-session files.
-         (2) file_content_hash field returned by every read response - capture and chain within session.
-Usage:   Pass as options.knownHash on read|range|get_method|list.
+         (2) file_content_hash field returned by every read response -- capture immediately.
+         (3) _knownhash_hint field -- appears in every content response where knownHash was omitted.
+Usage:   Pass as options.knownHash on action=read (whole-file) or action=get_method only.
 Result:  Unchanged file returns {unchanged:true} = ZERO tokens consumed.
 Metric:  knownhash_pct tracked per session. FAILING in mid-session-audit if <30%.
 
-Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|range|get_method|list - ZERO tokens if unchanged - ALWAYS pass on repeat reads), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
+CRITICAL: Do NOT pass options.knownHash to action=range.
+  action=range with a matching knownHash returns {unchanged:true} instead of content.
+  Range reads are deduplicated automatically by the session range cache -- no knownHash needed.
+  knownHash is for action=read (whole-file) and action=get_method only.
+
+Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|get_method|list ONLY -- NOT range), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
 action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
 action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches.
-All read actions return file_content_hash. Use options.expectedHash on writes to guard drift.'''
+All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.'''
 
     @PostConstruct
     void init() {
         // Retry with backoff: CS HTTP companion may not be ready at FS @PostConstruct time.
-        // 3 attempts at 0ms / 300ms / 700ms = max ~1s wait before falling back to DEFAULT_DESC.
-        int[] delays = [0, 300, 700]
+        // DT cold-start launches all servers in parallel -- CS :8082 typically needs 2-4s.
+        // 5 attempts at 0/500/1000/2000/3000ms = max ~6.5s wait before falling back to DEFAULT_DESC.
+        int[] delays = [0, 500, 1000, 2000, 3000]
         for (int i = 0; i < delays.length; i++) {
             if (delays[i] > 0) {
                 try { Thread.sleep(delays[i]) } catch (InterruptedException ignored) { Thread.currentThread().interrupt() }
@@ -83,6 +112,26 @@ All read actions return file_content_hash. Use options.expectedHash on writes to
         }
         toolDescription = DEFAULT_DESC
         log.debug('FileReadService: CS unavailable after retries -- using DEFAULT_DESC fallback')
+    }
+
+    /**
+     * Called by ServerLifecycleService after HTTP companions are confirmed up.
+     * Gives FileReadService a second chance to load the description from CS
+     * (the @PostConstruct retry loop fires before CS HTTP companion exists).
+     * @return true if successfully reloaded from CS, false otherwise
+     */
+    boolean reloadDescriptionsFromCs() {
+        try {
+            String loaded = contextServerClient?.getHelpSection('tool_desc_file_read')
+            if (loaded) {
+                toolDescription = loaded
+                log.debug('FileReadService: tool description reloaded from CS (post-companion-start)')
+                return true
+            }
+        } catch (Exception e) {
+            log.debug('FileReadService.reloadDescriptionsFromCs failed (non-fatal): {}', e.message)
+        }
+        return false
     }
 
     FileReadService(PathService pathService) {
@@ -125,7 +174,7 @@ All read actions return file_content_hash. Use options.expectedHash on writes to
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
                                   compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (methods only, no endLine)'],
-                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from prior read. Supported on read|range|get_method|list. File unchanged = {unchanged:true}, ZERO tokens. Source: (1) bootstrap working_file_hashes[path].hash, (2) file_content_hash field of any read response. Chain within session.'],
+                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from prior read. For action=read and action=get_method: file unchanged = {unchanged:true}, ZERO tokens. Do NOT pass to action=range -- range returns unchanged:true instead of content; range cache is automatic. Source: (1) bootstrap working_file_hashes[path].hash, (2) file_content_hash of any prior read response.'],
                                   force       : [type: 'boolean', description: 'Override >200-line refusal on action=read.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
@@ -172,9 +221,19 @@ All read actions return file_content_hash. Use options.expectedHash on writes to
                     // Fix C (v0.8.50): session range read cache.
                     // knownFileHash lets us validate the cache entry against current file state.
                     // Graceful degradation: if CS is down or hash absent, fall through to normal read.
+                    // FIX-KH-RANGE-AUTO (FS 0.8.81): if caller did not supply a hash, derive it from
+                    // StructureCache (in-memory, no I/O). This removes the requirement for the caller
+                    // to pass knownHash in order to benefit from the range cache on repeat reads.
+                    // Safety: checkRangeCache only hits when (session, path, startLine, endLine, hash)
+                    // all match -- the hash guards against stale entries if the file changed.
                     if (contextServerClient != null) {
                         String fileHash = options.get('knownFileHash') as String
                         if (!fileHash) fileHash = options.get('knownHash') as String
+                        if (!fileHash) {
+                            // Auto-derive from StructureCache: pure in-memory, populated on every FS op.
+                            // Returns null if file has never been seen this session -> safe cache miss.
+                            fileHash = structureCache?.getHash(pathService.normalizePath(path))
+                        }
                         int csl = (options.get('startLine') as Integer) ?: 1
                         int cml = (options.get('maxLines') as Integer) ?: 100
                         if (fileHash) {
@@ -199,6 +258,9 @@ All read actions return file_content_hash. Use options.expectedHash on writes to
                             String h = extractFileHash(r)
                             int rsl = (options.get('startLine') as Integer) ?: 1
                             int rml = (options.get('maxLines') as Integer) ?: 100
+                            // NOTE: recordRangeCacheAsync fires unconditionally here -- even when
+                            // doRange returned unchanged:true (knownHash matched). This ensures the
+                            // range cache entry is always refreshed, so subsequent reads still hit.
                             if (h) contextServerClient.recordRangeCacheAsync(path, rsl, rsl + rml - 1, h)
                         }
                     }
@@ -293,6 +355,38 @@ All read actions return file_content_hash. Use options.expectedHash on writes to
                 }
                 case 'structure'    : return structureReader.doStructure(path, options, requestId)
                 case 'get_method'   : {
+                    // FIX-KH-RANGE-AUTO (FS 0.8.81): auto-lookup range cache before calling doGetMethod.
+                    // First read records startLine/endLine in range cache. On repeat call, if
+                    // StructureCache has the file hash, we can auto-hit without caller passing knownHash.
+                    if (contextServerClient != null) {
+                        String fileHash = options.get('knownHash') as String
+                        if (!fileHash) fileHash = structureCache?.getHash(pathService.normalizePath(path))
+                        if (fileHash) {
+                            // Resolve the prior range entry for this method from the range cache.
+                            // We don't know startLine/endLine yet (that's what doGetMethod would give us),
+                            // so we call checkRangeCache with the whole-file sentinel (0, 0) which CS
+                            // uses to record get_method results. If no sentinel, fall through to full read.
+                            // NOTE: actual line ranges are stored by the record call below -- so a hit
+                            // here means Claude has already seen this method body this session.
+                            Map<String, Object> payload = null
+                            // Try to recover cached line range from the response helper's last record
+                            // by consulting CS with knownHash=fileHash. We use a range probe with
+                            // startLine=0 to detect any get_method sentinel entry for this file.
+                            // If CS returns a hit for (path, 0, 0, fileHash) we return cached.
+                            String readAt = contextServerClient.checkRangeCache(path, 0, 0, fileHash)
+                            if (readAt != null) {
+                                String hitJson = groovy.json.JsonOutput.toJson([
+                                    cached          : true,
+                                    already_read_at : readAt,
+                                    hint            : 'Method content already in context from this session. Do not re-read.',
+                                    is_repeat_call  : true
+                                ])
+                                return McpResponse.success(requestId, [
+                                    content: [[type: 'text', text: hitJson]]
+                                ] as Map<String, Object>)
+                            }
+                        }
+                    }
                     McpResponse r = structureReader.doGetMethod(path, options, requestId)
                     if (r.error == null && contextServerClient != null) {
                         String h = extractFileHash(r)
@@ -303,6 +397,9 @@ All read actions return file_content_hash. Use options.expectedHash on writes to
                             int rsl = payload?.get('startLine') as Integer ?: 0
                             int rel = payload?.get('endLine')   as Integer ?: 0
                             contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
+                            // FIX-KH-RANGE-AUTO: also record a sentinel (0,0) entry for get_method
+                            // so the auto-lookup above can detect repeat calls without knowing line numbers.
+                            contextServerClient.recordRangeCacheAsync(path, 0, 0, h)
                         }
                     }
                     return r

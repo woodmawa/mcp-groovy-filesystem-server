@@ -111,6 +111,17 @@ mcp:
     max-script-length: 100000
     max-working-dir-length: 4096
 
+    # v0.8.83: Configurable security policy
+    # Global dangerous patterns checked for ALL executor types (comma-separated)
+    # ProcessBuilder and .execute() are NOT here -- managed per-executor below
+    dangerous-patterns: "System.exit,Runtime.getRuntime(),Runtime.exec,GroovyClassLoader,GroovyShell,Eval.me,this.class.classLoader"
+    # Known-safe literal strings scrubbed before pattern check (comma-separated)
+    # Class.forName('org.sqlite.JDBC') is standard JDBC driver registration -- never a threat
+    allowed-literals: "Class.forName('org.sqlite.JDBC')"
+    # Per-executor extra blocked patterns: format "executor:pattern" comma-separated
+    # python + bash block .execute() (Groovy shell injection) -- groovy eval does NOT
+    executor-extra-patterns: "python:.execute(),bash:.execute()"
+
     # v0.0.7: Per-executor enable flags
     enable-bash: true
     enable-powershell: true

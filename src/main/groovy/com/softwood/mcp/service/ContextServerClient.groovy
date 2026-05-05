@@ -66,12 +66,50 @@ class ContextServerClient {
     volatile String activeSessionId = null
 
     /**
-     * Liveness flag for context server HTTP endpoint.
-     * Tripped to false on first ConnectException (e.g. stdio-only sessions where port 8082 is not open).
-     * Logged once at INFO then all subsequent failures silently dropped at DEBUG.
-     * Reset to true only on server restart.
+     * Circuit breaker for context server HTTP endpoint (FIX-5, FS 0.8.79).
+     * Replaces permanent boolean latch. Three states:
+     *   CLOSED    - CS reachable; auto-KH active.
+     *   OPEN      - Recent failure; suppress calls until csRetryAfterMs.
+     *   HALF_OPEN - Allow one probe; success -> CLOSED, failure -> OPEN (longer backoff).
+     *
+     * Only ConnectException opens the circuit aggressively.
+     * Recovery detected on any successful CS HTTP call (fileHashCache, fileRegistry, etc.).
      */
-    private volatile boolean contextServerReachable = true
+    private enum CsCircuitState { CLOSED, OPEN, HALF_OPEN }
+    private volatile CsCircuitState csCircuitState = CsCircuitState.CLOSED
+    private volatile long csRetryAfterMs = 0L
+    private static final long[] CS_BACKOFF_MS = [5_000L, 15_000L, 30_000L, 60_000L] as long[]
+    private volatile int csFailureCount = 0
+
+    boolean isCsReachable() {
+        switch (csCircuitState) {
+            case CsCircuitState.CLOSED:    return true
+            case CsCircuitState.OPEN:
+                if (System.currentTimeMillis() < csRetryAfterMs) return false
+                csCircuitState = CsCircuitState.HALF_OPEN
+                return true   // allow probe
+            case CsCircuitState.HALF_OPEN: return true
+            default: return false
+        }
+    }
+
+    void onCsSuccess() {
+        if (csCircuitState != CsCircuitState.CLOSED) {
+            log.info('ContextServerClient: CS circuit CLOSED (recovered after {} failures)', csFailureCount)
+            csCircuitState = CsCircuitState.CLOSED
+            csFailureCount = 0
+        }
+    }
+
+    void onCsConnectFailure() {
+        long backoff = CS_BACKOFF_MS[Math.min(csFailureCount, CS_BACKOFF_MS.length - 1)]
+        csFailureCount = Math.min(csFailureCount + 1, CS_BACKOFF_MS.length)
+        csRetryAfterMs = System.currentTimeMillis() + backoff
+        if (csCircuitState != CsCircuitState.OPEN) {
+            log.info('ContextServerClient: CS circuit OPEN (retry in {}ms, failure #{})', backoff, csFailureCount)
+        }
+        csCircuitState = CsCircuitState.OPEN
+    }
 
     // -----------------------------------------------------------------------
     // In-memory directory listing cache (session-scoped, zero I/O)
@@ -94,14 +132,11 @@ class ContextServerClient {
      * Only fires when the StructureCache had a miss (wasCached=false).
      */
     void persistStructureAsync(String filePath, String fileHash, List<Map<String, Object>> entries) {
-        if (!structurePersistEnabled || !contextServerReachable) return
+        if (!structurePersistEnabled || !isCsReachable()) return
         asyncWriter.submit {
             try { doPersistStructure(filePath, fileHash, entries) }
             catch (ConnectException e) {
-                if (contextServerReachable) {
-                    contextServerReachable = false
-                    log.info('ContextServerClient: context server unreachable at {} — structure persistence disabled for this session', contextServerUrl)
-                }
+                onCsConnectFailure()
             }
             catch (Exception e) { log.debug('ContextServerClient: structure persist failed (non-fatal): {}', e.message) }
         }
@@ -256,7 +291,7 @@ class ContextServerClient {
      * Never blocks — failures are silently logged at DEBUG.
      */
     void upsertFileRegistryAsync(String normalizedPath, String contentHash, int lineCount, long lastModified) {
-        if (!structurePersistEnabled || !contentHash || !contextServerReachable) return
+        if (!structurePersistEnabled || !contentHash || !isCsReachable()) return
         String path = normalizedPath
         String hash = contentHash
         int lc = lineCount
@@ -291,11 +326,8 @@ class ContextServerClient {
                     }
                 } finally { conn.disconnect() }
             } catch (ConnectException e) {
-                if (contextServerReachable) {
-                    contextServerReachable = false
-                    log.info('ContextServerClient: context server unreachable at {} — file registry updates disabled for this session (stdio-only mode?)', contextServerUrl)
-                }
-                // Subsequent failures are silent — flag already tripped
+                onCsConnectFailure()
+                // Subsequent failures are silent - circuit breaker handles backoff
             } catch (Exception e) {
                 log.debug('upsertFileRegistry async failed for {}: {}', path, e.message)
             }
@@ -335,28 +367,32 @@ class ContextServerClient {
      * D1/D3/D4 fix: reads active_session table directly via JDBC (FilesystemTelemetryService)
      * instead of HTTP GET to /current-session. The HTTP endpoint returns the HTTP companion's
      * own session scope, never the DT stdio user session. JDBC read is transport-agnostic.
-     * Caches the result for the session duration once resolved.
+     *
+     * OW-3 fix (FS 0.8.82): removed permanent cache. The original cache-forever pattern caused
+     * stale session IDs after DT restarts -- all range cache writes/reads used the prior session's
+     * ID, so checkRangeCache always missed and real_kh_pct stayed ~15%.
+     * New behaviour: always re-read JDBC. If the live active_session differs from the cached value,
+     * update the cache and return the fresh ID. JDBC read is sub-millisecond on local SQLite;
+     * cost is negligible compared to the HTTP call this replaces.
      * Returns null if telemetryService unavailable or no active session.
      */
     private String resolveSessionId() {
-        // Return cached value only if non-null -- do NOT cache null (session may not be active yet at startup)
-        if (activeSessionId) return activeSessionId
         if (!structurePersistEnabled) return null
-        // JDBC path - transport-agnostic, works in both stdio and HTTP companion modes.
-        // Always retry until we get a real session ID (active_session table may be empty at FS startup).
         if (telemetryService) {
-            String sid = telemetryService.readActiveSessionId()
-            if (sid) {
-                activeSessionId = sid
-                log.info('ContextServerClient: resolved session_id={} via JDBC', sid)
-                return sid
+            String liveSid = telemetryService.readActiveSessionId()
+            if (liveSid) {
+                if (liveSid != activeSessionId) {
+                    // Session changed (DT restart or new context_lifecycle start) -- update cache
+                    log.info('ContextServerClient: session_id updated {} -> {}', activeSessionId, liveSid)
+                    activeSessionId = liveSid
+                }
+                return liveSid
             }
-            // JDBC returned null -- session not started yet, do not cache, will retry on next call
             log.debug('ContextServerClient: JDBC session resolve returned null (session not yet active)')
             return null
         }
         // No telemetryService -- HTTP fallback for non-MCPB mode only
-        if (!contextServerReachable) return null
+        if (!isCsReachable()) return null
         try {
             URL url = new URL("${contextServerUrl}/current-session")
             HttpURLConnection conn = (HttpURLConnection) url.openConnection()
@@ -521,7 +557,7 @@ class ContextServerClient {
     // -----------------------------------------------------------------------
 
     String checkRangeCache(String filePath, int startLine, int endLine, String fileHash) {
-        if (!contextServerReachable || !fileHash) return null
+        if (!isCsReachable() || !fileHash) return null
         String sid = resolveSessionId()
         if (!sid) return null
         try {
@@ -552,10 +588,7 @@ class ContextServerClient {
                 conn.disconnect()
             }
         } catch (ConnectException e) {
-            if (contextServerReachable) {
-                contextServerReachable = false
-                log.info('ContextServerClient: CS unreachable -- range cache disabled for session')
-            }
+            onCsConnectFailure()
         } catch (Exception e) {
             log.debug('checkRangeCache failed (non-fatal): {}', e.message)
         }
@@ -563,7 +596,7 @@ class ContextServerClient {
     }
 
     void recordRangeCacheAsync(String filePath, int startLine, int endLine, String contentHash) {
-        if (!contextServerReachable || !contentHash) return
+        if (!isCsReachable() || !contentHash) return
         String sid = resolveSessionId()
         if (!sid) return
         asyncWriter.submit({
@@ -591,7 +624,7 @@ class ContextServerClient {
                     conn.disconnect()
                 }
             } catch (ConnectException ignored) {
-                contextServerReachable = false
+                onCsConnectFailure()
             } catch (Exception e) {
                 log.debug('recordRangeCacheAsync failed (non-fatal): {}', e.message)
             }
@@ -604,7 +637,7 @@ class ContextServerClient {
     // Used by FileReadService multi guard.
     // -----------------------------------------------------------------------
     boolean isOntologyIndexed(String fileStem) {
-        if (!contextServerReachable || !fileStem) return false
+        if (!isCsReachable() || !fileStem) return false
         try {
             Map<String, Object> callBody = [
                 jsonrpc: '2.0', method: 'tools/call', id: 1,
@@ -633,10 +666,7 @@ class ContextServerClient {
                 }
             } finally { conn.disconnect() }
         } catch (ConnectException e) {
-            if (contextServerReachable) {
-                contextServerReachable = false
-                log.info('ContextServerClient: CS unreachable -- ontology guard disabled for session')
-            }
+            onCsConnectFailure()
         } catch (Exception e) {
             log.debug('isOntologyIndexed failed (non-fatal): {}', e.message)
         }
@@ -647,7 +677,7 @@ class ContextServerClient {
     // via context_read scope=ontology action=file-hash. Used to enrich BLOCKED_UNRANGED_INDEXED_READ
     // errors so Claude can pass options.knownHash on a retry. Sync, 500ms hard timeout. Fail-silent.
     String getKnownHashForPath(String normalizedPath) {
-        if (!contextServerReachable || !normalizedPath) return null
+        if (!isCsReachable() || !normalizedPath) return null
         try {
             Map<String, Object> callBody = [
                 jsonrpc: '2.0', method: 'tools/call', id: 1,
@@ -678,10 +708,7 @@ class ContextServerClient {
                 }
             } finally { conn.disconnect() }
         } catch (ConnectException e) {
-            if (contextServerReachable) {
-                contextServerReachable = false
-                log.info('ContextServerClient: CS unreachable -- hash hint disabled for session')
-            }
+            onCsConnectFailure()
         } catch (Exception e) {
             log.debug('getKnownHashForPath failed (non-fatal): {}', e.message)
         }
@@ -691,7 +718,7 @@ class ContextServerClient {
     // Fix F (v0.8.54): notify CS that a file has been written and needs reindexing.
     // Fire-and-forget via asyncWriter -- never blocks the write path.
     void invalidateFileAsync(String filePath) {
-        if (!contextServerReachable || !filePath) return
+        if (!isCsReachable() || !filePath) return
         asyncWriter.submit({
             try {
                 Map<String, Object> body = [filePath: filePath] as Map<String, Object>
@@ -708,7 +735,7 @@ class ContextServerClient {
                     conn.responseCode
                 } finally { conn.disconnect() }
             } catch (ConnectException ignored) {
-                contextServerReachable = false
+                onCsConnectFailure()
             } catch (Exception e) {
                 log.debug('invalidateFileAsync failed (non-fatal): {}', e.message)
             }
@@ -722,7 +749,7 @@ class ContextServerClient {
      * Returns null (fail-silent) if CS unreachable, section missing, or any error.
      */
     String getHelpSection(String sectionKey) {
-        if (!contextServerReachable || !sectionKey) return null
+        if (!isCsReachable() || !sectionKey) return null
         try {
             Map<String, Object> callBody = [
                 jsonrpc: '2.0', method: 'tools/call', id: 1,
@@ -759,6 +786,91 @@ class ContextServerClient {
         }
         return null
     }
+
+    // -----------------------------------------------------------------------
+    // fileHashCache: whole-file hash store/lookup (FIX-KH-AUTO, FS 0.8.77)
+    // Delegates to CS /fileHashCache HTTP endpoint -- same inline pattern as
+    // checkRangeCache (sync lookup) and recordRangeCacheAsync (fire-and-forget).
+    // SCOPE: whole-file doRead() ONLY (Option A, brief s18.3 -- not range/get_method).
+    // -----------------------------------------------------------------------
+
+    /** Fire-and-forget store of whole-file hash after a content-returning doRead(). */
+    void storeFileHashAsync(String normalizedPath, String hash) {
+        if (!isCsReachable() || !normalizedPath || !hash) return
+        String sid = resolveSessionId()
+        if (!sid) return
+        asyncWriter.submit({
+            try {
+                String json = groovy.json.JsonOutput.toJson([
+                    action     : 'store',
+                    sessionId  : sid,
+                    sourceFile : normalizedPath,
+                    contentHash: hash
+                ] as Map<String, Object>)
+                URL url = new URL("${contextServerUrl}/fileHashCache")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput      = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 2000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { it << json }
+                    conn.responseCode  // force send
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (ConnectException ignored) {
+                onCsConnectFailure()
+            } catch (Exception e) {
+                log.debug('storeFileHashAsync failed (non-fatal): {}', e.message)
+            }
+        } as Runnable)
+    }
+
+    /**
+     * Sync lookup of cached whole-file hash. Returns null on miss, CS down,
+     * timeout, malformed response, or missing session. Hard 300ms timeout.
+     */
+    String lookupFileHash(String normalizedPath) {
+        if (!isCsReachable() || !normalizedPath) return null
+        String sid = resolveSessionId()
+        if (!sid) return null
+        try {
+            String json = groovy.json.JsonOutput.toJson([
+                action    : 'lookup',
+                sessionId : sid,
+                sourceFile: normalizedPath
+            ] as Map<String, Object>)
+            URL url = new URL("${contextServerUrl}/fileHashCache")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = 300
+                conn.readTimeout    = 300
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    if (parsed?.get('found') == true) {
+                        onCsSuccess()
+                        String h = parsed.get('hash') as String
+                        return (h && h ==~ /^[a-fA-F0-9]{12,64}$/) ? h : null
+                    }
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('lookupFileHash failed (non-fatal): {}', e.message)
+        }
+        return null
+    }
+
 
     @PreDestroy
     void shutdown() {

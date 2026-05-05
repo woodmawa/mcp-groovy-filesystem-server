@@ -138,6 +138,24 @@ with `oldText not found` even when the text was visually identical.
 - **CT-80/CT-81:** `FilePatchService.doPatch` now checks parenthesis delta per replacement on `.groovy`/`.java`, same as brace delta (CT-14). Catches dropped closing `)` on method-call GStrings (e.g. `prepareStatement("""..""")`).
 - **CT-2/CT-19/CT-73/CT-76:** fixed guard order in `FileReplaceService.doReplace` — `oldText` checked before `newText`, so empty-options calls surface `'oldText required'` not `'newText missing'`.
 
+### v0.8.78 — FIX-KH-AUTO hardening: hint suppression + extended test coverage (2026-05-01)
+
+`ReadResponseHelper.autoKhHintsSuppressed` flag added (`mcp.filesystem.auto-kh-hints-suppressed.enabled`, default `true`). When auto-lookup is active and CS is reachable, `_knownhash_hint` is suppressed from responses — eliminating ~40 tokens of noise per content read since the server now handles the next read automatically. Hint is restored when auto-lookup is disabled or CS is unreachable.
+
+Extended test coverage: `FileHashAutoLookupSpec` CT-KH-AUTO-9..13 (malformed hash from CS → full content, persistent CS null → fail-open, same-length content change detected, hint suppressed/restored). `SqliteRangeCacheStoreSpec` CT-RCS-19/20 (sentinel rows invisible to positive-range `check()`/`checkWithTimestamp()` calls). `HttpMcpControllerFileHashSpec` CT-HMC-14..20 (endpoint validation contracts).
+
+### v0.8.77 — FIX-KH-AUTO: server-side automatic knownHash for whole-file reads (2026-05-01)
+
+`knownHash` compliance was ~2% across 14 days of telemetry despite prompt hints, CLAUDE.md checklists, and `_knownhash_hint` injection. Root cause: all mechanisms required the caller to remember and re-pass a transient hash value across N tool calls — unreliable by design.
+
+Fix: server-side auto-lookup via CS `/fileHashCache` endpoint. After every content-returning `doRead()`, FS asynchronously stores `(sessionId, normalizedPath, hash)` in CS (`ContextServerClient.storeFileHashAsync`). On every subsequent `doRead()` without `options.knownHash`, FS synchronously looks up the cached hash (`lookupFileHash`, 300ms timeout) and returns `{unchanged:true, _auto_kh:true}` if the file hasn’t changed on disk. Caller gets token savings without tracking anything.
+
+**Scope constraint (Option A):** Auto-lookup applies ONLY to whole-file `doRead()`. `doRange`, `doHead`, `doTail`, `doGetMethod` are excluded — returning `unchanged:true` for a range the caller hasn’t seen is a correctness bug. Range/method reads continue to use explicit `knownHash` + the existing range read cache.
+
+New classes/methods: `ContextServerClient.storeFileHashAsync()`, `lookupFileHash()`. `ReadResponseHelper.checkKnownHash(autoLookup=true)` overload. `storeAndHintKnownHash(autoStore=true)` replaces `injectKnownHashHint()`. Feature flag: `mcp.filesystem.auto-kh-lookup.enabled=true`.
+
+CS side: `SqliteRangeCacheStore.storeFileHash()` / `lookupFileHash()` using `session_read_cache` with sentinel `start_line=-1, end_line=-1`. `HttpMcpController.handleFileHashCache()` thin delegate endpoint. Test coverage: CT-RCS-10..18, CT-KH-AUTO-1..8.
+
 ### v0.8.70 — DB-driven tool descriptions via ContextServerClient (2026-04-29)
 
 `FileReadService.getToolDefinitions()` now DB-driven via `ContextServerClient.getHelpSection()`. `@PostConstruct init()` loads `tool_desc_file_read` row from CS `help_sections` on startup. Falls back to `DEFAULT_DESC` static constant if CS unreachable.

@@ -53,6 +53,11 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
     @Autowired
     ServerRegistry registry
 
+    @Autowired(required = false)
+    FileReadService fileReadService
+
+    @Autowired(required = false)
+    FileWriteService fileWriteService
     // Kept for backward-compat reference only — registry is the authority
     @Deprecated
     private Map<String, Process> getManagedProcesses() { registry.ownedProcesses as Map<String, Process> }
@@ -116,12 +121,48 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
             if (started) {
                 writeRuntimeState()
                 log.info('ServerLifecycleService: {} HTTP companion(s) processed at startup', started.size())
+                // Reload CS-sourced tool descriptions now that HTTP companions are up.
+                // @PostConstruct on FileReadService/FileWriteService fires before this method
+                // completes, so CS :8082 is never available during their retry loops.
+                // This call gives them a second chance with CS guaranteed live.
+                reloadToolDescriptionsFromCs()
             } else {
                 log.debug('ServerLifecycleService: no autoHttpCompanion servers configured')
             }
         } catch (Exception e) {
             // Non-fatal — companion startup failure must not prevent the filesystem server from serving Claude
             log.warn('ServerLifecycleService: autoStartHttpCompanions failed (non-fatal): {}', e.message)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-companion description reload
+    // -----------------------------------------------------------------------
+
+    /**
+     * Called after autoStartHttpCompanions() confirms CS :8082 is live.
+     * FileReadService and FileWriteService @PostConstruct retry loops fire before
+     * CS HTTP is available (it's spawned by this method), so they always fall back
+     * to DEFAULT_DESC. This gives them a guaranteed second chance.
+     */
+    private void reloadToolDescriptionsFromCs() {
+        try {
+            if (fileReadService?.reloadDescriptionsFromCs()) {
+                log.info('ServerLifecycleService: FileReadService tool description reloaded from CS')
+            } else {
+                log.debug('ServerLifecycleService: FileReadService description reload skipped or CS still unreachable')
+            }
+        } catch (Exception e) {
+            log.debug('ServerLifecycleService: FileReadService reload failed (non-fatal): {}', e.message)
+        }
+        try {
+            if (fileWriteService?.reloadDescriptionsFromCs()) {
+                log.info('ServerLifecycleService: FileWriteService tool descriptions reloaded from CS')
+            } else {
+                log.debug('ServerLifecycleService: FileWriteService description reload skipped or CS still unreachable')
+            }
+        } catch (Exception e) {
+            log.debug('ServerLifecycleService: FileWriteService reload failed (non-fatal): {}', e.message)
         }
     }
 

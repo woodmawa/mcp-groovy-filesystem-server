@@ -62,21 +62,33 @@ class SecurityService {
     private static final Pattern SECRET_PATTERN   = Pattern.compile('(?i)secret[=:]\\s*\\S+')
 
     // -----------------------------------------------------------------------
-    // Dangerous Groovy/script patterns
+    // Dangerous Groovy/script patterns -- configurable via application.yml
     // -----------------------------------------------------------------------
 
-    private static final List<String> DANGEROUS_SCRIPT_PATTERNS = [
-        'System.exit',
-        'Runtime.getRuntime()',
-        'Runtime.exec',          // direct exec bypass
-        'ProcessBuilder',
-        '.execute()',            // Groovy String.execute() shell bypass
-        'Class.forName',
-        'GroovyClassLoader',
-        'GroovyShell',
-        'Eval.me',
-        'this.class.classLoader',
-    ]
+    /**
+     * Comma-separated dangerous patterns applied globally across all executor types.
+     * ProcessBuilder and .execute() are NOT in the global list -- they are managed
+     * per-executor via executorExtraPatternsConfig so groovy eval (internal JDBC
+     * tooling) is not blocked, while python/bash still block shell injection.
+     */
+    @Value('${mcp.script.dangerous-patterns:System.exit,Runtime.getRuntime(),Runtime.exec,GroovyClassLoader,GroovyShell,Eval.me,this.class.classLoader}')
+    String dangerousPatternsConfig
+
+    /**
+     * Comma-separated literal strings scrubbed from the script BEFORE pattern
+     * checking. Use for known-safe boilerplate that would otherwise false-positive.
+     * Default: Class.forName('org.sqlite.JDBC') -- JDBC driver registration.
+     */
+    @Value("\${mcp.script.allowed-literals:Class.forName('org.sqlite.JDBC')}")
+    String allowedLiteralsConfig
+
+    /**
+     * Per-executor extra blocked patterns as a single string, format:
+     *   "python:.execute(),bash:.execute()"
+     * Parsed at check time. Executors not listed get no extras.
+     */
+    @Value('${mcp.script.executor-extra-patterns:python:.execute(),bash:.execute()}')
+    String executorExtraPatternsConfig
 
     // System paths that scripts should not touch
     private static final List<String> RESTRICTED_PATHS = [
@@ -125,12 +137,12 @@ class SecurityService {
      * Full validation pass for a script before execution.
      * Throws SecurityException or IllegalArgumentException on failure.
      */
-    void validateScript(String script, String workingDir) {
+    void validateScript(String script, String workingDir, String executorType = 'groovy') {
         validateScriptLength(script)
         validateWorkingDir(workingDir)
-        checkDangerousPatterns(script)
+        checkDangerousPatterns(script, executorType)
         checkRestrictedPaths(script)
-        log.debug("Script validation passed (workingDir={})", workingDir)
+        log.debug('Script validation passed (workingDir={} executor={})', workingDir, executorType)
     }
 
     private void validateScriptLength(String script) {
@@ -167,11 +179,37 @@ class SecurityService {
         }
     }
 
-    private void checkDangerousPatterns(String script) {
-        for (String pattern : DANGEROUS_SCRIPT_PATTERNS) {
-            if (script.contains(pattern)) {
-                log.warn("Dangerous pattern detected in script: {}", pattern)
+    @groovy.transform.PackageScope
+    void checkDangerousPatterns(String script, String executorType) {
+        // Step 1: scrub known-safe literals before pattern matching
+        // Prevents false positives on e.g. Class.forName('org.sqlite.JDBC') in JDBC boilerplate
+        String scrubbed = script
+        allowedLiteralsConfig.split(',').each { lit ->
+            String trimmed = lit.trim()
+            if (trimmed) scrubbed = scrubbed.replace(trimmed, '__ALLOWED__')
+        }
+
+        // Step 2: global patterns (all executor types)
+        List<String> globalPatterns = dangerousPatternsConfig.split(',').collect { it.trim() }.findAll { it }
+        for (String pattern : globalPatterns) {
+            if (scrubbed.contains(pattern)) {
+                log.warn('Dangerous pattern detected in script (executor={}): {}', executorType, pattern)
                 throw new SecurityException("Dangerous pattern not allowed in script: ${pattern}")
+            }
+        }
+
+        // Step 3: per-executor extra patterns (e.g. python:.execute(),bash:.execute())
+        // Format: "executor1:pattern1,executor2:pattern2"
+        if (executorExtraPatternsConfig?.trim()) {
+            executorExtraPatternsConfig.split(',').each { entry ->
+                String[] parts = entry.trim().split(':', 2)
+                if (parts.length == 2 && parts[0].trim() == executorType) {
+                    String extraPattern = parts[1].trim()
+                    if (extraPattern && scrubbed.contains(extraPattern)) {
+                        log.warn('Executor-specific dangerous pattern in script (executor={}): {}', executorType, extraPattern)
+                        throw new SecurityException("Dangerous pattern not allowed in ${executorType} script: ${extraPattern}")
+                    }
+                }
             }
         }
     }

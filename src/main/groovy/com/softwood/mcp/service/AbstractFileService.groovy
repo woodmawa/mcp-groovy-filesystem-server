@@ -13,10 +13,13 @@ import java.util.regex.Pattern
 import java.util.regex.PatternSyntaxException
 
 /**
- * Abstract base class for all file operation services
- * Provides shared utilities: sanitization, path validation, regex compilation, config
- * 
- * PHASE 1 HARDENING: Centralised sanitize(), safeCompilePattern(), relative path resolution
+ * Abstract base class for all file operation services.
+ * Provides shared utilities: sanitization, path validation, regex compilation, config.
+ * PHASE 1 HARDENING: Centralised sanitize(), safeCompilePattern(), relative path resolution.
+ *
+ * v0.9.0 / PR 3.2 - normaliseOptions now throws InvalidOptionsException on malformed JSON
+ *                   instead of silently returning {} (D12). Caught at dispatch level in
+ *                   FileWriteService and FileReadService handleToolCall.
  */
 @Slf4j
 @CompileStatic
@@ -283,11 +286,20 @@ abstract class AbstractFileService {
     // ========================================================================
 
     /**
+     * Thrown when options cannot be parsed as JSON (D12 fix -- FS 0.9.0).
+     * Caught at dispatch level to return a structured invalid_options toolError.
+     */
+    static class InvalidOptionsException extends RuntimeException {
+        InvalidOptionsException(String msg) { super(msg) }
+    }
+
+    /**
      * Normalise options: if the caller passed options as a pre-serialised JSON string
      * (e.g. from Claude Code MCP serialisation), parse it into a Map first.
-     * Returns an empty map if raw is null/empty or cannot be parsed.
+     * PR 3.2 (FS 0.9.0 D12): throws InvalidOptionsException on malformed JSON instead of
+     * silently returning {} -- caller gets a structured 'invalid_options' error.
      */
-    protected static Map<String, Object> normaliseOptions(Object raw) {
+    protected static Map<String, Object> normaliseOptions(Object raw) throws InvalidOptionsException {
         if (raw == null) return [:]
         if (raw instanceof Map) return (Map<String, Object>) raw
         if (raw instanceof String) {
@@ -296,8 +308,10 @@ abstract class AbstractFileService {
             try {
                 Object parsed = new JsonSlurper().parseText(s)
                 return (parsed instanceof Map) ? (Map<String, Object>) parsed : [:]
-            } catch (Exception ignored) {
-                return [:]
+            } catch (Exception e) {
+                throw new InvalidOptionsException(
+                    "invalid_options: options could not be parsed as JSON. " +
+                    "Received: '${s.take(80)}'. Error: ${e.message}")
             }
         }
         return [:]
