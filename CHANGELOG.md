@@ -189,4 +189,7 @@ Changelog migrated from build.gradle comments to CHANGELOG.md.
 ## [0.9.1]
 Ontology-first guard — `ReadResponseHelper.maybeAddOntologyGuardHint()` injects `_ontology_guard_warn` on `action=read` of any `.groovy` or `.java` file that is confirmed indexed in the ontology (via `ContextServerClient.isOntologyIndexed(fileStem)`, 500 ms timeout, fail-silent). Reminds Claude to call `context_read scope=ontology action=locate` before expensive whole-file reads; targeted range reads are unaffected. Feature-flagged: `mcp.filesystem.ontology-guard.enabled` (default `true`). No behaviour change when CS is unreachable.
 
+## [0.9.2]
+Ontology guard range hint — `ContextServerClient.getOntologyRange(fileStem)` replaces the separate `isOntologyIndexed` call: one HTTP call to `scope=ontology action=locate` now returns `{found, source_line, end_line}` in a single round-trip. `ReadResponseHelper.maybeAddOntologyGuardHint()` updated to use this; when class bounds are available it additionally injects `_ontology_guard_hint: "Call range startLine=N maxLines=M instead (source: ontology index)"` alongside the existing `_ontology_guard_warn`, converting the advisory from "you did the wrong thing" to "here is the correct call". Guard behaviour unchanged when CS is unreachable or file is not indexed. New test spec: `OntologyGuardHintSpec` (OGH-CT-1..6, including transport-independence contract).
+
 <!-- New entries go HERE at the bottom — append only, never edit above this line -->
