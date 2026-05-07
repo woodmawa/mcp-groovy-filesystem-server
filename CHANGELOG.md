@@ -186,4 +186,7 @@ Changelog migrated from build.gradle comments to CHANGELOG.md.
 
 ---
 
+## [0.9.1]
+Ontology-first guard — `ReadResponseHelper.maybeAddOntologyGuardHint()` injects `_ontology_guard_warn` on `action=read` of any `.groovy` or `.java` file that is confirmed indexed in the ontology (via `ContextServerClient.isOntologyIndexed(fileStem)`, 500 ms timeout, fail-silent). Reminds Claude to call `context_read scope=ontology action=locate` before expensive whole-file reads; targeted range reads are unaffected. Feature-flagged: `mcp.filesystem.ontology-guard.enabled` (default `true`). No behaviour change when CS is unreachable.
+
 <!-- New entries go HERE at the bottom — append only, never edit above this line -->

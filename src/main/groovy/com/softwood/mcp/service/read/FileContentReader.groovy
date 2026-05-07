@@ -165,6 +165,8 @@ class FileContentReader extends AbstractFileService {
         helper.injectSessionTokenMeter(resp, content.length())
         // FIX-KH-AUTO: autoStore=true for whole-file read
         helper.storeAndHintKnownHash(resp, normalized, options, true)
+        // FS 0.9.1: ontology-first guard -- warns when reading indexed .groovy/.java without prior locate
+        helper.maybeAddOntologyGuardHint(resp, normalized)
         return textResponse(requestId, resp)
     }
 

@@ -673,6 +673,57 @@ class ContextServerClient {
         return false
     }
 
+    /**
+     * FS 0.9.2: look up class bounds (source_line/end_line) from the ontology index.
+     * Makes one call to CS (scope=ontology action=locate query=fileStem) -- same call
+     * as isOntologyIndexed but also extracts range fields.
+     * Returns [found:true, source_line:N, end_line:N] on hit,
+     *         [found:false]                            on clean miss,
+     *         null                                     on error/timeout/CS-down.
+     * Sync, 500ms hard timeout. Fail-silent. Used by ReadResponseHelper.maybeAddOntologyGuardHint.
+     */
+    Map<String, Object> getOntologyRange(String fileStem) {
+        if (!isCsReachable() || !fileStem) return null
+        try {
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_read',
+                          arguments: [scope: 'ontology', action: 'locate', query: fileStem]]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) {
+                        Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
+                        if (data?.get('found') == true) {
+                            return [found: true,
+                                    source_line: data.get('source_line') as Integer,
+                                    end_line   : data.get('end_line')    as Integer] as Map<String, Object>
+                        }
+                        return [found: false] as Map<String, Object>
+                    }
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('getOntologyRange failed (non-fatal) [{}]: {}', fileStem, e.message)
+        }
+        return null
+    }
+
     // FS 0.8.69 FIX-6A: look up the known content_hash for a path from CS file_hash_registry,
     // via context_read scope=ontology action=file-hash. Used to enrich BLOCKED_UNRANGED_INDEXED_READ
     // errors so Claude can pass options.knownHash on a retry. Sync, 500ms hard timeout. Fail-silent.

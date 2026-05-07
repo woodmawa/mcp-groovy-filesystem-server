@@ -98,6 +98,10 @@ class ReadResponseHelper extends AbstractFileService {
     @Value('${mcp.filesystem.auto-kh-hints-suppressed.enabled:true}')
     boolean autoKhHintsSuppressed
 
+    /** FS 0.9.1: feature flag for ontology-first guard on whole-file source reads. */
+    @Value('${mcp.filesystem.ontology-guard.enabled:true}')
+    boolean ontologyGuardEnabled
+
     ReadResponseHelper(PathService pathService) {
         super(pathService)
     }
@@ -310,6 +314,48 @@ class ReadResponseHelper extends AbstractFileService {
             }
         } catch (Exception e) {
             log.debug('shadow-kh probe failed [{} {}]: {}', action, new File(normalized).name, e.message)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // FS 0.9.1: Ontology-first guard
+    // -----------------------------------------------------------------------
+
+    /**
+     * FS 0.9.1: Ontology-first guard for whole-file reads.
+     * If the target file is a .groovy/.java source file that is indexed in the ontology,
+     * injects _ontology_guard_warn to remind Claude to call scope=ontology action=locate
+     * before performing expensive whole-file reads. Non-blocking: always returns normally.
+     *
+     * Controlled by: mcp.filesystem.ontology-guard.enabled (default true).
+     * Requires CS reachable; fails silently if CS is down or isOntologyIndexed throws.
+     */
+    void maybeAddOntologyGuardHint(Map<String, Object> response, String normalized) {
+        if (!ontologyGuardEnabled) return
+        if (contextServerClient == null || !contextServerClient.isCsReachable()) return
+        if (!(normalized?.endsWith('.groovy') || normalized?.endsWith('.java'))) return
+
+        String fileStem = new File(normalized).name.replaceFirst(/\.[^.]+$/, '')
+        try {
+            // FS 0.9.2: single locate call returns both found flag and source_line/end_line bounds.
+            Map<String, Object> range = contextServerClient.getOntologyRange(fileStem)
+            if (range?.get('found') == true) {
+                response._ontology_guard_warn = (
+                    "ONTOLOGY-FIRST: '${fileStem}' is indexed. " +
+                    "Call context_read scope=ontology action=locate query=${fileStem} BEFORE whole-file reads. " +
+                    'locate returns source_line+end_line in <100 tokens -- use range instead.' as String
+                )
+                Integer sl = range.get('source_line') as Integer
+                Integer el = range.get('end_line') as Integer
+                if (sl != null && el != null) {
+                    int maxLines = el - sl + 1
+                    response._ontology_guard_hint = (
+                        "Call range startLine=${sl} maxLines=${maxLines} instead (source: ontology index)" as String
+                    )
+                }
+            }
+        } catch (Exception e) {
+            log.debug('ontology-guard probe failed (non-fatal) [{}]: {}', fileStem, e.message)
         }
     }
 
