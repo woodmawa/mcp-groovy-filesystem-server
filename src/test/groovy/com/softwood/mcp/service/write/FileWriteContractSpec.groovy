@@ -124,6 +124,87 @@ class FileWriteContractSpec extends Specification {
     }
 
     // -----------------------------------------------------------------------
+    // CT-FW-RG-1..4: replace pre-flight guard contracts (FS 0.9.3 / #107 fix)
+    // These four contracts are the RED gate -- all must fail against FS 0.9.2,
+    // pass after the pre-flight gate and post-write isToolError guard are applied.
+    // -----------------------------------------------------------------------
+
+    def "CT-FW-RG-1: action=replace with empty options returns toolError and leaves file unchanged"() {
+        given: "a file with known content"
+        def f = writeFile('ct-rg-1.groovy', 'class RG1 { def keep = true }\n')
+
+        when: "replace is called with no options at all (empty map)"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action: 'replace',
+            path  : f.path
+            // options absent entirely -- simulates Claude forgetting the param
+        ], 'test')
+
+        then: "toolError with actionable message, file content unchanged"
+        assertToolError(r, 'oldText', 'replace')
+        readFileContent(f.path) == 'class RG1 { def keep = true }\n'
+    }
+
+    def "CT-FW-RG-2: action=replace with options containing only newText returns toolError and leaves file unchanged"() {
+        given:
+        def f = writeFile('ct-rg-2.groovy', 'class RG2 { def keep = true }\n')
+
+        when: "replace called with newText but no oldText -- oldText key absent from options"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [newText: 'def keep = false', expectedHash: f.hash]
+        ], 'test')
+
+        then: "toolError mentioning oldText, file content unchanged"
+        assertToolError(r, 'oldText', 'replace')
+        readFileContent(f.path) == 'class RG2 { def keep = true }\n'
+    }
+
+    def "CT-FW-RG-3: action=replace with oldText present but newText key entirely absent returns toolError"() {
+        given:
+        def f = writeFile('ct-rg-3.groovy', 'class RG3 { def keep = true }\n')
+
+        when: "replace called with oldText but newText key absent entirely (not even null -- key missing)"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'def keep = true', expectedHash: f.hash]
+            // newText key absent -- caller forgot it; empty string deletion must be explicit
+        ], 'test')
+
+        then: "toolError mentioning newText, file content unchanged"
+        assertToolError(r, 'newText', 'replace')
+        readFileContent(f.path) == 'class RG3 { def keep = true }\n'
+    }
+
+    def "CT-FW-RG-4: toolError response from replace pre-flight does not trigger post-write side-effects"() {
+        given: "a file; we capture its content hash to detect if any write occurred"
+        def f = writeFile('ct-rg-4.groovy', 'class RG4 { def x = 1 }\n')
+        String hashBefore = f.hash
+
+        when: "empty-options replace fires pre-flight toolError"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action: 'replace',
+            path  : f.path
+        ], 'test')
+
+        and: "we re-read the file hash to detect any spurious write"
+        McpResponse readBack = fileReadService.handleToolCall('file_read', [
+            action : 'read',
+            path   : f.path,
+            options: [force: true]
+        ], 'verify')
+        def readParsed = new groovy.json.JsonSlurper().parseText(readBack.result.content[0].text as String) as Map
+        String hashAfter = readParsed.file_content_hash as String
+
+        then: "toolError returned, file hash unchanged (no spurious post-write side effects)"
+        r.result.isError == true
+        hashAfter == hashBefore
+        readFileContent(f.path) == 'class RG4 { def x = 1 }\n'
+    }
+
+    // -----------------------------------------------------------------------
     // CT-OPT-3: top-level new_str: '' (snake_case alias) treated as deliberate deletion
     // -----------------------------------------------------------------------
     def "CT-OPT-3: top-level new_str as explicit empty string is treated as deliberate content deletion"() {

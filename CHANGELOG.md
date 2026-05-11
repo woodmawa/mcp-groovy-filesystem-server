@@ -192,4 +192,15 @@ Ontology-first guard — `ReadResponseHelper.maybeAddOntologyGuardHint()` inject
 ## [0.9.2]
 Ontology guard range hint — `ContextServerClient.getOntologyRange(fileStem)` replaces the separate `isOntologyIndexed` call: one HTTP call to `scope=ontology action=locate` now returns `{found, source_line, end_line}` in a single round-trip. `ReadResponseHelper.maybeAddOntologyGuardHint()` updated to use this; when class bounds are available it additionally injects `_ontology_guard_hint: "Call range startLine=N maxLines=M instead (source: ontology index)"` alongside the existing `_ontology_guard_warn`, converting the advisory from "you did the wrong thing" to "here is the correct call". Guard behaviour unchanged when CS is unreachable or file is not indexed. New test spec: `OntologyGuardHintSpec` (OGH-CT-1..6, including transport-independence contract).
 
+## [0.9.3]
+Replace pre-flight guard (Bug #107 fix) — two layered defects closed.
+
+**Bug A — post-write side-effects on toolError:** `McpResponse.toolError()` is implemented as `success()` wrapping `isError:true`, so `response.error == null` was `true` even for error responses. The post-write integrity block (structure cache invalidation, file-registry upsert, ontology reindex) fired unconditionally after every `action=replace` call, including rejected ones. Fixed by extracting `boolean isToolError = (response.result as Map)?.get('isError') == true` and gating the post-write block on `&& !isToolError`. Fix is transport-invariant: both STDIO and HTTP paths converge at `handler.handleToolCall()` in `FileWriteService`; neither controller layer is touched.
+
+**Bug B — no early pre-flight gate for replace:** Validation of required `oldText` / `newText` params only existed deep inside `doReplace()`, after the dispatch switch, meaning the post-write block was always reachable on the error path. Added an explicit pre-flight gate in `FileWriteService.handleToolCall()` immediately after `promoteTopLevelParams()`, before dispatch. Gate uses `return` (not `response =`) so it exits the method entirely, bypassing both the switch and the post-write block. Defence-in-depth: `doReplace()` validation retained as secondary guard.
+
+**Doc gap — options field descriptions:** `oldText` and `newText` descriptions in `getToolDefinitions()` now explicitly state `REQUIRED for action=replace` (not just "required for replace" buried in prose). The `options` object description now leads with an action-specific required-field summary so schema-aware clients see the constraint before sending.
+
+**TDD:** 4 new named contracts in `FileWriteContractSpec` — CT-FW-RG-1 (empty options → toolError, file unchanged), CT-FW-RG-2 (newText only → toolError, file unchanged), CT-FW-RG-3 (oldText only, newText key absent → toolError, file unchanged), CT-FW-RG-4 (pre-flight toolError does not trigger post-write side-effects, verified by hash stability). All 7 specs in `FileWriteContractSpec` green.
+
 <!-- New entries go HERE at the bottom — append only, never edit above this line -->

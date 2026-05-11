@@ -158,7 +158,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                      'write_office']],
                     path   : [type: 'string', description: 'Target file path (required for all actions except abort_write and chunk_status)'],
                     content: [type: 'string', description: 'Content for write/append/chunk_write (not used for write_office)'],
-                    options: [type: 'object', description: 'Action-specific options',
+                    options: [type: 'object', description: 'Action-specific options. REQUIRED for replace: oldText (the unique string to find) and newText (the replacement; pass newText:\'\' to delete). For patch: replacements. For chunks: sessionId, chunkIndex, totalChunks. expectedHash mandatory for all mutating actions.',
                               properties: [
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
@@ -167,8 +167,8 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                   sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write, chunk_status)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
                                   totalChunks : [type: 'integer', description: 'Total chunks (required for finalise_write, chunk_status)'],
-                                  oldText     : [type: 'string',  description: 'Unique string to replace (required for replace — must appear exactly once)'],
-                                  newText     : [type: 'string',  description: 'Replacement string (required for replace)'],
+                                  oldText     : [type: 'string',  description: 'Unique string to replace (REQUIRED for action=replace -- must appear exactly once in the file). Not used by other actions.'],
+                                  newText     : [type: 'string',  description: 'Replacement string (REQUIRED for action=replace -- key must be present; pass empty string to delete matched text). Not used by other actions.'],
                                   replacements: [type: 'array',
                                                  description: 'patch: [{startLine,endLine,newText}] 1-indexed; multi_replace: [{oldText,newText}]',
                                                  items: [type: 'object', properties: [
@@ -206,6 +206,25 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
 
             options = promoteTopLevelParams(action, arguments, options)
 
+            // CT-FW-RG-1..3 (FS 0.9.3 / #107): pre-flight gate for action=replace.
+            // Fires BEFORE dispatch so early return bypasses the post-write integrity block.
+            // Transport-invariant: both STDIO and HTTP paths converge here via handler.handleToolCall().
+            // Defence-in-depth: doReplace still validates, but this gate surfaces actionable errors
+            // earlier and is the primary guard against the post-write side-effect leak (Bug B).
+            if (action == 'replace') {
+                String preOld = (options.oldText ?: options.old_str) as String
+                if (!preOld) {
+                    return McpResponse.toolError(requestId,
+                        'action=replace: options.oldText is required. ' +
+                        'Read the target section first (file_read action=range or action=get_method) ' +
+                        'to get the exact text and file_content_hash, then retry with both oldText and expectedHash.')
+                }
+                if (!options.containsKey('newText') && !options.containsKey('new_str')) {
+                    return McpResponse.toolError(requestId,
+                        'action=replace: options.newText is required. ' +
+                        'Pass newText:\'\' (empty string) to explicitly delete the matched text.')
+                }
+            }
 
             // Guard: all actions except abort_write require a valid path
             if (!path && action != 'abort_write' && action != 'chunk_status') {
@@ -229,8 +248,12 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                 default:
                     return McpResponse.toolError(requestId, "Unknown file_write action: ${action}")
             }
-            // Invalidate structure cache after any successful mutating action
-            if (path && MUTATING_ACTIONS.contains(action) && response.error == null) {
+            // Invalidate structure cache after any successful mutating action.
+            // CT-FW-RG-4 (FS 0.9.3): guard against toolError responses -- McpResponse.toolError()
+            // is implemented as success() wrapping isError:true, so response.error == null is true
+            // even for error paths. Check result.isError to prevent spurious cache/registry updates.
+            boolean isToolError = (response.result as Map)?.get('isError') == true
+            if (path && MUTATING_ACTIONS.contains(action) && response.error == null && !isToolError) {
                 try { structureCache.invalidate(pathService.normalizePath(path)) } catch (Exception ignored) {}
                 // Fire-and-forget registry upsert so context server tracks the new hash
                 try {

@@ -550,7 +550,8 @@ class FileReplaceAndPatchSpec extends Specification {
         ], 'ct-fwr-1')
 
         then: 'hard error -- file must be unchanged'
-        assertToolError(r, 'newText', 'missing')
+        assertToolError(r, 'newText', 'required')
+
         new File(f.path as String).text == 'line one\nline two\n'
     }
 
