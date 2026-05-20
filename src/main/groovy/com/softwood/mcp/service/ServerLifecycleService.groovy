@@ -247,10 +247,15 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             return McpResponse.toolError(requestId, "Unknown server: ${name}. Known: ${servers*.name.join(', ')}" as String)
         }
 
-        // Early-exit: if port is already listening, skip startServer entirely
+        // Early-exit: if port is already listening, skip startServer — but adopt if untracked
         int port = server.port as int
         if (isPortListening(port, 1, 0)) {
-            log.debug("doEnsure: {} already listening on port {}, skipping startServer", name, port)
+            if (!registry.isOwned(name) && !registry.isAdopted(port)) {
+                registry.adopt(name, port)
+                log.debug('doEnsure: {} already listening on port {} \u2014 adopted untracked process', name, port)
+                return textResponse(requestId, [action: 'ensure', result: [name: name, port: port, started: false, adopted: true, reason: 'adopted existing process on port ' + port]])
+            }
+            log.debug('doEnsure: {} already listening on port {}, already managed \u2014 skipping', name, port)
             return textResponse(requestId, [action: 'ensure', result: [name: name, port: port, started: false, reason: 'already listening']])
         }
 
@@ -466,9 +471,19 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
 
         // Check if already listening - don't double-start
         if (isPortListening(port)) {
-            log.info("server_lifecycle: {} already listening on port {}, skipping", name, port)
-            result.put('started', false)
-            result.put('reason', 'already listening on port ' + port)
+            if (!registry.isOwned(name) && !registry.isAdopted(port)) {
+                // Port occupied by a process we didn't start (e.g. DT eager-start or prior session orphan).
+                // Adopt it so managedBySession=true and stop() knows not to kill it without force.
+                log.info('server_lifecycle: {} already listening on port {} \u2014 adopting untracked process', name, port)
+                registry.adopt(name, port)
+                result.put('started', false)
+                result.put('adopted', true)
+                result.put('reason', 'adopted existing process on port ' + port)
+            } else {
+                log.info('server_lifecycle: {} already listening on port {}, already managed \u2014 skipping', name, port)
+                result.put('started', false)
+                result.put('reason', 'already listening on port ' + port)
+            }
             return result
         }
 
