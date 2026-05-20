@@ -1,8 +1,8 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 2.4
-**Last updated:** 2026-04-30
+**Version:** 2.5
+**Last updated:** 2026-05-20
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
 
@@ -48,7 +48,11 @@ mcp-agentic-workflow (AW)
   ├─ MCPB Extension ──► AW stdio JVM                  ← flow_management from Claude always here
   │
   └─ HTTP companion on :8084                          ← flow nodes use mcp.tool_call to :8081/:8082
-       Started by: server_lifecycle ensure name=agentic-workflow
+       Started by: FS `autoStartHttpCompanions` (@PostConstruct) on DT launch
+       **Adopt behaviour (0.9.4+):** if port 8084 is already occupied at eager-start time
+       (e.g. DT re-launched with AW process surviving), `startServer` and `doEnsure` call
+       `registry.adopt(name, port)` instead of silently skipping. Result: `managedBySession=true`
+       in `server_lifecycle status verbose=true`. Pre-0.9.4: always showed `managedBySession=false`.
        SEPARATE JVM from AW stdio — separate in-memory state
 
 Shared SQLite DB: C:/Users/willw/claude-sync/best_practices.db
@@ -405,6 +409,7 @@ baked into the source. These are kept in sync with the help_sections rows.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.5 | 2026-05-20 | 0.9.4 adopt fix documented: `startServer`+`doEnsure` adopt untracked eager processes when port is occupied. AW (`managedBySession=false`) root cause traced to `pingMcp` returning null for REST endpoints; fix adds adopt-on-detect guard. §2 updated. |
 | 2.4 | 2026-04-30 | Race condition fix documented: `@PostConstruct init()` retry-with-backoff (v0.8.75). Both `FileReadService` and `FileWriteService` retry 3x before falling back to `DEFAULT_DESC`. FS-RESTART-SEQUENCE §9b updated: DB-driven descriptions now reliable at DT start. |
 | 2.3 | 2026-04-30 | DB-driven tool descriptions: `file_write` now loads description from CS `help_sections` at startup (v0.8.74, idea #109). Both `file_read` (v0.8.70) and `file_write` (v0.8.74) DB-driven. Update without rebuild: `context_write scope=help type=section action=update section_key=tool_desc_file_write content=<new>` then restart DT. Tool description live-edit procedure added to §9. |
 | 2.2 | 2026-04-30 | mcp-deploy ref updated to 4.1; `expectedHash` mandatory rule added to §9 compile/build section; FS versions 0.8.66–0.8.73 documented; CT-EH-1 `expectedHash` mandatory enforcement noted |

@@ -203,4 +203,28 @@ Replace pre-flight guard (Bug #107 fix) — two layered defects closed.
 
 **TDD:** 4 new named contracts in `FileWriteContractSpec` — CT-FW-RG-1 (empty options → toolError, file unchanged), CT-FW-RG-2 (newText only → toolError, file unchanged), CT-FW-RG-3 (oldText only, newText key absent → toolError, file unchanged), CT-FW-RG-4 (pre-flight toolError does not trigger post-write side-effects, verified by hash stability). All 7 specs in `FileWriteContractSpec` green.
 
+## [0.9.4]
+ServerLifecycleService adopt fix (BUILD-5) — `startServer` and `doEnsure` now adopt
+untracked processes when a port is already listening at eager-start or ensure time.
+
+**Root cause:** `pingMcp(port)` (used in `killStalePidIfPresent`) sends an MCP
+`initialize` JSON-RPC request. AW's HTTP port 8084 is a REST endpoint (`/aw/*`), not an
+MCP protocol endpoint, so `pingMcp` always returns `null` for AW. This caused
+`killStalePidIfPresent` to fall through to the evict path, which failed (process alive),
+leaving the port occupied. `startServer` then returned early with no `registry.adopt()`
+call, so AW always appeared as `managedBySession=false, processAlive=false` even though it
+was genuinely running.
+
+**Fix:** Added adopt-on-detect guard in both `startServer` and `doEnsure`:
+```groovy
+if (!registry.isOwned(name) && !registry.isAdopted(port)) {
+    registry.adopt(name, port)
+    result.put('adopted', true)
+}
+```
+Result: AW and any other untracked eager process is now adopted on first `start_eager` or
+`ensure` call. `managedBySession=true` confirmed via `server_lifecycle status verbose=true`
+after DT restart. `processAlive` remains `false` for adopted processes (no Process handle
+held); this is correct and expected.
+
 <!-- New entries go HERE at the bottom — append only, never edit above this line -->
