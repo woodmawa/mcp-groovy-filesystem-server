@@ -181,7 +181,10 @@ class FileReplaceService extends AbstractFileService {
         // PR 1.3 (FS 0.9.0): unified StructuralGuard.checkAll() replaces inline checks (D5 fix).
         // checkAll() runs: brace delta, paren delta, bare-box-drawing -- all pre-write hard rejects.
         // No post-write advisory (brace_warning field removed entirely).
-        String structErr = StructuralGuard.checkAll(oldText, newText, updated, normalized)
+        // FS 0.9.6 / fix #142: options.allowStructuralEdit=true bypasses brace/paren delta only;
+        // checkBareBoxDrawing is never bypassed.
+        boolean allowStructEdit = options.containsKey('allowStructuralEdit') ? (options.allowStructuralEdit as boolean) : false
+        String structErr = StructuralGuard.checkAll(oldText, newText, updated, normalized, allowStructEdit)
         if (structErr) {
             log.warn('replace: structural guard REJECTED {} -- {}', normalized, structErr)
             return McpResponse.toolError(requestId, 'replace structural check failed (file NOT modified): ' + structErr)
@@ -313,7 +316,9 @@ class FileReplaceService extends AbstractFileService {
         // and bare-box check. 'current' is the fully-applied LF-normalised result.
         // We pass snapshot as removedContent and current as newText to check the net delta;
         // for multi-replace we use the overall file delta (snapshot->current).
-        String structErrMr = StructuralGuard.checkAll(snapshot, current, current, normalized)
+        // FS 0.9.6 / fix #142: allowStructuralEdit also honoured for multi_replace.
+        boolean allowStructEditMr = options.containsKey('allowStructuralEdit') ? (options.allowStructuralEdit as boolean) : false
+        String structErrMr = StructuralGuard.checkAll(snapshot, current, current, normalized, allowStructEditMr)
         if (structErrMr) {
             log.warn('multi_replace: structural guard REJECTED {} -- {}', normalized, structErrMr)
             return McpResponse.toolError(requestId,

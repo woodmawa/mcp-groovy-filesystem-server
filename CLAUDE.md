@@ -5,7 +5,7 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.9.5` (check `build.gradle` to confirm)
+- **Current version:** `0.9.6` (check `build.gradle` to confirm)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -189,6 +189,27 @@ file_read action=range path=Foo.groovy options={startLine:51,maxLines:50,knownHa
 - **After any patch:** use returned `content_hash` as `expectedHash` for the next edit
 - **multi_replace overlap rule (v0.8.48):** entries sharing a boundary line are rejected — merge into one entry or use separate calls
 - **Boundary patch (v0.8.48):** response includes `requires_reread:true` when `startLine==1` or `endLine==last` — re-read before next edit
+
+### Structural guard bypass (FS 0.9.6)
+
+When `action=append` leaves an orphaned closing brace that `StructuralGuard` blocks every
+subsequent targeted repair on, pass `options.allowStructuralEdit=true` to `replace`, `patch`,
+or `multi_replace` to bypass the brace/paren delta check for that one repair call.
+
+```
+# Repair an orphaned brace left by a bad append
+file_write action=patch path=Foo.groovy options={
+  replacements: [{startLine:N, endLine:N, newText:''}],
+  expectedHash: '<hash>',
+  allowStructuralEdit: true        # bypasses brace/paren delta only
+}
+```
+
+- `checkBareBoxDrawing` is **never** bypassed — only brace and paren delta.
+- The bypass is logged as WARN in CS for observability.
+- `action=append` on `.groovy`/`.java`/`.kt`/`.kts` returns a `code_append_warning` field
+  in the response (FS 0.9.6). Suppress with `options.suppressCodeAppendWarning=true`.
+  Prefer `action=replace` or `server_transform transform=add_method` for code files.
 
 ### Error contract (v0.8.48+)
 

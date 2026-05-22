@@ -60,20 +60,23 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     private static final String DEFAULT_DESC_COMPACT = '''\
 Write/modify files.
 Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
-Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating — required).
-server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import'''
+Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating -- required).
+server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
+options.allowStructuralEdit=true -- bypass brace/paren delta guard on replace|patch|multi_replace (FS 0.9.6). Use to repair orphaned braces. checkBareBoxDrawing is never bypassed.
+append on .groovy/.java/.kt returns code_append_warning (suppressible via options.suppressCodeAppendWarning=true).'''
 
     private static final String DEFAULT_DESC_VERBOSE = '''\
 Write/modify files.
 Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
 - write(path, content): overwrite entire file
-- append(path, content): append to end
-- replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated — check error detail.
+- append(path, content): append to end. WARNING: append on .groovy/.java/.kt/.kts files may corrupt brace structure -- response includes code_append_warning field. Prefer action=replace or server_transform add_method. Suppress with options.suppressCodeAppendWarning=true.
+- replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated -- check error detail.
 - patch: line-range edits. options.replacements=[{startLine,endLine,newText}] 1-indexed. ALWAYS re-read target lines immediately before each patch (line numbers shift after every edit). For multi-section changes pass ALL replacements in a single patch call -- never sequential patches across turns. After any structural Groovy edit (new method/brace changes) run compileGroovy before continuing. On compile failure: git checkout HEAD -- <file> and start over with one clean patch.
 - multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Preferred for multiple text swaps in one file. Does NOT shift line numbers. Use instead of sequential patch calls where possible.
-- server_transform: server-side transform — file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
+- server_transform: server-side transform -- file never crosses context boundary. REQUIRED: options.expectedHash. options.transform: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
 - chunk_write/finalise_write/abort_write: large-file chunked writes. chunk_status: verify received chunks before finalise.
 All mutating actions return content_hash. options.expectedHash is MANDATORY for replace|patch|multi_replace -- read the file first and pass the returned file_content_hash. Missing expectedHash is a hard error (CT-EH-1, FS 0.8.73).
+STRUCTURAL GUARD BYPASS (FS 0.9.6): options.allowStructuralEdit=true on replace|patch|multi_replace bypasses brace/paren delta check. Use ONLY to repair an orphaned brace left by a bad prior append. The mismatch is logged as WARN. checkBareBoxDrawing is NEVER bypassed. Example: after action=append left an orphaned closing brace, use patch with allowStructuralEdit=true to remove the specific line.
 SAFE EDITING: always read before write, always pass expectedHash. get_method -> patch for code. grep -> replace for unique strings. multi_replace for multiple changes.
 CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read it before retrying. Do NOT fall through to patch.'''
 

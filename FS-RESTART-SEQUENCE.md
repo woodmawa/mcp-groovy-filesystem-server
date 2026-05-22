@@ -57,6 +57,11 @@ mcp-agentic-workflow (AW)
        tool-level errors (`result.isError==true`) in addition to protocol-level errors
        (`response.error!=null`). Prior to 0.9.5, tool errors were recorded as `outcome='success'`
        in `tool_call_telemetry`. Matching the CS `deriveOutcome` pattern.
+
+       **StructuralGuard bypass (0.9.6+):** `options.allowStructuralEdit=true` on
+       `replace`/`patch`/`multi_replace` bypasses brace/paren delta check to allow repair
+       of orphaned braces. `checkBareBoxDrawing` is never bypassed. Logged as WARN.
+       `action=append` on `.groovy/.java/.kt/.kts` returns `code_append_warning` field.
        SEPARATE JVM from AW stdio — separate in-memory state
 
 Shared SQLite DB: C:/Users/willw/claude-sync/best_practices.db
@@ -413,6 +418,7 @@ baked into the source. These are kept in sync with the help_sections rows.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.7 | 2026-05-22 | 0.9.6 fix #142: `StructuralGuard.checkAll` adds `allowStructuralEdit` bypass for brace/paren delta (threaded through `replace`/`patch`/`multi_replace`). `FileContentWriter.doAppend` emits `code_append_warning` on code files. `StructuralGuardBypassSpec` CT-SG-BYPASS-1..9 green. Tool hints updated in CS `help_sections`. |
 | 2.6 | 2026-05-22 | 0.9.5 BUILD-16B (partial): `McpController.extractOutcome` now detects tool-level `isError=true`; `outcome='error'` recorded correctly for tool errors (was `outcome='success'`). `TelemetryOutcomeSpec` CT-16B-1..5 green. CS-side `outcome='unchanged'` cache-hit restore is the remaining 16B item (CS-only change). |
 | 2.5 | 2026-05-20 | 0.9.4 adopt fix documented: `startServer`+`doEnsure` adopt untracked eager processes when port is occupied. AW (`managedBySession=false`) root cause traced to `pingMcp` returning null for REST endpoints; fix adds adopt-on-detect guard. §2 updated. |
 | 2.4 | 2026-04-30 | Race condition fix documented: `@PostConstruct init()` retry-with-backoff (v0.8.75). Both `FileReadService` and `FileWriteService` retry 3x before falling back to `DEFAULT_DESC`. FS-RESTART-SEQUENCE §9b updated: DB-driven descriptions now reliable at DT start. |

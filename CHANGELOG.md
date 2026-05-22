@@ -241,4 +241,41 @@ Fixed by adding `result instanceof Map && isError==true` check, matching the CS 
 
 ### New spec: `TelemetryOutcomeSpec` CT-16B-1..5 (5/5 GREEN)
 
+
+## v0.9.6 — StructuralGuard `allowStructuralEdit` bypass + append-on-code warning
+
+v0.9.6: fix #142 (StructuralGuard no-bypass trap) + append-on-code soft warning. Brief: FS-CS-FRICTION-FIXES-2026-05-22.
+
+### Fixed: `StructuralGuard.checkAll` — add `allowStructuralEdit` bypass (fix #142)
+
+Prior to this version, when a prior `action=append` on a code file left an orphaned `}`,
+every subsequent targeted repair attempt was also rejected by `StructuralGuard` (net-negative
+brace delta) with no escape path. The only workaround was a full-file rewrite costing ~8
+extra tool calls.
+
+`checkAll` now accepts `boolean allowStructuralEdit = false`. When `true`:
+- `checkBraceDelta` and `checkParenDelta` are **skipped**
+- The brace mismatch is still **logged as WARN** for observability
+- `checkBareBoxDrawing` is **never bypassed** — it guards against corrupted AI output
+
+Callers pass the flag via `options.allowStructuralEdit=true` in `file_write` options.
+Threaded through `FileReplaceService` at both `replace` and `multi_replace` call sites,
+and through `FilePatchService` at the `patch` call site (missed in initial implementation).
+Static `org.slf4j.Logger log` field added to `StructuralGuard` to support the WARN.
+
+### Feature: append-on-code soft warning
+
+`FileContentWriter.doAppend` now detects when `action=append` targets a `.groovy/.java/.kt/.kts`
+file and includes a `code_append_warning` field in the response:
+
+```
+action=append on a code file may corrupt brace structure.
+Prefer action=replace or server_transform add_method.
+Set options.suppressCodeAppendWarning=true to suppress this warning.
+```
+
+The write is **not blocked** — advisory only. Suppressible via `options.suppressCodeAppendWarning=true`.
+
+**Contracts:** `StructuralGuardBypassSpec` CT-SG-BYPASS-1..5 (5/5 GREEN)
+
 <!-- New entries go HERE at the bottom — append only, never edit above this line -->

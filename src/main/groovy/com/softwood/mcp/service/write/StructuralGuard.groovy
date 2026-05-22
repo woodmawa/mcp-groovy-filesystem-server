@@ -8,6 +8,13 @@ import groovy.transform.CompileStatic
  * FS 0.9.0 / PR 1.3  Resolves D5 (dead post-write brace check eliminated) and D8
  * (non-code false positives on brace/paren counts).
  *
+ * FS 0.9.6 / fix #142  Adds {@code allowStructuralEdit} bypass to
+ * {@link #checkAll} so callers repairing an orphaned brace (caused by a prior
+ * bad {@code action=append} on a code file) can suppress the brace/paren delta
+ * reject without bypassing the box-drawing guard.
+ * See also: FileWriteService {@code options.allowStructuralEdit},
+ * {@code options.suppressCodeAppendWarning}.
+ *
  * Design rules:
  *  - ALL guards are PRE-WRITE hard rejects. No advisory warnings are ever returned
  *    from this class. If a guard fires, the file is NOT written.
@@ -23,6 +30,8 @@ import groovy.transform.CompileStatic
  */
 @CompileStatic
 final class StructuralGuard {
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(StructuralGuard)
 
     // -----------------------------------------------------------------------
     // checkBraceDelta
@@ -160,13 +169,38 @@ final class StructuralGuard {
      * @param filePath        used to decide whether to apply guards
      * @return                first error string, or null if all guards pass
      */
+    /**
+     * Run all three guards in sequence.  Returns the first error encountered, or null.
+     * ONLY runs guards for code files.  Non-code files always return null.
+     *
+     * <h3>allowStructuralEdit</h3>
+     * When {@code true}, {@link #checkBraceDelta} and {@link #checkParenDelta} are
+     * skipped (brace/paren mismatch is logged as WARN but does not block the write).
+     * Use when intentionally repairing an orphaned brace left by a prior bad append.
+     * {@link #checkBareBoxDrawing} is <em>never</em> bypassed -- it guards against
+     * corrupted AI output and has no legitimate bypass case.
+     *
+     * @param removedContent    exact text being removed (for brace/paren delta)
+     * @param newText           replacement text
+     * @param updatedContent    full updated file content (for box-drawing check)
+     * @param filePath          used to decide whether to apply the guard
+     * @param allowStructuralEdit when true, skip brace and paren delta checks (FS 0.9.6)
+     * @return                  error string if a guard fires, null if OK
+     */
     static String checkAll(String removedContent, String newText,
-                            String updatedContent, String filePath) {
+                            String updatedContent, String filePath,
+                            boolean allowStructuralEdit = false) {
         if (!isCodeFile(filePath)) return null
-        String err = checkBraceDelta(removedContent, newText, filePath)
-        if (err) return err
-        err = checkParenDelta(removedContent, newText, filePath)
-        if (err) return err
+        if (!allowStructuralEdit) {
+            String err = checkBraceDelta(removedContent, newText, filePath)
+            if (err) return err
+            err = checkParenDelta(removedContent, newText, filePath)
+            if (err) return err
+        } else {
+            // Bypass brace/paren delta but log the mismatch so the deviation is observable.
+            String braceDiag = checkBraceDelta(removedContent, newText, filePath)
+            if (braceDiag) log.warn('StructuralGuard bypassed (allowStructuralEdit=true): {}', braceDiag)
+        }
         return checkBareBoxDrawing(updatedContent, filePath)
     }
 

@@ -91,14 +91,29 @@ class FileContentWriter extends AbstractFileService {
         log.debug("append: {} bytes -> {} (locked)", bytes.length, normalized)
 
         String hash = WriteUtils.fileHash(target)
+        // FS 0.9.6 / fix #142: soft warning when appending to a code file.
+        // Append has no structural safety -- it can orphan braces that StructuralGuard
+        // will then block every repair attempt on. Advisory only; suppressible.
+        boolean suppressWarn = options.containsKey('suppressCodeAppendWarning')
+                                ? (options.suppressCodeAppendWarning as boolean) : false
+        String codeAppendWarning = (!suppressWarn && StructuralGuard.isCodeFile(normalized))
+            ? 'action=append on a code file may corrupt brace structure. ' +
+              'Prefer action=replace or server_transform add_method. ' +
+              'Set options.suppressCodeAppendWarning=true to suppress this warning.'
+            : null
+        if (codeAppendWarning) log.warn('FileContentWriter.doAppend: code file append on {}', normalized)
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
+            Map<String, Object> resp = [success: true, content_hash: hash, file_content_hash: hash]
+            if (codeAppendWarning) resp.code_append_warning = codeAppendWarning
+            return textResponse(requestId, resp)
         }
-        return textResponse(requestId, [
+        Map<String, Object> resp = [
             action: 'append', path: normalized,
             appended: bytes.length, success: true,
             content_hash: hash, file_content_hash: hash
-        ])
+        ]
+        if (codeAppendWarning) resp.code_append_warning = codeAppendWarning
+        return textResponse(requestId, resp)
     }
 
     // -----------------------------------------------------------------------
