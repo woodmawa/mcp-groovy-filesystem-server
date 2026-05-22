@@ -1,8 +1,8 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 2.5
-**Last updated:** 2026-05-20
+**Version:** 2.6
+**Last updated:** 2026-05-22
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
 
@@ -53,6 +53,10 @@ mcp-agentic-workflow (AW)
        (e.g. DT re-launched with AW process surviving), `startServer` and `doEnsure` call
        `registry.adopt(name, port)` instead of silently skipping. Result: `managedBySession=true`
        in `server_lifecycle status verbose=true`. Pre-0.9.4: always showed `managedBySession=false`.
+       **Telemetry outcome accuracy (0.9.5+):** `McpController.extractOutcome` now detects
+       tool-level errors (`result.isError==true`) in addition to protocol-level errors
+       (`response.error!=null`). Prior to 0.9.5, tool errors were recorded as `outcome='success'`
+       in `tool_call_telemetry`. Matching the CS `deriveOutcome` pattern.
        SEPARATE JVM from AW stdio — separate in-memory state
 
 Shared SQLite DB: C:/Users/willw/claude-sync/best_practices.db
@@ -409,6 +413,7 @@ baked into the source. These are kept in sync with the help_sections rows.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.6 | 2026-05-22 | 0.9.5 BUILD-16B (partial): `McpController.extractOutcome` now detects tool-level `isError=true`; `outcome='error'` recorded correctly for tool errors (was `outcome='success'`). `TelemetryOutcomeSpec` CT-16B-1..5 green. CS-side `outcome='unchanged'` cache-hit restore is the remaining 16B item (CS-only change). |
 | 2.5 | 2026-05-20 | 0.9.4 adopt fix documented: `startServer`+`doEnsure` adopt untracked eager processes when port is occupied. AW (`managedBySession=false`) root cause traced to `pingMcp` returning null for REST endpoints; fix adds adopt-on-detect guard. §2 updated. |
 | 2.4 | 2026-04-30 | Race condition fix documented: `@PostConstruct init()` retry-with-backoff (v0.8.75). Both `FileReadService` and `FileWriteService` retry 3x before falling back to `DEFAULT_DESC`. FS-RESTART-SEQUENCE §9b updated: DB-driven descriptions now reliable at DT start. |
 | 2.3 | 2026-04-30 | DB-driven tool descriptions: `file_write` now loads description from CS `help_sections` at startup (v0.8.74, idea #109). Both `file_read` (v0.8.70) and `file_write` (v0.8.74) DB-driven. Update without rebuild: `context_write scope=help type=section action=update section_key=tool_desc_file_write content=<new>` then restart DT. Tool description live-edit procedure added to §9. |

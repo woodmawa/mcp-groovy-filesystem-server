@@ -195,13 +195,37 @@ class McpController {
         } catch (Exception ignored) { return null }
     }
 
-    private static String extractOutcome(McpResponse response) {
+    /**
+     * Derive a terminal outcome string from the tool handler response for
+     * {@code tool_call_telemetry.outcome} (BUILD-16B / liveness contract).
+     * <p>Values returned:
+     * <ul>
+     *   <li>{@code "refused"}   — error message contains "refus".</li>
+     *   <li>{@code "error"}     — protocol-level McpError present.</li>
+     *   <li>{@code "unchanged"} — response text contains {@code "unchanged":true}.</li>
+     *   <li>{@code "truncated"} — response text contains {@code _truncated}.</li>
+     *   <li>{@code "success"}   — all other cases.</li>
+     * </ul>
+     * Package-accessible (no modifier) so {@code TelemetryOutcomeSpec} can test it directly.
+     *
+     * @param response the MCP response produced by the tool handler; may be null
+     * @return a non-null outcome string
+     */
+    static String extractOutcome(McpResponse response) {
         if (response?.error != null) {
             String msg = response.error.message ?: ''
             if (msg.toLowerCase().contains('refus')) return 'refused'
             return 'error'
         }
         try {
+            Object result = response?.result
+            // BUILD-16B: check isError=true in result map (tool-level errors via toolError())
+            // Protocol-level errors set response.error (handled above).
+            // Tool-level errors set result.isError=true and must not be recorded as 'success'.
+            if (result instanceof Map) {
+                Map<String, Object> resultMap = result as Map<String, Object>
+                if (resultMap.get('isError') == Boolean.TRUE) return 'error'
+            }
             List content = response?.result?.content as List
             String text = ((content?.first() as Map)?.get('text') as String) ?: ''
             if (text.contains('"unchanged":true')) return 'unchanged'

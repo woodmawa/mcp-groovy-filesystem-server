@@ -227,4 +227,18 @@ Result: AW and any other untracked eager process is now adopted on first `start_
 after DT restart. `processAlive` remains `false` for adopted processes (no Process handle
 held); this is correct and expected.
 
+## v0.9.5
+
+v0.9.5: BUILD-16B — `extractOutcome` handles tool-level `isError=true`; package-accessible for TDD.
+
+### Fixed: `McpController.extractOutcome` — tool-level error detection
+
+Prior to this version `extractOutcome` only detected protocol-level errors (`response.error != null`).
+Tool-level errors returned via `McpResponse.toolError` (which sets `result.isError=true`) were
+recorded as `outcome='success'` instead of `outcome='error'` in `tool_call_telemetry`.
+Fixed by adding `result instanceof Map && isError==true` check, matching the CS `deriveOutcome` logic.
+`extractOutcome` visibility changed from `private static` to package-accessible so `TelemetryOutcomeSpec` can call it directly.
+
+### New spec: `TelemetryOutcomeSpec` CT-16B-1..5 (5/5 GREEN)
+
 <!-- New entries go HERE at the bottom — append only, never edit above this line -->

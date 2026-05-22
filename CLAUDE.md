@@ -5,7 +5,7 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.9.4` (check `build.gradle` to confirm)
+- **Current version:** `0.9.5` (check `build.gradle` to confirm)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -316,3 +316,15 @@ FS's only permitted direct JDBC access to `best_practices.db` (CS's database) is
 
 All other FS→CS communication goes via `ContextServerClient` HTTP calls to port 8082.
 CS's WAL and connection pool are never bypassed. See `FS_CONTEXT_ARCHITECTURE.md §15`.
+
+### `tool_call_telemetry.outcome` accuracy (FS 0.9.5+)
+
+`McpController.extractOutcome` now correctly detects tool-level errors (`result.isError==true`)
+in addition to protocol-level errors. Prior to 0.9.5, any response going through
+`McpResponse.toolError()` (which wraps `isError:true` inside `result`) was recorded as
+`outcome='success'` because the extractor only checked `response.error != null`. Fixed by
+adding `result instanceof Map && result.isError == true` branch, matching the CS
+`deriveOutcome` logic pattern.
+
+The `outcome='unchanged'` cache-hit write path (CS-side) is tracked separately as
+build-16B (CS link still open — FS side done in 0.9.5).
