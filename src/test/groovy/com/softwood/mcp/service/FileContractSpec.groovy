@@ -2407,4 +2407,63 @@ class FileContractSpec extends Specification {
         new File(f.path as String).text.contains('WHERE name = ?')
     }
 
+    // -------------------------------------------------------------------------
+    // CT-82: write action must interpret \n escape sequences as real newlines.
+    // Root cause: Claude tool-call serialiser sends \n as two chars (0x5C 0x6E);
+    // doWrite was writing them literally, producing a single-line file.
+    // FS 0.9.7 fix: unescape Java-style sequences in write content (raw=false default).
+    // -------------------------------------------------------------------------
+    def 'CT-82: file_write action=write with \\n sequences writes actual newlines'() {
+        given:
+        def f = tempDir.resolve('ct82-newline.groovy').toFile()
+        // NOTE: in Groovy single-quoted strings, '\\n' is TWO chars: backslash + n (literal \n).
+        // This simulates what Claude's tool-call serialiser sends when embedding \n in content.
+        String escapedContent = 'package test' + '\\n' + '\\n' + 'class Foo {' + '\\n' + '}' + '\\n'
+        assert !escapedContent.contains('\n')  : 'pre-condition: content has NO actual newlines'
+        assert escapedContent.contains('\\n') : 'pre-condition: content has literal backslash-n'
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'write',
+            path   : f.path,
+            content: escapedContent
+        ], 'ct82')
+
+        then: 'write succeeds'
+        r.result != null
+        (r.result as Map).isError != true
+
+        and: 'FS unescapes \\n -- file has 4 actual lines (blank line from double \\n), not one long literal line'
+        def lines = f.readLines()
+        lines.size() == 4
+        lines[0] == 'package test'
+        lines[1] == ''
+        lines[2] == 'class Foo {'
+    }
+
+    // -------------------------------------------------------------------------
+    // CT-83: write with options.raw=true must NOT unescape -- raw mode preserved.
+    // -------------------------------------------------------------------------
+    def 'CT-83: file_write action=write with raw=true preserves literal \\n sequences'() {
+        given:
+        def f = tempDir.resolve('ct83-raw.txt').toFile()
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'write',
+            path   : f.path,
+            options: [raw: true],
+            content: 'key\\nvalue'
+        ], 'ct83')
+
+        then:
+        r.result != null
+        (r.result as Map).isError != true
+
+        and: 'raw mode: file contains literal \\n not a newline'
+        def text = f.text
+        text.contains('\\n')
+        !text.contains('\n') || text == 'key\\nvalue'
+    }
+
 }

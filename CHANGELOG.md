@@ -279,3 +279,26 @@ The write is **not blocked** — advisory only. Suppressible via `options.suppre
 **Contracts:** `StructuralGuardBypassSpec` CT-SG-BYPASS-1..5 (5/5 GREEN)
 
 <!-- New entries go HERE at the bottom — append only, never edit above this line -->
+
+## [0.9.7]
+
+**Fix: `file_write action=write` now correctly interprets `\n` escape sequences as actual newlines.**
+
+Claude's tool-call serialiser sends `\n` as the two-character literal sequence (backslash + n,
+bytes `0x5C 0x6E`) rather than as the actual newline character (`0x0A`). Previously `doWrite`
+wrote these literals verbatim, producing a single-line file containing embedded `\n` sequences
+that compilers and editors could not parse.
+
+`FileContentWriter.doWrite` now unescapes Java-style sequences before writing:
+- `\n` → newline (`0x0A`)
+- `\t` → tab (`0x09`)
+- `\r` → carriage return (`0x0D`)
+- `\\` → single backslash (double-backslash preserved)
+
+Opt-out: pass `options.raw=true` to write content verbatim (for JSON, binary text, or any content
+where literal backslash sequences are intentional).
+
+Applies to `action=write` only. `action=replace` and `action=append` are unaffected — those paths
+receive content with actual newlines already embedded.
+
+**Contracts:** `FileContractSpec` CT-82 (write unescapes `\n`), CT-83 (raw=true preserves literals) — 2/2 GREEN. Full FileContractSpec CT-1..CT-83 clean.

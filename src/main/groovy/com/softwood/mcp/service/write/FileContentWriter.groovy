@@ -33,6 +33,22 @@ class FileContentWriter extends AbstractFileService {
         boolean mkdirs    = options.get('mkdirs') != null ? Boolean.valueOf(options.get('mkdirs').toString()) : true
         String body       = content ?: ''
 
+        // FS 0.9.7 CT-82: unescape Java-style escape sequences in write content.
+        // Claude's tool-call serialiser sends \n as the two-char literal sequence
+        // (backslash + n) rather than actual newline. Without this, multi-line source
+        // writes produce a single line with embedded \n literals that compilers reject.
+        // Opt-out: options.raw=true preserves content verbatim (for JSON, binary, etc.)
+        boolean raw = options.get('raw') ? Boolean.valueOf(options.get('raw').toString()) : false
+        if (!raw) {
+            // Protect existing \\ (double-backslash) before replacing \n etc.
+            body = body
+                .replace('\\\\', '\u0001BSLASH\u0001')
+                .replace('\\n', '\n')
+                .replace('\\t', '\t')
+                .replace('\\r', '\r')
+                .replace('\u0001BSLASH\u0001', '\\\\')
+        }
+
         Path target = Paths.get(normalized)
         // createDirectories is also called inside WriteUtils.atomicWrite for reliability on Windows.
         // Keeping it here too so log.debug confirms the intent before the write.

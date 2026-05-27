@@ -349,3 +349,21 @@ adding `result instanceof Map && result.isError == true` branch, matching the CS
 
 The `outcome='unchanged'` cache-hit write path (CS-side) is tracked separately as
 build-16B (CS link still open — FS side done in 0.9.5).
+
+
+---
+
+## CRITICAL: PowerShell file rewrites can corrupt Unicode characters
+
+**When using PowerShell `[System.IO.File]::WriteAllText()` to rewrite a `.groovy` file,
+any Unicode character outside ASCII may be silently re-encoded as CP1252 bytes.**
+
+The ellipsis `…` (U+2026) is a known victim: it becomes three chars `â€¦`, each stored
+as a distinct Groovy `char` literal. Any cap/length logic that appends a single `…` will
+produce `length == cap + 3` instead of `cap + 1`.
+
+**Fix:** Use `'\u2026'` Unicode escape in Groovy source. After any PowerShell rewrite,
+grep the affected file for `\u00e2\u20ac` as a mojibake sentinel.
+
+This was introduced in FS when a block-removal PowerShell script rewrote `FlowTypeRegistry.groovy`
+during AW 1.28.10 stabilisation. `FlowTypeRegistryExtractFieldSpec` caps test caught it.
