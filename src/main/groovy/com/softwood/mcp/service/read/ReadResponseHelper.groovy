@@ -98,9 +98,28 @@ class ReadResponseHelper extends AbstractFileService {
     @Value('${mcp.filesystem.auto-kh-hints-suppressed.enabled:true}')
     boolean autoKhHintsSuppressed
 
-    /** FS 0.9.1: feature flag for ontology-first guard on whole-file source reads. */
+    /** FS 0.9.1: feature flag for ontology-first guard on whole-file source reads (warn-only path). */
     @Value('${mcp.filesystem.ontology-guard.enabled:true}')
     boolean ontologyGuardEnabled
+
+    /**
+     * FS 0.9.8 E-5: feature flag for ONTOLOGY-GATE hard enforcement on indexed file reads.
+     * When {@code true} (default), {@code doRead}/{@code doRange}/{@code doGetMethod} on
+     * an ontology-indexed {@code .groovy} or {@code .java} file is BLOCKED unless
+     * {@code locateCalledThisSession} returns {@code true} or {@code allowNoLocate=true}
+     * is passed in options. Set {@code false} to revert to warn-only during rollout.
+     */
+    @Value('${mcp.filesystem.ontology-gate.enforced:true}')
+    boolean ontologyGateEnforced
+    /**
+     * FS 0.9.9: feature flag for missing-knownHash advisory detection on whole-file reads.
+     * When {@code true} (default), {@code doRead} and {@code doGetMethod} inject
+     * {@code _missing_knownhash} into the response and fire a correction observation
+     * when the caller omitted {@code options.knownHash} but {@link StructureCache}
+     * already holds a hash for the file. Advisory only -- does NOT block the read.
+     */
+    @Value('${mcp.filesystem.missing-kh-warn.enabled:true}')
+    boolean missingKhWarnEnabled
 
     ReadResponseHelper(PathService pathService) {
         super(pathService)
@@ -360,6 +379,144 @@ class ReadResponseHelper extends AbstractFileService {
     }
 
     // -----------------------------------------------------------------------
+    // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Gate check for ontology-indexed file reads. Called from
+     * {@link com.softwood.mcp.service.read.FileContentReader} at the top of
+     * {@code doRead}, {@code doRange}, and {@code doGetMethod} before any content is read.
+     *
+     * <h3>Decision matrix</h3>
+     * <ul>
+     *   <li>Gate disabled ({@code ontologyGateEnforced=false}) → {@code null} (proceed)</li>
+     *   <li>CS unreachable → {@code null} (fail-open, proceed)</li>
+     *   <li>File not indexed → {@code null} (proceed)</li>
+     *   <li>Locate was called this session → {@code null} (proceed)</li>
+     *   <li>{@code options.allowNoLocate=true} → {@code null} (proceed, but telemetry incremented)</li>
+     *   <li>Otherwise → returns a {@code BLOCKED_ONTOLOGY_GATE} error {@link McpResponse}</li>
+     * </ul>
+     *
+     * @param normalized  normalized absolute file path
+     * @param options     tool call options map (checks {@code allowNoLocate})
+     * @param requestId   MCP request ID for error response construction
+     * @param action      the file_read action name ("read", "range", "get_method")
+     * @return {@code null} to proceed, or a blocking {@link McpResponse} to return immediately
+     */
+    McpResponse checkOntologyGate(String normalized, Map<String, Object> options,
+                                   Object requestId, String action) {
+        if (!ontologyGateEnforced) return null
+        if (contextServerClient == null || !contextServerClient.isCsReachable()) return null
+        if (!(normalized?.endsWith('.groovy') || normalized?.endsWith('.java'))) return null
+
+        String fileStem = new File(normalized).name.replaceFirst(/\.[^.]+$/, '')
+
+        // Use getOntologyRange (reuses existing locate call) and path-verify the result.
+        // CRITICAL: check that CS's source_file for this stem matches our normalized path.
+        // Without the path check, a stem like 'ct30' from a TempDir test file can match
+        // a residual ontology entry from a prior test run, causing a spurious gate block.
+        // The gate only applies when THIS EXACT FILE is indexed in the source ontology.
+        Map<String, Object> range
+        try {
+            range = contextServerClient.getOntologyRange(fileStem)
+        } catch (Exception e) {
+            log.debug('ontology-gate range check failed (fail-open) [{}]: {}', fileStem, e.message)
+            return null  // fail-open
+        }
+        if (range == null || range.get('found') != true) return null
+
+        // Path-scope guard: only block when CS's indexed path matches this file.
+        // Normalise both to forward slashes, lowercase for comparison.
+        String csSourceFile = (range.get('source_file') as String)?.replace('\\', '/') ?: ''
+        String normFwd      = normalized.replace('\\', '/')
+        if (!csSourceFile.equalsIgnoreCase(normFwd)) return null
+
+        // Locate was called this session → allow
+        if (contextServerClient.locateCalledThisSession(fileStem)) return null
+
+        // allowNoLocate=true override → allow but increment telemetry
+        boolean override = options?.get('allowNoLocate') as boolean
+        if (override) {
+            contextServerClient.incrementOntologyGateBlockedToken(fileStem)
+            return null
+        }
+
+        // Block: write observation async, return error response
+        contextServerClient.writeOntologyGateObservationAsync(fileStem, action)
+
+        String hint = "Call context_read scope=ontology action=locate query=${fileStem} BEFORE file_read to allow this read. " +
+                      "locate returns source_line+end_line in <100 tokens. " +
+                      "Pass options.allowNoLocate=true to override the block (telemetry still incremented)."
+        Map<String, Object> errorMap = [
+            error       : 'BLOCKED_ONTOLOGY_GATE',
+            locate_query: fileStem,
+            action      : action,
+            file        : normalized,
+            hint        : hint
+        ] as Map<String, Object>
+        return textResponse(requestId, errorMap)
+    }
+
+    // -----------------------------------------------------------------------
+    // FS 0.9.9: missing-knownHash advisory detection
+    // -----------------------------------------------------------------------
+
+    /**
+     * Advisory check for missing {@code options.knownHash} on whole-file reads.
+     * Called from {@link FileContentReader#doRead} and {@link FileContentReader#doGetMethod}
+     * AFTER content has been successfully read and the response map assembled.
+     *
+     * <p>If {@link StructureCache} already has a hash for this file and the caller did NOT
+     * supply {@code options.knownHash}, injects {@code _missing_knownhash} into the response,
+     * fires a correction observation async, and increments the session counter.
+     * Does NOT modify the read result -- purely additive.</p>
+     *
+     * <p>Skipped when: flag disabled; no CS client; file not in cache; knownHash was supplied;
+     * or this is the first time the file has been seen (nothing to cache-hit against).</p>
+     *
+     * @param response   the assembled response map to enrich (mutated in place)
+     * @param normalized normalized absolute file path
+     * @param options    tool call options map (checks {@code knownHash})
+     * @param action         the file_read action ("read" or "get_method")
+     * @param preCachedHash  hash from {@link #peekStructureCache} captured BEFORE the read
+     *                       (null means file was not in cache at call entry -- no violation)
+     */
+    void maybeWarnMissingKnownHash(Map<String, Object> response, String normalized,
+                                    Map<String, Object> options, String action,
+                                    String preCachedHash) {
+        if (!missingKhWarnEnabled) return
+        if (options?.containsKey('knownHash')) return           // caller passed it -- no violation
+        if (!preCachedHash) return                              // file was not in cache at call entry
+
+        // Violation: file was already known to the cache but knownHash was omitted.
+        response.put('_missing_knownhash',
+            ("KNOWNHASH DISCIPLINE: pass options.knownHash='${preCachedHash}' on this read " +
+             "to get {unchanged:true} (~15 tok) instead of full content. " +
+             "Source: StructureCache (session-local). Practice #497." as String))
+
+        // Fire correction observation async (fail-open -- CS may be down)
+        if (contextServerClient != null && contextServerClient.isCsReachable()) {
+            String stem = new File(normalized).name.replaceFirst(/\.[^.]+$/, '')
+            contextServerClient.writeMissingKnownHashObservationAsync(stem, action)
+        }
+
+        // Increment session counter for telemetry
+        if (telemetryService != null) telemetryService.incrementMissingKhCount()
+    }
+
+    /**
+     * Convenience wrapper: peek at the StructureCache for this path WITHOUT computing
+     * a hash from disk. Returns the cached hash if the file was already seen this session
+     * and the entry is still valid, or {@code null} otherwise.
+     * Call BEFORE the read so the check reflects pre-read cache state.
+     *
+     * @param normalized  normalised absolute path
+     * @return cached hash or null
+     */
+    String peekStructureCache(String normalized) {
+        if (structureCache == null || !normalized) return null
+        return structureCache.peekHash(pathService.normalizePath(normalized))
+    }
     // Chunk read actions
     // -----------------------------------------------------------------------
 

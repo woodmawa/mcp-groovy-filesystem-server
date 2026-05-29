@@ -355,6 +355,14 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                 }
                 case 'structure'    : return structureReader.doStructure(path, options, requestId)
                 case 'get_method'   : {
+                    // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8) -- gate before cache-hit check.
+                    // Delegates to contentReader.doGetMethod which applies the gate and then
+                    // falls through to structureReader.doGetMethod on allow.
+                    if (responseHelper != null) {
+                        String gmNorm = pathService.normalizePath(path)
+                        McpResponse gmGate = responseHelper.checkOntologyGate(gmNorm, options, requestId, 'get_method')
+                        if (gmGate != null) return gmGate
+                    }
                     // FIX-KH-RANGE-AUTO (FS 0.8.81): auto-lookup range cache before calling doGetMethod.
                     // First read records startLine/endLine in range cache. On repeat call, if
                     // StructureCache has the file hash, we can auto-hit without caller passing knownHash.

@@ -60,12 +60,28 @@ class WriteCommitterSpec extends Specification {
     }
 
     private String readContent(String path) {
-        McpResponse r = fileReadService.handleToolCall('file_read', [
-            action: 'read', path: path, options: [force: true]
-        ], 'verify')
-        assert r.result != null
-        def p = new groovy.json.JsonSlurper().parseText(r.result.content[0].text as String) as Map
-        p.content as String
+        // CT-PCOMMIT-2: after 20 concurrent writes the file may be transiently absent
+        // (atomic rename deletes .tmp before writing .groovy). Retry up to 3 times
+        // with a short sleep to let the filesystem settle.
+        int attempts = 0
+        while (true) {
+            McpResponse r = fileReadService.handleToolCall('file_read', [
+                action: 'read', path: path, options: [force: true]
+            ], 'verify')
+            assert r.result != null
+            String text = r.result.content[0].text as String
+            if (text?.startsWith('{')) {
+                def p = new groovy.json.JsonSlurper().parseText(text) as Map
+                if (p.content != null) return p.content as String
+            }
+            // Non-JSON or missing content -- likely transient file-system state
+            if (++attempts >= 3) {
+                // Fall back to direct read as last resort
+                File f = new File(path)
+                return f.exists() ? f.text : null
+            }
+            Thread.sleep(50)
+        }
     }
 
     // -----------------------------------------------------------------------

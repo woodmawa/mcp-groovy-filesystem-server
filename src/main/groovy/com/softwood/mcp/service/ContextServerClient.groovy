@@ -923,6 +923,194 @@ class ContextServerClient {
     }
 
 
+    // -----------------------------------------------------------------------
+    // E-5: ONTOLOGY-GATE session-locate tracking + telemetry (FS 0.9.8)
+    // -----------------------------------------------------------------------
+
+    /**
+     * In-memory set of file stems for which {@code context_read scope=ontology action=locate}
+     * has been called this session. Populated by {@link #recordLocateCalled(String)}.
+     * ConcurrentHashSet via ConcurrentHashMap.newKeySet() for thread safety.
+     * Cleared on a new session registration ({@link #setActiveSessionId(String)}).
+     */
+    private final Set<String> sessionLocatedStems =
+        java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>())
+
+    /**
+     * Returns {@code true} if a {@code context_read scope=ontology action=locate} call has been
+     * recorded for {@code fileStem} in the current session.
+     * Called by {@link com.softwood.mcp.service.read.ReadResponseHelper#checkOntologyGate}.
+     *
+     * @param fileStem  file name without extension (e.g. "DistillationService")
+     * @return {@code true} if locate was called; {@code false} otherwise
+     */
+    boolean locateCalledThisSession(String fileStem) {
+        return fileStem != null && sessionLocatedStems.contains(fileStem)
+    }
+
+    /**
+     * Records that a {@code context_read scope=ontology action=locate} call succeeded for
+     * {@code fileStem}. Called by the CS MCP response path when a locate action completes
+     * so subsequent {@code file_read} calls on the same file are allowed through the gate.
+     *
+     * @param fileStem  file name without extension
+     */
+    void recordLocateCalled(String fileStem) {
+        if (fileStem) sessionLocatedStems.add(fileStem)
+    }
+
+    /**
+     * Increments the ONTOLOGY-GATE blocked-token counter in the CS {@code memory_policy}
+     * {@code hard_gates} row via an async {@code context_lifecycle} call. Fire-and-forget.
+     * Mirrors the CS-side {@code incrementHardGateBlockedToken('199', tokenKey)} behaviour.
+     * Called when {@code options.allowNoLocate=true} overrides the block.
+     *
+     * @param fileStem  file name without extension (used as the token key)
+     */
+    void incrementOntologyGateBlockedToken(String fileStem) {
+        if (!isCsReachable() || !fileStem) return
+        String stem = fileStem
+        asyncWriter.submit({
+            try {
+                Map<String, Object> body = [
+                    jsonrpc: '2.0', method: 'tools/call', id: 1,
+                    params : [
+                        name     : 'context_lifecycle',
+                        arguments: [
+                            action  : 'increment_hard_gate_token',
+                            gateId  : '199',
+                            tokenKey: "file_read_without_locate.${stem}"
+                        ]
+                    ]
+                ] as Map<String, Object>
+                URL url = new URL("${contextServerUrl}/mcp")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput     = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 2000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { Writer w ->
+                        w.write(groovy.json.JsonOutput.toJson(body))
+                    }
+                    conn.responseCode  // consume
+                } finally { conn.disconnect() }
+            } catch (Exception e) {
+                log.debug('incrementOntologyGateBlockedToken failed (non-fatal) [{}]: {}', stem, e.message)
+            }
+        } as Runnable)
+    }
+
+    /**
+     * Writes a {@code session_observations} correction entry to CS asynchronously, recording
+     * that an ontology-gate block occurred for {@code fileStem} on {@code action}.
+     * Fire-and-forget. Mirrors the SQL-GATE observation write in
+     * {@code ContextLifecycleActionRouter.handleExecuteSql}.
+     *
+     * @param fileStem  file name without extension (e.g. "DistillationService")
+     * @param action    the file_read action that was blocked (e.g. "read", "range", "get_method")
+     */
+    void writeOntologyGateObservationAsync(String fileStem, String action) {
+        if (!isCsReachable()) return
+        String stem = fileStem
+        String act  = action
+        String sid  = resolveSessionId() ?: 'unknown'
+        asyncWriter.submit({
+            try {
+                Map<String, Object> body = [
+                    jsonrpc: '2.0', method: 'tools/call', id: 1,
+                    params : [
+                        name     : 'context_write',
+                        arguments: [
+                            scope             : 'session',
+                            type              : 'observation',
+                            action            : 'add',
+                            component         : 'FileContentReader',
+                            tool_called       : "file_read:${act}",
+                            signal_type       : 'correction',
+                            description       : "ONTOLOGY-GATE blocked: '${stem}' is indexed but locate was not called this session. " +
+                                               "Use context_read scope=ontology action=locate query=${stem} before file_read.",
+                            correction_applied: 'Block returned BLOCKED_ONTOLOGY_GATE. Call locate first or pass allowNoLocate=true to override.',
+                            severity          : 'warn',
+                            sessionId         : sid
+                        ]
+                    ]
+                ] as Map<String, Object>
+                URL url = new URL("${contextServerUrl}/mcp")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput     = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 3000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { Writer w ->
+                        w.write(groovy.json.JsonOutput.toJson(body))
+                    }
+                    conn.responseCode  // consume
+                } finally { conn.disconnect() }
+            } catch (Exception e) {
+                log.debug('writeOntologyGateObservation async failed [{}:{}]: {}', stem, act, e.message)
+            }
+        } as Runnable)
+    }
+
+    /**
+     * Writes a {@code session_observations} correction entry to CS asynchronously, recording
+     * that a {@code file_read} was issued without {@code options.knownHash} on a file already
+     * seen this session. Fire-and-forget. Feeds the distillation pipeline so the discipline
+     * gap surfaces at next bootstrap via the learning loop.
+     *
+     * @param fileStem  file name without extension
+     * @param action    the file_read action ("read" or "get_method")
+     */
+    void writeMissingKnownHashObservationAsync(String fileStem, String action) {
+        if (!isCsReachable()) return
+        String stem = fileStem
+        String act  = action
+        String sid  = resolveSessionId() ?: 'unknown'
+        asyncWriter.submit({
+            try {
+                Map<String, Object> body = [
+                    jsonrpc: '2.0', method: 'tools/call', id: 1,
+                    params : [
+                        name     : 'context_write',
+                        arguments: [
+                            scope             : 'session',
+                            type              : 'observation',
+                            action            : 'add',
+                            component         : 'FileContentReader',
+                            tool_called       : "file_read:${act}",
+                            signal_type       : 'correction',
+                            description       : "KNOWNHASH MISSING: file_read action=${act} on '${stem}' was issued without options.knownHash " +
+                                               'despite the file being in the session StructureCache. ' +
+                                               'Pass file_content_hash from the prior read response as options.knownHash to get {unchanged:true} and save tokens.',
+                            correction_applied: 'Response enriched with _missing_knownhash hint. Pass the hash on the next read to eliminate token waste.',
+                            severity          : 'warn',
+                            sessionId         : sid
+                        ]
+                    ]
+                ] as Map<String, Object>
+                URL url = new URL("${contextServerUrl}/mcp")
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                try {
+                    conn.requestMethod = 'POST'
+                    conn.doOutput     = true
+                    conn.connectTimeout = 2000
+                    conn.readTimeout    = 3000
+                    conn.setRequestProperty('Content-Type', 'application/json')
+                    conn.outputStream.withWriter('UTF-8') { Writer w ->
+                        w.write(groovy.json.JsonOutput.toJson(body))
+                    }
+                    conn.responseCode  // consume
+                } finally { conn.disconnect() }
+            } catch (Exception e) {
+                log.debug('writeMissingKnownHashObservation async failed [{}:{}]: {}', stem, act, e.message)
+            }
+        } as Runnable)
+    }
+
     @PreDestroy
     void shutdown() {
         asyncWriter.shutdown()

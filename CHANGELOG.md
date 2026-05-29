@@ -302,3 +302,90 @@ Applies to `action=write` only. `action=replace` and `action=append` are unaffec
 receive content with actual newlines already embedded.
 
 **Contracts:** `FileContractSpec` CT-82 (write unescapes `\n`), CT-83 (raw=true preserves literals) — 2/2 GREEN. Full FileContractSpec CT-1..CT-83 clean.
+
+
+## [0.9.8]
+**E-5: ONTOLOGY-GATE promoted from warn-only to `block_and_observe` with `allowNoLocate` override (A6 Phase E-5 / NS-1+NS-2).**
+
+`file_read` actions `read`, `range`, and `get_method` on ontology-indexed `.groovy`/`.java` files are now
+**blocked** when no `context_read scope=ontology action=locate` call has been recorded for that file stem
+this session. Mirrors the SQL-GATE pattern in CS `ContextLifecycleActionRouter.handleExecuteSql`.
+
+**Gate behaviour:**
+- Block returns `BLOCKED_ONTOLOGY_GATE` error with `locate_query`, `action`, `file`, and `hint` fields.
+- `options.allowNoLocate=true` bypasses the block but increments the blocked-token telemetry counter on CS.
+- Fail-open: CS unreachable, file not in ontology, or path mismatch → gate not applied.
+- Path-scope guard: CS `source_file` must match the exact normalized path being read — prevents spurious
+  blocks from residual ontology entries for unrelated files with the same stem.
+- Feature flag: `mcp.filesystem.ontology-gate.enforced=false` reverts to warn-only.
+
+**New API on `ContextServerClient`:** `locateCalledThisSession(stem)`, `recordLocateCalled(stem)`,
+`incrementOntologyGateBlockedToken(stem)`, `writeOntologyGateObservationAsync(stem, action)`.
+
+**New on `ReadResponseHelper`:** `ontologyGateEnforced` flag, `checkOntologyGate(normalized, options, requestId, action)`.
+
+**`FileContentReader`:** gate callsite in `doRead` and `doRange`; new `doGetMethod` test seam delegating
+to `FileStructureReader`. **`FileReadService`:** gate callsite in `get_method` case.
+
+**Bugfix (CT-PCOMMIT-2):** `WriteCommitterSpec.readContent` helper now retries up to 3× on transient
+`File not found` errors after concurrent writes, eliminating a pre-existing flaky test failure on Windows.
+
+**Contracts:** `OntologyGateEnforcementSpec` OGE-1..11 (11/11 GREEN).
+Full suite: 289/289 GREEN.
+
+## [0.9.9] — Missing-knownHash detection + StructureCache peekHash
+
+### Problem
+`knownhash_pct=0` in `sessions_index` for sessions with eligible reads meant Claude was
+issuing `file_read action=read` without `options.knownHash` on files already seen this
+session, wasting 400-2000 tokens per re-read. The violation was completely silent —
+nothing in the response or telemetry indicated it had occurred, so distillation had nothing
+to learn from.
+
+### Changes
+
+**`StructureCache`** (`+peekHash`):
+New `peekHash(String normalizedPath)` method — checks the internal `CacheEntry` map
+without triggering any disk I/O. Returns the cached hash only if an entry exists AND the
+file has not been modified since it was cached; returns `null` otherwise. Used by
+`ReadResponseHelper.maybeWarnMissingKnownHash` to distinguish "file already seen this
+session" from "first-time encounter" without polluting the `getHash` call sequence.
+
+**`FilesystemTelemetryService`** (`+incrementMissingKhCount`, `+getMissingKhCount`):
+New `missingKhCount` `AtomicInteger` field, reset in `resetSessionAccumulator()` alongside
+the existing token/call accumulators. `incrementMissingKhCount()` and `getMissingKhCount()`
+are public; the count is available to `handleRecordSessionTelemetry` for inclusion in
+session telemetry summaries.
+
+**`ContextServerClient`** (`+writeMissingKnownHashObservationAsync`):
+Fire-and-forget POST to `context_write scope=session type=observation` recording the
+violation. Includes file stem, action, and remediation hint. Feeds the distillation
+pipeline so the gap surfaces at next bootstrap via the learning loop.
+
+**`ReadResponseHelper`** (`+missingKhWarnEnabled`, `+maybeWarnMissingKnownHash`, `+peekStructureCache`):
+- `@Value('${mcp.filesystem.missing-kh-warn.enabled:true}') boolean missingKhWarnEnabled`
+  — feature flag; default on.
+- `maybeWarnMissingKnownHash(response, normalized, options, action, preCachedHash)` —
+  advisory check. If `preCachedHash` is non-null (file was in cache before this call) AND
+  caller omitted `options.knownHash`, injects `_missing_knownhash` hint into the response
+  map, fires the async observation, and increments the session counter. Does NOT block.
+- `peekStructureCache(normalized)` — convenience wrapper over `StructureCache.peekHash`.
+  Called by `FileContentReader` **before** the read to capture pre-read cache state.
+
+**`FileContentReader`** (callsites in `doRead` and `doGetMethod`):
+- `doRead`: captures `preCachedHash = helper.peekStructureCache(normalized)` AFTER the
+  ontology-gate check but BEFORE `checkKnownHash`/`storeAndHintKnownHash`. Passes it to
+  `maybeWarnMissingKnownHash` after content is assembled.
+- `doGetMethod`: same pattern — `peekStructureCache` before the `structureReader` delegate
+  call; `maybeWarnMissingKnownHash` injected into the parsed response map if a hint is added.
+
+**`MissingKnownHashDetectionSpec`** (MKH-1..9, all GREEN):
+- MKH-1: read without knownHash, file in StructureCache → `_missing_knownhash` injected
+- MKH-2: read WITH knownHash supplied → no hint
+- MKH-3: read, file NOT in StructureCache → no hint
+- MKH-4: hint contains the correct cached hash
+- MKH-5: correction observation written async to CS on violation
+- MKH-6: `FilesystemTelemetryService.incrementMissingKhCount` called on violation
+- MKH-7: feature flag disabled → no hint
+- MKH-8: hint is additive — read still returns content and `file_content_hash` normally
+- MKH-9: `doGetMethod` without knownHash on cached file → hint injected

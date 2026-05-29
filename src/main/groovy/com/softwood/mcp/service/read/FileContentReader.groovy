@@ -58,6 +58,10 @@ class FileContentReader extends AbstractFileService {
     @Autowired
     ReadResponseHelper helper
 
+    /** E-5: delegate for doGetMethod gate seam (FS 0.9.8). */
+    @Autowired
+    FileStructureReader structureReader
+
     @Value('${mcp.filesystem.read-chunk-threshold-kb:60}')
     int readChunkThresholdKb
 
@@ -96,6 +100,15 @@ class FileContentReader extends AbstractFileService {
     McpResponse doRead(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
+
+        // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8).
+        // Block whole-file reads on indexed .groovy/.java when no locate preceded this session.
+        McpResponse gateBlock = helper.checkOntologyGate(normalized, options, requestId, 'read')
+        if (gateBlock != null) return gateBlock
+
+        // FS 0.9.9: capture pre-read cache state for missing-knownHash detection.
+        // Must be checked BEFORE checkKnownHash/storeAndHintKnownHash populate the cache.
+        String preCachedHash = helper.peekStructureCache(normalized)
 
         // FIX-KH-AUTO: doRead is a whole-file action -- pass autoLookup=true
         McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId, true)
@@ -167,6 +180,8 @@ class FileContentReader extends AbstractFileService {
         helper.storeAndHintKnownHash(resp, normalized, options, true)
         // FS 0.9.1: ontology-first guard -- warns when reading indexed .groovy/.java without prior locate
         helper.maybeAddOntologyGuardHint(resp, normalized)
+        // FS 0.9.9: missing-knownHash advisory -- injects hint + fires correction obs if hash omitted
+        helper.maybeWarnMissingKnownHash(resp, normalized, options, 'read', preCachedHash)
         return textResponse(requestId, resp)
     }
 
@@ -288,6 +303,12 @@ class FileContentReader extends AbstractFileService {
 
     McpResponse doRange(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
+
+        // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8).
+        // Block range reads on indexed .groovy/.java when no locate preceded this session.
+        McpResponse gateBlock = helper.checkOntologyGate(normalized, options, requestId, 'range')
+        if (gateBlock != null) return gateBlock
+
         McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId)
         if (unchanged != null) return unchanged
         int startLine   = (options.startLine as Integer) ?: 1
@@ -588,5 +609,45 @@ class FileContentReader extends AbstractFileService {
             resp._sizeCappedNote = ("multi aggregate output capped at ${multiReadCapChars} chars (~${multiReadCapChars / 4000 as int}K tokens). Use fewer files or head/range for targeted reads." as String)
         }
         return textResponse(requestId, resp)
+    }
+
+    /**
+     * E-5 test seam: gate check + delegation to {@link FileStructureReader#doGetMethod}.
+     * Allows {@link com.softwood.mcp.service.read.OntologyGateEnforcementSpec} to call
+     * {@code fileContentReader.doGetMethod(...)} directly while exercising the same gate
+     * logic that {@code FileReadService} applies in the {@code case 'get_method'} branch.
+     *
+     * @param path       absolute file path
+     * @param options    tool call options (checks {@code method}, {@code allowNoLocate})
+     * @param requestId  MCP request ID
+     * @return gate block error, or the result of {@code structureReader.doGetMethod}
+     */
+    McpResponse doGetMethod(String path, Map<String, Object> options, Object requestId) {
+        String normalized = validateFilePath(path)
+
+        // E-5: ONTOLOGY-GATE hard enforcement.
+        McpResponse gateBlock = helper.checkOntologyGate(normalized, options, requestId, 'get_method')
+        if (gateBlock != null) return gateBlock
+
+        // FS 0.9.9: capture pre-call cache state before structureReader populates it.
+        String preCachedHash = helper.peekStructureCache(normalized)
+
+        McpResponse r = structureReader.doGetMethod(path, options, requestId)
+        // FS 0.9.9: missing-knownHash advisory -- inject hint into response if hash omitted
+        if (r != null && r.error == null) {
+            try {
+                List<Map<String, Object>> content = (List<Map<String, Object>>) r.result?.content
+                Map<String, Object> first = content?.find { (it as Map<String, Object>).type == 'text' } as Map<String, Object>
+                String text = first?.text as String
+                if (text?.startsWith('{')) {
+                    Map<String, Object> resp = (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
+                    helper.maybeWarnMissingKnownHash(resp, normalized, options, 'get_method', preCachedHash)
+                    if (resp.containsKey('_missing_knownhash')) {
+                        return textResponse(requestId, resp)
+                    }
+                }
+            } catch (Exception ignored) {} // fail-open
+        }
+        return r
     }
 }

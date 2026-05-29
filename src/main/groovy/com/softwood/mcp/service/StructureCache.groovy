@@ -117,6 +117,26 @@ class StructureCache {
      * @param normalizedPath  absolute normalised path string
      * @return  12-char hex hash, or null on error
      */
+
+    /**
+     * FS 0.9.9: peek at the cached hash without computing it from disk.
+     * Returns the cached hash only if an entry already exists for the path
+     * and the file has not been modified since it was cached. Returns {@code null}
+     * if the file has never been seen or the entry is stale.
+     * Used by {@link com.softwood.mcp.service.read.ReadResponseHelper#maybeWarnMissingKnownHash}
+     * to detect "file was seen before but knownHash was omitted" without triggering
+     * an expensive disk read on first-time encounters.
+     *
+     * @param normalizedPath  absolute normalised path string
+     * @return cached hash string, or null if not present / stale
+     */
+    String peekHash(String normalizedPath) {
+        if (!normalizedPath) return null
+        CacheEntry entry = cache.get(normalizedPath)
+        if (entry == null) return null
+        long currentModified = new File(normalizedPath).lastModified()
+        return (entry.lastModified == currentModified && entry.hash != null) ? entry.hash : null
+    }
     String getHash(String normalizedPath) {
         File file = new File(normalizedPath)
         long currentModified = file.lastModified()

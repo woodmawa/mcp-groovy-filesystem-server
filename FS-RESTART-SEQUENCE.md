@@ -418,6 +418,7 @@ baked into the source. These are kept in sync with the help_sections rows.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.8 | 2026-05-29 | 0.9.9 missing-knownHash detection: `StructureCache.peekHash(path)` cache-only lookup. `ReadResponseHelper.maybeWarnMissingKnownHash` injects `_missing_knownhash` advisory hint when a file was known in cache but knownHash was omitted. `FilesystemTelemetryService.incrementMissingKhCount()` session counter. `ContextServerClient.writeMissingKnownHashObservationAsync` correction pipeline feedback. `MissingKnownHashDetectionSpec` MKH-1..9 green. |
 | 2.7 | 2026-05-22 | 0.9.6 fix #142: `StructuralGuard.checkAll` adds `allowStructuralEdit` bypass for brace/paren delta (threaded through `replace`/`patch`/`multi_replace`). `FileContentWriter.doAppend` emits `code_append_warning` on code files. `StructuralGuardBypassSpec` CT-SG-BYPASS-1..9 green. Tool hints updated in CS `help_sections`. |
 | 2.6 | 2026-05-22 | 0.9.5 BUILD-16B (partial): `McpController.extractOutcome` now detects tool-level `isError=true`; `outcome='error'` recorded correctly for tool errors (was `outcome='success'`). `TelemetryOutcomeSpec` CT-16B-1..5 green. CS-side `outcome='unchanged'` cache-hit restore is the remaining 16B item (CS-only change). |
 | 2.5 | 2026-05-20 | 0.9.4 adopt fix documented: `startServer`+`doEnsure` adopt untracked eager processes when port is occupied. AW (`managedBySession=false`) root cause traced to `pingMcp` returning null for REST endpoints; fix adds adopt-on-detect guard. §2 updated. |

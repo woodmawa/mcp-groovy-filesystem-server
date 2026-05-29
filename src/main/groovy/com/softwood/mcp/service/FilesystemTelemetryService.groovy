@@ -62,6 +62,9 @@ class FilesystemTelemetryService {
     private final java.util.concurrent.atomic.AtomicInteger sessionReadTokens = new java.util.concurrent.atomic.AtomicInteger(0)
     private final java.util.concurrent.atomic.AtomicInteger sessionReadCalls  = new java.util.concurrent.atomic.AtomicInteger(0)
 
+    /** FS 0.9.9: counts file_read calls that omitted options.knownHash despite file being in StructureCache. */
+    private final java.util.concurrent.atomic.AtomicInteger missingKhCount = new java.util.concurrent.atomic.AtomicInteger(0)
+
     // v0.7.44: time-based session gap detection - reset accumulator after 30 min inactivity
     private final AtomicLong lastCallEpochMs = new AtomicLong(0L)
 
@@ -90,12 +93,24 @@ class FilesystemTelemetryService {
     void resetSessionAccumulator() {
         sessionReadTokens.set(0)
         sessionReadCalls.set(0)
+        missingKhCount.set(0)
         lastCallEpochMs.set(0L)
     }
 
     /** Current cumulative read tokens this session. */
     int getSessionReadTokens() { sessionReadTokens.get() }
     int getSessionReadCalls()  { sessionReadCalls.get() }
+
+    /**
+     * FS 0.9.9: increments the missing-knownHash counter for this session.
+     * Called by {@link ReadResponseHelper#maybeWarnMissingKnownHash} when a
+     * {@code file_read action=read} or {@code action=get_method} is issued without
+     * {@code options.knownHash} despite the file being in the session StructureCache.
+     */
+    void incrementMissingKhCount() { missingKhCount.incrementAndGet() }
+
+    /** Returns the number of missing-knownHash violations recorded this session. */
+    int getMissingKhCount() { missingKhCount.get() }
 
     /**
      * Returns a health summary for the current session.
