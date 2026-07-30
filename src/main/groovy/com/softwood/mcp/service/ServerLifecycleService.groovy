@@ -492,12 +492,19 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             String jarsDir = config.jarsDir as String
             String javaCmd = config.javaCmd as String ?: 'java'
 
-            String jarPath = (jarsDir + '/' + jar).replace('/', File.separator)
-            if (!new File(jarPath).exists()) {
+            // Resolve the companion jar. The MCPB extension dir is the master endpoint
+            // (Claude Desktop launches the stdio server from it); claude-sync/jars is only a
+            // derived snapshot. Prefer the extension manifest's entry_point so the companion
+            // always tracks the deployed version and cannot drift; fall back to jarsDir/<pinned>.
+            Map<String, Object> resolved = resolveCompanionJar(server, jarsDir, jar)
+            String jarPath = resolved.get('path') as String
+            result.put('jarSource', resolved.get('source'))
+            if (jarPath == null || !new File(jarPath).exists()) {
                 result.put('started', false)
-                result.put('error', ('Jar not found: ' + jarPath) as String)
+                result.put('error', ('Companion jar not found. Tried: ' + resolved.get('tried')) as String)
                 return result
             }
+            log.info('server_lifecycle: {} companion jar from {} -> {}', name, resolved.get('source'), jarPath)
 
             List<String> cmd = new ArrayList<String>()
             cmd.add(javaCmd)
@@ -557,6 +564,61 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         }
 
         return result
+    }
+
+    /**
+     * Resolve the companion jar to launch. The MCPB extension directory is the master
+     * (Claude Desktop launches the stdio server from there), so prefer the extension
+     * manifest's entry_point jar. Fall back to the derived snapshot in claude-sync/jars.
+     * Returns keys: path (String|null), source ('extension'|'jarsDir'|'none'), tried (List).
+     */
+    private Map<String, Object> resolveCompanionJar(Map server, String jarsDir, String pinnedJar) {
+        List<String> tried = new ArrayList<String>()
+        String extDir = server.get('mcpbExtDir') as String
+        boolean isMcpb = Boolean.TRUE.equals(server.get('mcpb'))
+        if (isMcpb && extDir) {
+            File extRoot = new File(extensionsBaseDir(), extDir)
+            File manifest = new File(extRoot, 'manifest.json')
+            if (manifest.exists()) {
+                try {
+                    Map manifestMap = mapper.readValue(manifest, Map.class)
+                    Map serverCfg = manifestMap.get('server') as Map
+                    String entryPoint = serverCfg == null ? null : (serverCfg.get('entry_point') as String)
+                    if (entryPoint) {
+                        File extJar = new File(extRoot, entryPoint)
+                        tried.add(extJar.path)
+                        if (extJar.exists()) {
+                            return jarResult(extJar.path, 'extension', tried)
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn('server_lifecycle: manifest read failed {} [{}]: {} - falling back to jarsDir',
+                            manifest.path, e.class.name, e.message)
+                }
+            } else {
+                tried.add('manifest-missing:' + manifest.path)
+            }
+        }
+        // Fallback: derived snapshot copy in claude-sync/jars
+        String snapshotPath = (jarsDir + '/' + pinnedJar).replace('/', File.separator)
+        tried.add(snapshotPath)
+        return new File(snapshotPath).exists() ?
+                jarResult(snapshotPath, 'jarsDir', tried) :
+                jarResult(null, 'none', tried)
+    }
+
+    private static Map<String, Object> jarResult(String path, String source, List<String> tried) {
+        Map<String, Object> m = new LinkedHashMap<String, Object>()
+        m.put('path', path)
+        m.put('source', source)
+        m.put('tried', tried)
+        return m
+    }
+
+    /** Base dir for MCPB desktop extensions: %APPDATA%/Claude/Claude Extensions */
+    private static String extensionsBaseDir() {
+        String appData = System.getenv('APPDATA') ?: (System.getProperty('user.home') + '/AppData/Roaming')
+        return new File(appData, 'Claude/Claude Extensions').path
     }
 
     @PreDestroy

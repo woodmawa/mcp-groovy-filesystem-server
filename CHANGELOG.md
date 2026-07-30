@@ -389,3 +389,6 @@ pipeline so the gap surfaces at next bootstrap via the learning loop.
 - MKH-7: feature flag disabled → no hint
 - MKH-8: hint is additive — read still returns content and `file_content_hash` normally
 - MKH-9: `doGetMethod` without knownHash on cached file → hint injected
+
+## [0.9.10]
+ServerLifecycleService.startServer() HTTP companion jar resolution now prefers the MCPB extension master over the claude-sync/jars snapshot. New resolveCompanionJar() reads the extension manifest.json entry_point (%APPDATA%/Claude/Claude Extensions/<mcpbExtDir>/server/<jar>) and launches that jar; falls back to jarsDir/<pinned> only when the extension/manifest is absent (e.g. mcpb:false servers like ms-graph). Start result now carries jarSource=extension|jarsDir|none. Retires the drift class where a stale or removed jarsDir copy silently took an HTTP companion down - root cause of the 2026-07-30 context-server :8082 handshake outage (flow lifecycle-start / session-end ConnectException: Connection refused, while the stdio path stayed healthy). New helpers resolveCompanionJar/jarResult/extensionsBaseDir; manifest read try/catch logs exception class (practice #626). Verified: compileGroovy clean; behavioural replay resolves all four MCPB servers from the extension, ms-graph from jarsDir, and a forced-stale pin still resolves to the real deployed jar.

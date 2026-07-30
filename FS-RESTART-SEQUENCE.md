@@ -1,8 +1,8 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 2.6
-**Last updated:** 2026-05-22
+**Version:** 2.9
+**Last updated:** 2026-07-30
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
 
@@ -70,6 +70,24 @@ Shared SQLite DB: C:/Users/willw/claude-sync/best_practices.db
   ├─ Written by: FS async via ContextServerClient HTTP → :8082 → context HTTP companion → JDBC
   └─ Tables relevant to FS: tool_call_telemetry, session_working_files, active_session
 ```
+
+### HTTP companion jar source (v0.9.10+)
+
+The MCPB **extension directory is the master** - Claude Desktop launches each stdio server from
+`%APPDATA%/Claude/Claude Extensions/<mcpbExtDir>/server/<jar>`. As of v0.9.10,
+`ServerLifecycleService.resolveCompanionJar` launches the **HTTP companion from that same
+extension jar** (read from the extension `manifest.json` `entry_point`), not the pinned copy in
+`claude-sync/jars`. It falls back to `claude-sync/jars/<pinned>` only when the extension/manifest
+is absent (e.g. `ms-graph`, `mcpb:false`). The start result reports `jarSource=extension|jarsDir|none`.
+
+**Consequence:** `claude-sync/jars` is now a snapshot / rollback reference only - it is no longer
+in the companion launch path. A stale or missing `jarsDir` copy, or a config version-pin that
+drifted from the deployed jar, can no longer take an HTTP companion down. This retired the
+2026-07-30 outage where the context-server companion on :8082 failed to start because
+`mcp-groovy-context-server-0.87.0.jar` was missing from `jarsDir` though present in the extension
+- surfacing as `ConnectException: Connection refused` on every flow node that reached CS over HTTP
+(bootstrap `lifecycle-start`, `session-end` telemetry/audit). Diagnose with `server_lifecycle
+action=status`: a companion showing `DOWN`/`portListening=false` while stdio `context_*` tools work.
 
 ### Session ID resolution — single point of truth
 
@@ -418,6 +436,7 @@ baked into the source. These are kept in sync with the help_sections rows.
 
 | Version | Date | Change |
 |---------|------|--------|
+| 2.9 | 2026-07-30 | 0.9.10 companion-jar resolution now extension-master: `ServerLifecycleService.resolveCompanionJar` launches the HTTP companion from the MCPB extension `manifest.json` `entry_point` (`%APPDATA%/Claude/Claude Extensions/<mcpbExtDir>/server/<jar>`), falling back to `claude-sync/jars/<pinned>` only for non-mcpb servers (ms-graph) or a missing manifest. Start result adds `jarSource`. Retires the jarsDir-drift outage class (2026-07-30 CS :8082 handshake failure: companion jar missing from jarsDir while present in the extension). New helpers `resolveCompanionJar`/`jarResult`/`extensionsBaseDir`; manifest read logs exception class (practice #626). Section 2 topology note added. compileGroovy clean; behavioural replay verified. |
 | 2.8 | 2026-05-29 | 0.9.9 missing-knownHash detection: `StructureCache.peekHash(path)` cache-only lookup. `ReadResponseHelper.maybeWarnMissingKnownHash` injects `_missing_knownhash` advisory hint when a file was known in cache but knownHash was omitted. `FilesystemTelemetryService.incrementMissingKhCount()` session counter. `ContextServerClient.writeMissingKnownHashObservationAsync` correction pipeline feedback. `MissingKnownHashDetectionSpec` MKH-1..9 green. |
 | 2.7 | 2026-05-22 | 0.9.6 fix #142: `StructuralGuard.checkAll` adds `allowStructuralEdit` bypass for brace/paren delta (threaded through `replace`/`patch`/`multi_replace`). `FileContentWriter.doAppend` emits `code_append_warning` on code files. `StructuralGuardBypassSpec` CT-SG-BYPASS-1..9 green. Tool hints updated in CS `help_sections`. |
 | 2.6 | 2026-05-22 | 0.9.5 BUILD-16B (partial): `McpController.extractOutcome` now detects tool-level `isError=true`; `outcome='error'` recorded correctly for tool errors (was `outcome='success'`). `TelemetryOutcomeSpec` CT-16B-1..5 green. CS-side `outcome='unchanged'` cache-hit restore is the remaining 16B item (CS-only change). |
