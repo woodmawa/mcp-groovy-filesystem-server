@@ -427,3 +427,66 @@ isolated the defect to multi-line handling rather than the test harness.
 `doCmd` and `doBash` are now `protected` rather than `private` — `@CompileStatic` private methods
 are unreachable from a `@CompileDynamic` Spock spec even in the same package (practice #1166,
 seam 2).
+
+
+## [0.9.12]
+FS-EXEC-2: background execution jobs — `execute` no longer has to finish inside the client's deadline.
+
+### The problem
+
+`execute` is bounded by a hard **~60s timeout imposed at the MCP client boundary**, and
+`options.timeout` does **not** extend it. FS honours that value in `process.waitFor`, so the work
+keeps running — but the caller has already given up, and the blocked call **serialises everything
+behind it**. A cold Gradle compile of `mcp-agentic-workflow` timed out at the tool boundary while
+still running, then blocked the next two calls (observation 9821, chain `ef8cae5c`).
+
+The ceiling is not ours to raise. The only real fix is to stop blocking underneath it.
+
+### The mechanism
+
+`options.async: true` submits the work and returns a `jobId` immediately:
+
+| action | purpose |
+|---|---|
+| `execute` + `options.async` | submit, returns `{jobId, status:'running', …}` |
+| `job_status` | poll — status, exitCode, elapsedMs, stdout/stderr byte counts |
+| `job_output` | read output; `sinceOffset` + returned `nextOffset` tail incrementally |
+| `job_cancel` | destroy the process, then cancel the promise |
+| `job_list` | enumerate, newest first |
+
+Jobs are retained 30 minutes after finishing, capped at 100 (oldest finished evicted first).
+
+Built on **GroovyConcurrentUtils** — already an FS dependency, and the async primitive the rest of
+the platform uses (AW's TaskGraph runs on the same `Promise` abstraction). `PromiseFactory.executeAsync`
+supplies completion state and cancellation without hand-rolling an executor, and avoids a second
+concurrency model in the same stack.
+
+`runProcess` was refactored so the process-and-drain loop lives once, in `runAndCapture`, shared by
+the synchronous path and by jobs. The child blocks if a pipe fills, so that logic must not be
+duplicated carelessly. When a job is present its output is mirrored in as it arrives — so a running
+build can be tailed — and the `Process` is registered so `job_cancel` kills the OS process rather
+than only the promise.
+
+### Temp-file ownership moved
+
+`doCmd`/`doPowershell`/`doPython` deleted their temp script in a `finally`. On the async path that
+`finally` fires **immediately**, deleting the script before the background job could run it — the
+first async run failed with *"'…mcp-cmd-….cmd' is not recognized as an internal or external
+command"*. Caught by the new specs, not in production. `runProcess` now owns the file on the sync
+path, and the job owns it on the async path, deleting it on completion or cancellation.
+
+### Tests
+
+`ExecuteServiceAsyncSpec` (FS-EXEC-2/2b/2c/2d/2e): submit returns in <2s for a 5-second job and the
+work still completes; `job_output` tails via `nextOffset` and re-reads return nothing; `job_cancel`
+leaves `process.isAlive() == false`; `job_list`/`job_status` round-trip; an unknown `jobId` is an
+explicit error rather than a blank status a caller could misread.
+
+This is new capability rather than a defect fix, so there is no red-then-green here — the ~60s
+ceiling is external and cannot be fixed in FS at all.
+
+Note for anyone reading a failure in these specs: the gradle test worker's `PATH` does not include
+`System32`, so cmd builtins resolve but external executables do not. The specs use an absolute
+`%SystemRoot%\System32\ping.exe` for their delays. Nothing to do with FS.
+
+Full suite 307 tests, 0 failures.

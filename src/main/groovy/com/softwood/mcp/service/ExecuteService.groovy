@@ -34,6 +34,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     @Autowired
     CommandWhitelistConfig whitelistConfig
 
+    @Autowired
+    ExecuteJobRegistry jobRegistry
+
     @Value('${mcp.script.max-execution-time-seconds:60}')
     int maxExecutionTimeSeconds
 
@@ -67,12 +70,13 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'execute',
-            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.\nMULTI-LINE: all actions run every line of a multi-line script. Lines execute in order and the LAST command\'s exit code is returned -- a mid-script failure does not abort the rest (same contract as bash -c, which has no set -e). Check state explicitly rather than trusting a single exitCode when a script mutates something. (cmd silently ran only the first line before FS 0.9.11.)',
+            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.\nMULTI-LINE: all actions run every line of a multi-line script. Lines execute in order and the LAST command\'s exit code is returned -- a mid-script failure does not abort the rest (same contract as bash -c, which has no set -e). Check state explicitly rather than trusting a single exitCode when a script mutates something. (cmd silently ran only the first line before FS 0.9.11.)\nASYNC: set options.async=true for work that may exceed the ~60s MCP client deadline (gradle builds, full test suites). It returns a jobId immediately instead of blocking -- the deadline is imposed by the client, not by FS, so options.timeout cannot extend it and a blocked call also serialises the calls behind it. Poll with action=job_status jobId=<id>; tail incrementally with action=job_output jobId=<id> sinceOffset=<nextOffset from the previous read>; stop with action=job_cancel; enumerate with action=job_list. Jobs are retained for 30 minutes after finishing.',
             inputSchema: [
                 type      : 'object',
                 properties: [
-                    action : [type: 'string', enum: ['bash', 'powershell', 'groovy', 'cmd', 'python'],
-                              description: 'Execution environment'],
+                    action : [type: 'string', enum: ['bash', 'powershell', 'groovy', 'cmd', 'python',
+                                                     'job_status', 'job_output', 'job_cancel', 'job_list'],
+                              description: 'Execution environment, or a job_* action for background jobs (FS-EXEC-2)'],
                     script : [type: 'string', description: 'Script or command to execute'],
                     options: [type: 'object', description: 'workingDir (string), timeout (int seconds), args (list), env (map), verbose (bool). IMPORTANT: maxStdout (int chars, default 50000 ~12K tokens): cap stdout in response - set lower to save context window. maxStdout (int chars, default 50000 ~12K tokens), maxStderr (int chars, default 5000 ~1.2K tokens)',
                               properties: [
@@ -83,10 +87,15 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                   verbose   : [type: 'boolean', description: 'Set true for full response with action/durationMs. Default: compact (success/exitCode/stdout/stderr only)'],
                                   maxStdout   : [type: 'integer', description: 'Max chars of stdout to return (default 50000)'],
                                   maxStderr   : [type: 'integer', description: 'Max chars of stderr to return (default 5000)'],
-                                  grepPattern : [type: 'string', description: 'Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including | alternation, e.g. "foo|bar", "RequestBuilder\\.class$".']
+                                  grepPattern : [type: 'string', description: 'Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including | alternation, e.g. "foo|bar", "RequestBuilder\\.class$".'],
+                                  async       : [type: 'boolean', description: 'FS-EXEC-2: run in the background and return a jobId immediately. Use for anything that may exceed the ~60s client deadline.'],
+                                  jobId       : [type: 'string', description: 'Job id, for job_status / job_output / job_cancel.'],
+                                  sinceOffset : [type: 'integer', description: 'job_output: resume reading stdout from this character offset. Pass the nextOffset returned by the previous job_output call to tail without re-sending output you already have.']
                               ]]
                 ],
-                required  : ['action', 'script']
+                // script is required for the executor actions but meaningless for job_* ones,
+                // which are rejected before validation if it is demanded here.
+                required  : ['action']
             ]
         ]] as List<Map<String, Object>>
     }
@@ -100,6 +109,12 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             String action  = arguments.action as String
             String script  = arguments.script as String
             Map<String, Object> options = (arguments.options as Map<String, Object>) ?: [:] as Map<String, Object>
+
+            // FS-EXEC-2: job actions carry no script and no working directory, so they must be
+            // handled before script/path validation rejects them for lacking both.
+            if (action in ['job_status', 'job_output', 'job_cancel', 'job_list']) {
+                return handleJobAction(action, options, requestId)
+            }
 
             String workingDir = options.workingDir as String ?: activeProjectRoot ?: allowedDirectories[0]
             int timeout       = (options.timeout as Integer) ?: maxExecutionTimeSeconds
@@ -163,15 +178,13 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         // Passing scripts via -Command mangles multi-line scripts, backtick escapes,
         // and regex string literals during MCP JSON serialisation -> ProcessBuilder arg passing.
         // -File bypasses all of that: PowerShell reads the file directly, no quoting issues.
-        File tempScript = null
-        try {
-            tempScript = File.createTempFile('mcp-ps-', '.ps1')
-            tempScript.text = script
-            List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tempScript.absolutePath]
-            return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides, options)
-        } finally {
-            tempScript?.delete()
-        }
+        // FS-EXEC-2: runProcess owns the temp file's lifetime from here. An async job outlives
+        // this method, so deleting the script in a finally block here destroyed it before the
+        // background job could run it.
+        File tempScript = File.createTempFile('mcp-ps-', '.ps1')
+        tempScript.text = script
+        List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tempScript.absolutePath]
+        return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides, options, tempScript)
     }
 
     // protected, not private: @CompileStatic private methods are unreachable from a
@@ -195,18 +208,14 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         // Semantics: all lines run in order and the LAST command's exit code is returned --
         // the same contract as `bash -c` here, which has no `set -e`. A mid-script failure does
         // not abort the remaining lines.
-        File tempScript = null
-        try {
-            tempScript = File.createTempFile('mcp-cmd-', '.cmd')
-            // @echo off, or the interpreter echoes each command into stdout beside its output.
-            // CRLF: batch files are line-oriented and LF-only files misparse on some shells.
-            String body = script.replaceAll('\r?\n', '\r\n')
-            tempScript.text = '@echo off\r\n' + body
-            List<String> cmd = ['cmd', '/c', tempScript.absolutePath]
-            return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides, options)
-        } finally {
-            tempScript?.delete()
-        }
+        // FS-EXEC-2: see doPowershell -- runProcess owns the temp file.
+        File tempScript = File.createTempFile('mcp-cmd-', '.cmd')
+        // @echo off, or the interpreter echoes each command into stdout beside its output.
+        // CRLF: batch files are line-oriented and LF-only files misparse on some shells.
+        String body = script.replaceAll('\r?\n', '\r\n')
+        tempScript.text = '@echo off\r\n' + body
+        List<String> cmd = ['cmd', '/c', tempScript.absolutePath]
+        return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides, options, tempScript)
     }
 
     private McpResponse doPython(String script, String workingDir, int timeout,
@@ -238,15 +247,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         // Passing scripts via '-c' mangles curly braces and other shell-special characters
         // during ProcessBuilder argument passing on Windows (Groovy GString / shell escaping).
         // Writing to a temp file bypasses all quoting issues: Python reads the file directly.
-        File tempScript = null
-        try {
-            tempScript = File.createTempFile('mcp-py-', '.py')
-            tempScript.text = script
-            List<String> cmd = [interpreter, tempScript.absolutePath]
-            return runProcess(cmd, workingDir, timeout, 'python', requestId, envOverrides, options)
-        } finally {
-            tempScript?.delete()
-        }
+        // FS-EXEC-2: see doPowershell -- runProcess owns the temp file.
+        File tempScript = File.createTempFile('mcp-py-', '.py')
+        tempScript.text = script
+        List<String> cmd = [interpreter, tempScript.absolutePath]
+        return runProcess(cmd, workingDir, timeout, 'python', requestId, envOverrides, options, tempScript)
     }
 
     private McpResponse doGroovy(String script, String workingDir, int timeout,
@@ -300,83 +305,43 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     private McpResponse runProcess(List<String> cmd, String workingDir, int timeout,
                                    String action, Object requestId,
                                    Map<String, String> envOverrides = null,
-                                   Map<String, Object> options = null) {
+                                   Map<String, Object> options = null,
+                                   File tempScript = null) {
         int maxStdout        = (options?.maxStdout as Integer) ?: 50000
         int maxStderr        = (options?.maxStderr as Integer) ?: 5000
         String grepPattern   = options?.grepPattern as String
         boolean compact      = isWriteCompact(options ?: ([:] as Map<String, Object>))
 
-        long start = System.currentTimeMillis()
-        Process process = null
+        // FS-EXEC-2: async submit. The ~60s MCP-client deadline is not ours to raise, so for
+        // long work we stop blocking underneath it -- return a job id now, poll cheaply later.
+        if (options?.async) {
+            return submitAsyncJob(cmd, workingDir, timeout, action, requestId, envOverrides, options, tempScript)
+        }
+
         try {
-            ProcessBuilder pb = new ProcessBuilder(cmd)
-            pb.directory(new File(workingDir))
-            pb.redirectErrorStream(false)
-            if (envOverrides) pb.environment().putAll(envOverrides)
-
-            process = pb.start()
-
-            StringBuilder stdout = new StringBuilder()
-            StringBuilder stderr = new StringBuilder()
-
-            // FIX-6: cap inside loop to prevent heap fill; drain remainder to avoid child process blocking
-            int capturedOut = 0
-            int capturedErr = 0
-            Thread stdoutThread = Thread.ofVirtual().start({
-                process.inputStream.eachLine { String line ->
-                    // When grepPattern is set, bypass the cap during collection so the filter
-                    // sees all lines. The filtered result is capped after filtering below.
-                    // When no grepPattern, cap during collection to prevent heap fill on huge output.
-                    if (grepPattern || capturedOut < maxStdout) {
-                        String s = sanitize(line)
-                        stdout.append(s).append('\n')
-                        capturedOut += s.length() + 1
-                    } // else: drain without storing
-                }
-            })
-            Thread stderrThread = Thread.ofVirtual().start({
-                process.errorStream.eachLine { String line ->
-                    if (capturedErr < maxStderr) {
-                        String s = sanitize(line)
-                        stderr.append(s).append('\n')
-                        capturedErr += s.length() + 1
-                    } // else: drain without storing
-                }
-            })
-
-            boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
-            long elapsedMs = System.currentTimeMillis() - start
-            long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
-            stdoutThread.join(remainingMs)
-            stderrThread.join(remainingMs)
-
-            long durationMs = System.currentTimeMillis() - start
-
-            if (!finished) {
-                process.destroyForcibly()
+            Map<String, Object> cap = runAndCapture(cmd, workingDir, timeout, action, envOverrides,
+                                                    maxStdout, maxStderr, grepPattern, null)
+            if (cap.timedOut) {
                 return textResponse(requestId, [
                     success: false,
                     error  : "Process timed out after ${timeout}s"
                 ])
             }
 
-            int exitCode = process.exitValue()
+            int exitCode     = cap.exitCode as Integer
+            long durationMs  = cap.durationMs as Long
+            int capturedErr  = cap.capturedErr as Integer
             log.info("execute {}: exitCode={}, duration={}ms, workingDir={}", action, exitCode, durationMs, workingDir)
-            // FIX-6: already capped in loop above - no .take() needed
-            // FIX-H: add truncation flags so caller knows output was cut
-            String stdoutStr = stdout.toString()
-            // Apply grepPattern filter if specified — full Java regex, supports | alternation.
-            // Collection was uncapped when grepPattern set, so cap the filtered result here.
+
+            String stdoutStr = cap.stdout as String
             if (grepPattern) {
                 Pattern gp = Pattern.compile(grepPattern)
                 stdoutStr = stdoutStr.readLines().findAll { gp.matcher(it).find() }.join('\n')
                 if (stdoutStr) stdoutStr += '\n'
-                capturedOut = stdoutStr.length()
             }
-            // Cap filtered (or raw) output to maxStdout for response
             boolean stdoutTruncated = stdoutStr.length() > maxStdout
             if (stdoutTruncated) stdoutStr = stdoutStr.take(maxStdout)
-            String stderrStr = stderr.toString()
+            String stderrStr = cap.stderr as String
             boolean stderrTruncated = capturedErr >= maxStderr
 
             if (compact) {
@@ -392,14 +357,174 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             if (stderrTruncated) er.stderr_truncated = true
             return textResponse(requestId, er)
         } catch (Exception e) {
-            process?.destroyForcibly()
-            long durationMs = System.currentTimeMillis() - start
             log.error("execute {} failed: {}", action, sanitize(e.message))
             return textResponse(requestId, [
-                success: false,
-                error  : sanitize(e.message),
-                durationMs: durationMs
+                success   : false,
+                error     : sanitize(e.message),
+                durationMs: 0
             ])
+        } finally {
+            tempScript?.delete()
+        }
+    }
+
+    /**
+     * Run the process and stream both streams into buffers.
+     *
+     * Shared by the synchronous path and by background jobs so there is exactly one copy of the
+     * draining logic -- the child blocks if a pipe fills, so this must never be duplicated
+     * carelessly. When {@code job} is non-null, output is mirrored into it as it arrives so a
+     * caller can tail a running build, and the Process is registered so it can be cancelled.
+     */
+    private Map<String, Object> runAndCapture(List<String> cmd, String workingDir, int timeout,
+                                              String action, Map<String, String> envOverrides,
+                                              int maxStdout, int maxStderr, String grepPattern,
+                                              ExecuteJob job) {
+        long start = System.currentTimeMillis()
+        Process process = null
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd)
+            pb.directory(new File(workingDir))
+            pb.redirectErrorStream(false)
+            if (envOverrides) pb.environment().putAll(envOverrides)
+
+            process = pb.start()
+            if (job) job.process = process
+
+            StringBuilder stdout = new StringBuilder()
+            StringBuilder stderr = new StringBuilder()
+            int capturedOut = 0
+            int capturedErr = 0
+
+            // A job tails live, so it is never capped during collection -- job_output applies
+            // caps at read time instead. The sync path keeps the original cap-in-loop guard.
+            boolean uncapped = (grepPattern != null) || (job != null)
+
+            Process p = process
+            Thread stdoutThread = Thread.ofVirtual().start({
+                p.inputStream.eachLine { String line ->
+                    if (uncapped || capturedOut < maxStdout) {
+                        String s = sanitize(line)
+                        stdout.append(s).append('\n')
+                        capturedOut += s.length() + 1
+                        if (job) job.appendStdout(s + '\n')
+                    }
+                }
+            })
+            Thread stderrThread = Thread.ofVirtual().start({
+                p.errorStream.eachLine { String line ->
+                    if (uncapped || capturedErr < maxStderr) {
+                        String s = sanitize(line)
+                        stderr.append(s).append('\n')
+                        capturedErr += s.length() + 1
+                        if (job) job.appendStderr(s + '\n')
+                    }
+                }
+            })
+
+            boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
+            long elapsedMs = System.currentTimeMillis() - start
+            long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
+            stdoutThread.join(remainingMs)
+            stderrThread.join(remainingMs)
+
+            if (!finished) {
+                process.destroyForcibly()
+                return [timedOut: true, durationMs: System.currentTimeMillis() - start,
+                        stdout: stdout.toString(), stderr: stderr.toString(),
+                        capturedOut: capturedOut, capturedErr: capturedErr] as Map<String, Object>
+            }
+
+            return [timedOut    : false,
+                    exitCode    : process.exitValue(),
+                    success     : process.exitValue() == 0,
+                    durationMs  : System.currentTimeMillis() - start,
+                    stdout      : stdout.toString(),
+                    stderr      : stderr.toString(),
+                    capturedOut : capturedOut,
+                    capturedErr : capturedErr] as Map<String, Object>
+        } catch (Exception e) {
+            process?.destroyForcibly()
+            throw e
+        }
+    }
+
+    /** FS-EXEC-2: register the work as a background job and return its id immediately. */
+    private McpResponse submitAsyncJob(List<String> cmd, String workingDir, int timeout,
+                                       String action, Object requestId,
+                                       Map<String, String> envOverrides, Map<String, Object> options,
+                                       File tempScript = null) {
+        int maxStdout      = (options?.maxStdout as Integer) ?: 50000
+        int maxStderr      = (options?.maxStderr as Integer) ?: 5000
+        String summary     = sanitize(cmd.join(' ')).take(200)
+        ExecuteJob job = jobRegistry.submit(action, summary, workingDir, { ExecuteJob j ->
+            runAndCapture(cmd, workingDir, timeout, action, envOverrides,
+                          maxStdout, maxStderr, null, j)
+        } as Closure<Map<String, Object>>)
+        // The job outlives this call, so it owns the script file and deletes it on completion.
+        job.tempScript = tempScript
+
+        return textResponse(requestId, [
+            async     : true,
+            jobId     : job.jobId,
+            status    : job.status,
+            action    : action,
+            command   : summary,
+            workingDir: workingDir,
+            timeoutSec: timeout,
+            hint      : 'Poll with action=job_status jobId=<id>; tail with action=job_output ' +
+                        'jobId=<id> sinceOffset=<n>; stop with action=job_cancel.'
+        ] as Map<String, Object>)
+    }
+
+    /** FS-EXEC-2: status / incremental output / cancel / list for background jobs. */
+    private McpResponse handleJobAction(String action, Map<String, Object> options, Object requestId) {
+        String jobId = options?.jobId as String
+
+        if (action == 'job_list') {
+            List<Map<String, Object>> rows = jobRegistry.list().collect { ExecuteJob j -> j.statusMap() }
+            return textResponse(requestId, [jobs: rows, count: rows.size()] as Map<String, Object>)
+        }
+
+        if (!jobId) return McpResponse.toolError(requestId, "${action} requires options.jobId" as String)
+        ExecuteJob job = jobRegistry.get(jobId)
+        if (!job) {
+            return McpResponse.toolError(requestId,
+                "Unknown jobId '${jobId}'. Jobs are retained for 30 minutes after finishing; use action=job_list." as String)
+        }
+
+        switch (action) {
+            case 'job_status':
+                return textResponse(requestId, job.statusMap())
+
+            case 'job_cancel':
+                boolean cancelled = jobRegistry.cancel(jobId)
+                Map<String, Object> cm = job.statusMap()
+                cm.cancelled = cancelled
+                if (!cancelled) cm.note = 'Job had already finished; nothing to cancel.'
+                return textResponse(requestId, cm)
+
+            case 'job_output':
+                int sinceOffset = (options?.sinceOffset as Integer) ?: 0
+                int maxStdout   = (options?.maxStdout as Integer) ?: 50000
+                int maxStderr   = (options?.maxStderr as Integer) ?: 5000
+                String out = job.stdoutFrom(sinceOffset)
+                String err = job.stderrFrom(0)
+                boolean outTrunc = out.length() > maxStdout
+                boolean errTrunc = err.length() > maxStderr
+                if (outTrunc) out = out.take(maxStdout)
+                if (errTrunc) err = err.take(maxStderr)
+                Map<String, Object> om = job.statusMap()
+                om.stdout = out
+                om.stderr = err
+                // nextOffset lets the caller resume exactly where this read stopped.
+                om.nextOffset = sinceOffset + out.length()
+                if (outTrunc) om.stdout_truncated = true
+                if (errTrunc) om.stderr_truncated = true
+                return textResponse(requestId, om)
+
+            default:
+                return McpResponse.toolError(requestId, "Unknown job action: ${action}" as String)
         }
     }
 }
