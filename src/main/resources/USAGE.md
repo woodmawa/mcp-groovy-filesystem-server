@@ -158,6 +158,41 @@ Key options:
 - `options.maxStderr` — chars to return (default 5000)
 - `options.grepPattern` — Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including `|` alternation (unlike Windows `findstr`). Example: `"MessagesRequestBuilder\\.class$|EventsRequestBuilder\\.class$"`. Use this instead of piping to findstr for any output filtering.
 
+### Multi-line scripts (FS 0.9.11)
+
+Every action runs **every line** of a multi-line script. Lines execute in order and the **last**
+command's exit code is returned — a mid-script failure does **not** abort the rest, the same
+contract as `bash -c`, which has no `set -e`.
+
+> When a script mutates something, check the resulting state rather than trusting a single
+> `exitCode`. A `git add` + `git commit` script that returns 0 has not necessarily committed.
+
+Before 0.9.11 `action=cmd` silently ran **only the first line**, returning `exitCode 0` and the
+first command's stdout — indistinguishable from full success. `bash`, `powershell` and `python`
+were always correct.
+
+### Long-running work — `options.async` (FS 0.9.12)
+
+`execute` is bounded by a hard **~60s deadline imposed by the MCP client**. `options.timeout` does
+**not** extend it: FS honours that value, but the caller has already given up — and the blocked call
+**serialises every call behind it**.
+
+For anything that might exceed 60s (gradle builds, full test suites), submit it:
+
+```
+execute action=cmd script="gradlew.bat test" options={async:true, workingDir:"<dir>"}
+  -> {jobId:"...", status:"running"}
+
+execute action=job_status jobId="..."        # status, exitCode, elapsedMs, byte counts
+execute action=job_output jobId="..." sinceOffset=0
+  -> {stdout:"...", nextOffset:1234}         # pass nextOffset next time to tail cheaply
+execute action=job_cancel jobId="..."        # kills the OS process, not just the promise
+execute action=job_list                      # newest first
+```
+
+Jobs are retained for 30 minutes after finishing (max 100). An unknown `jobId` is an explicit
+error, never a blank status.
+
 ### Windows builds
 Use `tools action=gradle` for all builds — canonical path from both Claude and AW flows:
 ```

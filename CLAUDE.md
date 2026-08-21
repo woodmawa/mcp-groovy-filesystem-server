@@ -112,6 +112,36 @@ mcp-groovy-filesystem-server:tools action=gradle subcommand=installMcpbLocal
 execute action=cmd script="gradlew.bat bootJar"   <-- deprecated
 ```
 
+### execute -- multi-line and long-running (FS 0.9.11 / 0.9.12)
+
+**Multi-line scripts run every line.** Lines execute in order and the LAST command's exit code is
+returned; a mid-script failure does NOT abort the rest (same contract as `bash -c`, no `set -e`).
+When a script mutates state, verify the state -- a `git add` + `git commit` script returning 0 has
+not necessarily committed. Before 0.9.11 `action=cmd` silently ran only the first line and returned
+`exitCode 0`, which is indistinguishable from success; that is how a real commit was lost
+(observation 9881).
+
+**Anything that may take over ~60s must be submitted, not awaited.** The ~60s deadline is imposed by
+the MCP *client*, not by FS: `options.timeout` cannot extend it, and a blocked call also serialises
+every call behind it (observation 9821, chain `ef8cae5c`).
+
+```
+# CORRECT -- submit, then poll
+execute action=cmd script="gradlew.bat test" options={async:true, workingDir:"<dir>"}
+   -> {jobId, status:"running"}
+execute action=job_status jobId=<id>
+execute action=job_output jobId=<id> sinceOffset=<nextOffset from last read>
+execute action=job_cancel jobId=<id>
+execute action=job_list
+
+# WRONG -- raising options.timeout does nothing; the client has already given up
+execute action=cmd script="gradlew.bat test" options={timeout:600}
+```
+
+Detaching via `Start-Process` and polling a redirected log file was the pre-0.9.12 workaround. It
+still works, but `async` is the supported path: it reports exit code and status, and `job_cancel`
+kills the process rather than leaving it orphaned.
+
 ### server_transform — correct param names
 
 ```
