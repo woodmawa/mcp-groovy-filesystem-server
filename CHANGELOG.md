@@ -392,3 +392,38 @@ pipeline so the gap surfaces at next bootstrap via the learning loop.
 
 ## [0.9.10]
 ServerLifecycleService.startServer() HTTP companion jar resolution now prefers the MCPB extension master over the claude-sync/jars snapshot. New resolveCompanionJar() reads the extension manifest.json entry_point (%APPDATA%/Claude/Claude Extensions/<mcpbExtDir>/server/<jar>) and launches that jar; falls back to jarsDir/<pinned> only when the extension/manifest is absent (e.g. mcpb:false servers like ms-graph). Start result now carries jarSource=extension|jarsDir|none. Retires the drift class where a stale or removed jarsDir copy silently took an HTTP companion down - root cause of the 2026-07-30 context-server :8082 handshake outage (flow lifecycle-start / session-end ConnectException: Connection refused, while the stdio path stayed healthy). New helpers resolveCompanionJar/jarResult/extensionsBaseDir; manifest read try/catch logs exception class (practice #626). Verified: compileGroovy clean; behavioural replay resolves all four MCPB servers from the extension, ms-graph from jarsDir, and a forced-stale pin still resolves to the real deployed jar.
+
+
+## [0.9.11]
+FS-EXEC-1: `execute action=cmd` ran only the FIRST LINE of a multi-line script, silently.
+
+`doCmd` passed the script as `['cmd', '/c', script]`. `cmd /c` accepts a **single** command, so
+every line after the first was discarded — with `exitCode 0` and the first command's stdout,
+which is indistinguishable from full success. There was no error, no warning, and no clue in the
+response that anything had been dropped.
+
+Cost, 2026-08-21 (observation 9881): a script of `git add <paths>` then `git commit -F msg`
+returned success with only CRLF warnings on stderr. The add ran; the commit never happened. The
+next call, `git push`, reported "Everything up-to-date" — technically true, and reading exactly
+like success. Only `git status -sb`, showing the files still staged rather than committed,
+revealed it. An earlier four-command diagnostic script silently lost three of its four commands
+and returned just the branch name.
+
+`doPowershell` and `doPython` already write the script to a temp file for precisely this class of
+problem, each carrying a comment that says so. `cmd` never got the same treatment. It now writes a
+temp `.cmd` (with `@echo off`, and CRLF-normalised body) and invokes `cmd /c <file>`.
+
+**Semantics, now documented in the tool description:** every line runs, in order, and the LAST
+command's exit code is returned. A mid-script failure does not abort the remaining lines — the same
+contract as `bash -c`, which has no `set -e`. Callers mutating state should check that state
+explicitly rather than trusting a single `exitCode`. `bash` was already correct (`bash -c` handles
+multi-line input); `powershell` and `python` were already correct via their temp files.
+
+`ExecuteServiceMultilineSpec` (FS-EXEC-1/1b/1c/1d) covers three-line and two-line scripts, a
+single-line script to guard the common case against regression, and asserts `@echo off` keeps
+command text out of stdout. 1c and 1d passed on the old code and 1/1b failed, which is what
+isolated the defect to multi-line handling rather than the test harness.
+
+`doCmd` and `doBash` are now `protected` rather than `private` — `@CompileStatic` private methods
+are unreachable from a `@CompileDynamic` Spock spec even in the same package (practice #1166,
+seam 2).

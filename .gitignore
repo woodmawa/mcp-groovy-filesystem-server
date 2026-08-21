@@ -15,3 +15,12 @@ out/
 # Windows device file leak (phantom file)
 nul
 *.backup
+
+# Agent scratch logs — redirected gradle output written into the repo root by tooling.
+# git add -A would otherwise sweep them into a commit.
+fs-*.txt
+aw-*.txt
+
+# JVM crash/heap-dump artifacts
+*.hprof
+hs_err_pid*.log

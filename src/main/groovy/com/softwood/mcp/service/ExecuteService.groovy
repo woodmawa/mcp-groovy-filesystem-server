@@ -67,7 +67,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'execute',
-            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.',
+            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.\nMULTI-LINE: all actions run every line of a multi-line script. Lines execute in order and the LAST command\'s exit code is returned -- a mid-script failure does not abort the rest (same contract as bash -c, which has no set -e). Check state explicitly rather than trusting a single exitCode when a script mutates something. (cmd silently ran only the first line before FS 0.9.11.)',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -141,7 +141,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     // Actions
     // -----------------------------------------------------------------------
 
-    private McpResponse doBash(String script, String workingDir, int timeout,
+    protected McpResponse doBash(String script, String workingDir, int timeout,
                                Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
         if (!enableBash) return McpResponse.toolError(requestId, "Bash execution is disabled")
         if (!whitelistConfig.isBashAllowed(script)) {
@@ -174,15 +174,39 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         }
     }
 
-    private McpResponse doCmd(String script, String workingDir, int timeout,
+    // protected, not private: @CompileStatic private methods are unreachable from a
+    // @CompileDynamic Spock spec even in the same package (practice #1166 seam 2).
+    protected McpResponse doCmd(String script, String workingDir, int timeout,
                              Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
         if (!enableCmd) return McpResponse.toolError(requestId, "CMD execution is disabled")
         if (!whitelistConfig.isCmdAllowed(script)) {
             log.warn("CMD script rejected by whitelist/blacklist config")
             return McpResponse.toolError(requestId, "CMD command not permitted by whitelist configuration")
         }
-        List<String> cmd = ['cmd', '/c', script]
-        return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides, options)
+        // FS-EXEC-1: `cmd /c <script>` accepts a SINGLE command. Every line after the first was
+        // discarded SILENTLY -- exitCode 0 plus the first command's stdout, indistinguishable
+        // from full success. It cost a real `git commit` (observation 9881): the preceding
+        // `git add` ran, the commit vanished, and the follow-up push said "Everything
+        // up-to-date", which was true and read like success.
+        //
+        // doPowershell and doPython already write the script to a temp file for exactly this
+        // class of problem, each with a comment saying so. cmd never got the same treatment.
+        //
+        // Semantics: all lines run in order and the LAST command's exit code is returned --
+        // the same contract as `bash -c` here, which has no `set -e`. A mid-script failure does
+        // not abort the remaining lines.
+        File tempScript = null
+        try {
+            tempScript = File.createTempFile('mcp-cmd-', '.cmd')
+            // @echo off, or the interpreter echoes each command into stdout beside its output.
+            // CRLF: batch files are line-oriented and LF-only files misparse on some shells.
+            String body = script.replaceAll('\r?\n', '\r\n')
+            tempScript.text = '@echo off\r\n' + body
+            List<String> cmd = ['cmd', '/c', tempScript.absolutePath]
+            return runProcess(cmd, workingDir, timeout, 'cmd', requestId, envOverrides, options)
+        } finally {
+            tempScript?.delete()
+        }
     }
 
     private McpResponse doPython(String script, String workingDir, int timeout,
