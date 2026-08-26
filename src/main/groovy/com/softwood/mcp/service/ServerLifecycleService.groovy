@@ -621,29 +621,50 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
         return new File(appData, 'Claude/Claude Extensions').path
     }
 
+    /**
+     * Shutdown hook that deliberately stops NOTHING.
+     *
+     * <p>An HTTP companion on a fixed port is not a session resource. It is shared
+     * infrastructure: started by whichever instance won the race to find the port free,
+     * depended on by every other live instance, and expected to outlive any one of them.
+     * {@code ServerRegistry} carried only two categories -- owned (kill on shutdown) and
+     * adopted (leave alone) -- and a companion is neither.</p>
+     *
+     * <p>FS 0.9.13: killing owned companions here cost an entire session on 2026-08-26. Claude
+     * Desktop starts two launcher+child pairs of every server; one FS instance started AW's
+     * companion on :8084 and shut down 0.7 seconds later, taking the companion with it:</p>
+     *
+     * <pre>
+     *   16:51:21.912  started agentic-workflow on port 8084 (pid=16436)
+     *   16:51:22.638  server_lifecycle: stopped agentic-workflow on shutdown
+     * </pre>
+     *
+     * <p>Every CS-to-AW inference call then failed silently for the rest of that session, because
+     * {@code autoStartHttpCompanions} is {@code @PostConstruct} and never runs again. CS's
+     * companion survived on :8082 only because this instance found it already listening and
+     * adopted it -- ordering luck, not design.</p>
+     *
+     * <p>The rest of this service already assumes companions outlive sessions:
+     * {@code killStalePidIfPresent} pings a live port, ADOPTS a healthy server and evicts only
+     * an unresponsive one. Cleanup at next start is the design; this method was the one place
+     * that disagreed.</p>
+     *
+     * <p>To stop a companion deliberately use {@code server_lifecycle action=stop} -- an explicit
+     * request from a caller who means it, not a side effect of one instance exiting.</p>
+     */
     @PreDestroy
     void stopAllOnShutdown() {
-        // Only destroy servers WE started (registry.ownedProcesses).
-        // Adopted servers belong to another session (e.g. DT) and must not be killed here.
-        // This means CC @PreDestroy is always a no-op for DT-owned servers. ✓
-        Map<String, Process> owned = new LinkedHashMap<>(registry.ownedProcesses)
-        if (!owned.isEmpty()) {
-            log.info("server_lifecycle: stopping {} owned server(s) on shutdown", owned.size())
-            owned.each { String name, Process proc ->
-                try {
-                    proc.destroy()
-                    proc.waitFor(5, TimeUnit.SECONDS)
-                    if (proc.alive) proc.destroyForcibly()
-                    log.info("server_lifecycle: stopped {} on shutdown", name)
-                } catch (Exception e) {
-                    log.warn("server_lifecycle: error stopping {} on shutdown: {}", name, e.message)
-                }
-            }
-            registry.clearOwned()   // clear only owned; leave adopted metadata
-            writeRuntimeState()
-        } else {
-            log.debug('server_lifecycle: @PreDestroy — no owned servers to stop (CC session or clean state)')
+        Map<String, Process> running = new LinkedHashMap<>(registry.ownedProcesses)
+        if (running.isEmpty()) {
+            log.debug('server_lifecycle: @PreDestroy - no HTTP companions started by this instance')
+            return
         }
+        log.info('server_lifecycle: @PreDestroy - leaving {} HTTP companion(s) running for other instances: {}',
+                 running.size(), running.keySet())
+        // Deliberately no destroy() and no clearOwned(). The registry entry and the runtime
+        // record are what let the next start find, ping and ADOPT these companions instead of
+        // spawning duplicates that lose the bind race.
+        writeRuntimeState()
     }
 
     // -----------------------------------------------------------------------

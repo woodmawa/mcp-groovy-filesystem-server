@@ -490,3 +490,69 @@ Note for anyone reading a failure in these specs: the gradle test worker's `PATH
 `%SystemRoot%\System32\ping.exe` for their delays. Nothing to do with FS.
 
 Full suite 307 tests, 0 failures.
+
+
+## 0.9.13 - 2026-08-26 - The companion nobody owned
+
+**`stopAllOnShutdown` was killing shared HTTP companions, and it cost an entire session.**
+
+On 2026-08-26 every CS-to-AW local inference call failed silently for a whole afternoon. Zero
+`llm_delegations`, zero AW `workflow_events`, while `reconcile_chain_failure_class` cheerfully
+returned `submitted: 25`. The cause is four lines in this file's `@PreDestroy`. From the FS log:
+
+```
+16:51:21.912  started agentic-workflow on port 8084 (pid=16436)
+16:51:22.638  server_lifecycle: stopped agentic-workflow on shutdown
+```
+
+The FS instance that started AW's companion shut down **0.7 seconds later** and its `@PreDestroy`
+destroyed the companion it owned. Claude Desktop starts two launcher+child pairs of every server,
+so a short-lived FS instance takes down a companion that every other live instance depends on.
+Nothing retries: `autoStartHttpCompanions` is `@PostConstruct`, one shot at boot.
+
+**The category error.** `ServerRegistry` knew two kinds of process: *owned* (we started it, kill it
+on shutdown) and *adopted* (someone else started it, leave it alone). An HTTP companion on a fixed
+port is neither. It is **shared infrastructure** — started by whichever instance won the race to
+find the port free, depended on by all of them, expected to outlive any one of them.
+
+CS's companion survived on :8082 purely because that FS instance found it already listening and
+adopted it — the log line `HTTP companion context failed to start: already listening on port 8082`
+is what saved it. AW's did not, because that instance started it. The asymmetry was ordering luck,
+which is the definition of a race the code does not know it is running.
+
+**The fix: `stopAllOnShutdown` now stops nothing.** It logs what it is leaving running and writes
+the runtime record. No `destroy()`, no `clearOwned()` — the registry entry and the runtime record
+are exactly what let the next start find, ping and *adopt* a live companion instead of spawning a
+duplicate that loses the bind race.
+
+This is not a new policy so much as removing the one place that disagreed with the existing one.
+`killStalePidIfPresent` already pings a live port, **adopts** a healthy server and evicts only an
+unresponsive one. Cleanup at next start was always the design.
+
+Trade-off, stated plainly: companions now outlive Claude Desktop until something evicts them. That
+is strictly better than the previous behaviour, which was not "clean shutdown" but "killed at a
+random moment mid-session, whenever a transient instance happened to exit". To stop one
+deliberately, `server_lifecycle action=stop` still does exactly that — an explicit request from a
+caller who means it, rather than a side effect of one instance exiting.
+
+**New spec `ServerLifecycleShutdownSpec`** — the first test this service has ever had, which is
+its own finding for the component that failed. SL-1 shutdown does not destroy a companion, SL-2 it
+stays in the registry so an explicit stop can still reach it, SL-3 the runtime state still records
+it so the next start adopts rather than re-spawns (practice #1485, assert on persisted state). All
+three confirmed failing on 0.9.12 first — SL-1 with `TooManyInvocationsError`, which is the defect
+reproduced rather than merely a missing method.
+
+**Corrected from the same investigation.** An earlier reading claimed `startServer` reports the
+spawn rather than the bind. It does not: it calls `waitForPort(port, 10)` and only logs `started`
+on success. The 8084 companion really did bind. It was killed 0.7s afterwards.
+
+**Not fixed here, deliberately.** Two FS instances can still both pass `isPortListening` and both
+spawn a companion; the loser dies with "Port 8084 was already in use". With this fix the winner
+survives, so the cost is one wasted JVM start rather than a dead companion. A cross-process lock
+is the real answer and is worth doing on its own, not inside a fix for something else.
+
+Also noted: `dtOwned` in `mcp-http-servers.json` is read by no code at all. It sits on the
+filesystem and context entries and not on agentic-workflow, so it reads exactly like the flag that
+explains all of this. It explains nothing. Wire it up or delete it.
+
+Suite 310 / 0.
