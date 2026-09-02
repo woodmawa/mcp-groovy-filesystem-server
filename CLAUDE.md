@@ -112,7 +112,18 @@ mcp-groovy-filesystem-server:tools action=gradle subcommand=installMcpbLocal
 execute action=cmd script="gradlew.bat bootJar"   <-- deprecated
 ```
 
-### execute -- multi-line and long-running (FS 0.9.11 / 0.9.12)
+### execute -- multi-line, long-running, and native commands (FS 0.9.11 / 0.9.12 / 0.9.15)
+
+**Native executables run under powershell regardless of inherited PATHEXT (0.9.15).** FS repairs
+`PATHEXT` for every child it spawns when the inherited value cannot run executables. It had been
+inheriting `PATHEXT=.CPL`, and with `.EXE` absent PowerShell classifies `git.exe` as a *document*
+rather than an application: it is never run, `$LASTEXITCODE` is never set, `$?` stays `True`,
+`$Error` is empty, both streams are empty and the process exits 0. `cmd` was immune because it
+normalises PATHEXT itself. An empty `git status --porcelain` reads as a clean tree, and the
+`git rev-parse HEAD` vs `origin/<branch>` push check compares two empty strings and passes -- so
+this presented as success everywhere it mattered. A caller-supplied PATHEXT that already works is
+left alone. `ExecuteServiceNativeCommandSpec` PATHEXT-2 pins the differential: cmd and powershell
+must agree on the same native command.
 
 **Multi-line scripts run every line.** Lines execute in order and the LAST command's exit code is
 returned; a mid-script failure does NOT abort the rest (same contract as `bash -c`, no `set -e`).

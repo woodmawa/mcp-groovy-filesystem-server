@@ -63,7 +63,8 @@ Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|f
 Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating -- required).
 server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
 options.allowStructuralEdit=true -- bypass brace/paren delta guard on replace|patch|multi_replace (FS 0.9.6). Use to repair orphaned braces. checkBareBoxDrawing is never bypassed.
-append on .groovy/.java/.kt returns code_append_warning (suppressible via options.suppressCodeAppendWarning=true).'''
+append on .groovy/.java/.kt returns code_append_warning (suppressible via options.suppressCodeAppendWarning=true).
+ESCAPES (action=write): backslash-n, backslash-t and backslash-r in content are unescaped to real control characters, because Claude's serialiser sends them as two-character sequences. To write a LITERAL backslash-n/t/r, double the backslash. options.raw=true skips unescaping entirely -- use it when content must survive verbatim. FS 0.9.14 fixed the restore step: before it, a doubled backslash came back doubled, so no input at all produced a literal backslash-t.'''
 
     private static final String DEFAULT_DESC_VERBOSE = '''\
 Write/modify files.

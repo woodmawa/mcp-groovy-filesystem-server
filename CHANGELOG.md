@@ -556,3 +556,83 @@ filesystem and context entries and not on agentic-workflow, so it reads exactly 
 explains all of this. It explains nothing. Wire it up or delete it.
 
 Suite 310 / 0.
+
+---
+
+## v0.9.15 (2026-09-02) — FS-EXEC-PATHEXT: powershell silently refused to run native executables
+
+**Symptom.** `execute action=powershell` returned `exitCode: 0` with empty stdout AND empty stderr
+for every invocation of `git.exe`, while cmdlet output from the same script came back normally.
+The identical query via `action=cmd` returned the correct output immediately. Forty minutes
+earlier, before the server process was restarted, the same powershell script had worked — same
+version, so the trigger was environmental rather than a code change.
+
+**Why it was dangerous rather than merely annoying.** An empty `git status --porcelain` reads as a
+CLEAN TREE. This platform's own working practice requires checking `git rev-parse HEAD` against
+`origin/<branch>` before believing a push happened; under this defect both sides return the empty
+string and compare equal. A verification step that passes because both of its inputs are missing.
+Same family as `catch(Exception ignored)` around a call feeding a counter: the failure presents as
+a legitimate zero.
+
+**Diagnosis.** Both actions share one `runProcess`, one `ProcessBuilder`, one set of reader
+threads — only the interpreter differs — so the divergence could not be in FS's process plumbing,
+environment inheritance, reader threads or charset handling. Redirecting the native command to a
+file produced an *empty file*, which eliminated every remaining stream-capture explanation.
+`Start-Process` on the same path worked and printed the version.
+
+**Root cause.** The child inherited `PATHEXT=.CPL`. With `.EXE` absent from PATHEXT, PowerShell
+classifies `git.exe` as a **document** rather than an application and hands it to file-association
+activation instead of running it. `$LASTEXITCODE` is never set, `$?` stays `True`,
+`$Error.Count` is 0, both streams are empty, exit code 0. Inside a pipeline it surfaces as
+`CantActivateDocumentInPipeline`, which was the tell. `cmd.exe` was immune because it normalises
+PATHEXT itself rather than trusting what it inherits.
+
+**Fix.**
+
+- `ExecuteService.repairPathExt(env)` — applied to every spawned child, AFTER caller
+  `envOverrides` and only when the effective value cannot run executables, so a caller passing a
+  working PATHEXT keeps exactly that one. Existing entries are preserved and appended to the
+  standard set rather than replaced; the inherited value may be wrong without being worthless.
+  Logs a warning when it repairs, so the condition is visible rather than silently corrected.
+- `-InputFormat None` added to the powershell invocation. ProcessBuilder hands powershell a stdin
+  pipe that is never written to and never closed.
+- `doPowershell` made `protected` — a `@CompileStatic` private method is unreachable from a
+  `@CompileDynamic` Spock spec even in the same package (practice #1166 seam 2), so there was no
+  seam to test it through. `doCmd` already had this treatment; powershell never got it, which is
+  why no spec covered this path at all.
+
+**Specs.** `ExecuteServiceNativeCommandSpec`, confirmed red before the fix.
+
+- PATHEXT-1 — a native executable's stdout is captured when PATHEXT lacks `.EXE`. Asserts the
+  cmdlet half first, so the native assertion cannot pass or fail for the wrong reason.
+- PATHEXT-2 — `cmd` and `powershell` agree on the same native command under the same hostile
+  PATHEXT. This is the controlled comparison that would have caught it on day one: neither path
+  looked wrong on its own, only the difference between them did.
+- PATHEXT-3 — a caller PATHEXT that already works is preserved. The repair fixes a broken
+  inheritance, it does not overwrite intent.
+
+Suite 320 tests, 0 failures.
+
+**Known residue.** The reader-thread bodies in `runAndCapture` still have no try/catch, and
+`stdoutThread.join(remainingMs)` can time out and return a partially-drained buffer as if
+complete. Neither caused this defect — the marker text proved the stdout thread survived — but
+together they are why the failure was invisible: FS cannot currently distinguish "the child
+produced nothing" from "our reader died or was abandoned". Worth closing separately.
+
+### v0.9.15 — verified live after restart (2026-09-02)
+
+`server_versions` reads `filesystem 0.9.15`. The exact call that returned nothing an hour earlier
+now returns, via `execute action=powershell`:
+
+```
+inheritedPATHEXT_seen_by_script = .COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC;.CPL
+git version 2.55.0.windows.2
+lastexit = 0
+master                        <- git -C <repo> rev-parse --abbrev-ref HEAD
+```
+
+The repaired value is the load-bearing detail: the standard set is restored **and the inherited
+`.CPL` is preserved on the end** rather than discarded. That is the difference between repairing a
+broken inheritance and overwriting the caller's environment, and it is what PATHEXT-3 exists to
+hold. The push check the working practice mandates — `git rev-parse HEAD` against
+`origin/<branch>` — now compares two real hashes rather than two empty strings.

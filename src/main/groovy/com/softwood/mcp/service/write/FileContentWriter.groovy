@@ -40,13 +40,22 @@ class FileContentWriter extends AbstractFileService {
         // Opt-out: options.raw=true preserves content verbatim (for JSON, binary, etc.)
         boolean raw = options.get('raw') ? Boolean.valueOf(options.get('raw').toString()) : false
         if (!raw) {
-            // Protect existing \\ (double-backslash) before replacing \n etc.
+            // Protect a doubled backslash behind a sentinel, unescape, then restore it to a
+            // SINGLE backslash. FS 0.9.14: the restore put back a DOUBLED one, so escaping was
+            // no escape hatch -- doubling returned you to where you started and there was no
+            // input at all that produced a literal backslash-t, backslash-n or backslash-r.
+            // Any source file legitimately containing one (a Windows path in a raw string, a
+            // regex, a Java or Groovy string literal) was corrupted on write, and the call
+            // still returned success:true with a content hash OF THE CORRUPTED RESULT --
+            // a hash of what was written confirms nothing about what was asked for.
+            // Observation 10102; cost three failed patch attempts before being probed.
+            // options.raw=true skips this block entirely and is now named in the tool description.
             body = body
                 .replace('\\\\', '\u0001BSLASH\u0001')
                 .replace('\\n', '\n')
                 .replace('\\t', '\t')
                 .replace('\\r', '\r')
-                .replace('\u0001BSLASH\u0001', '\\\\')
+                .replace('\u0001BSLASH\u0001', '\\')
         }
 
         Path target = Paths.get(normalized)

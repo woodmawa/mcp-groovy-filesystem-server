@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.13'
+version = '0.9.15'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -189,6 +189,20 @@ tasks.register('stageJarForMcpb', Copy) {
     description = 'Copies the bootJar into build/mcpb-staging/server/'
 
     dependsOn bootJar, generateMcpbManifest
+
+    // FS 0.9.14 / AW 1.30.4: clear the staging server dir first.
+    //
+    // This is a plain Copy into a directory nothing ever cleaned, so every release
+    // ACCUMULATED the jars of every release before it. CS caught and fixed this at 0.99.20;
+    // the same task was left unfixed here. Measured today before shipping: the FS thin
+    // bundle came out at 345MB carrying 0.9.12, 0.9.13 AND 0.9.14, and the AW bundle at
+    // 338MB carrying 1.30.3 and 1.30.4 -- against a correctly-staged CS bundle of 49MB.
+    //
+    // BUILD SUCCESSFUL says nothing about what went into the archive. The only way to know
+    // is to open it and list what is inside, which is what caught this.
+    doFirst {
+        delete("${mcpbStagingDir}/server")
+    }
 
     from(bootJar.outputs.files)
     into("${mcpbStagingDir}/server")

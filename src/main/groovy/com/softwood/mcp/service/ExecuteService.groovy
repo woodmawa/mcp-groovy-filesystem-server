@@ -167,7 +167,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         return runProcess(cmd, workingDir, timeout, 'bash', requestId, envOverrides, options)
     }
 
-    private McpResponse doPowershell(String script, String workingDir, int timeout,
+    // protected, not private: @CompileStatic private methods are unreachable from a
+    // @CompileDynamic Spock spec even in the same package (practice #1166 seam 2).
+    // Seam added for ExecuteServiceNativeCommandSpec (FS-EXEC-PATHEXT).
+    protected McpResponse doPowershell(String script, String workingDir, int timeout,
                                     Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
         if (!enablePowershell) return McpResponse.toolError(requestId, "PowerShell execution is disabled")
         if (!whitelistConfig.isPowershellAllowed(script)) {
@@ -183,7 +186,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         // background job could run it.
         File tempScript = File.createTempFile('mcp-ps-', '.ps1')
         tempScript.text = script
-        List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tempScript.absolutePath]
+        // -InputFormat None: ProcessBuilder hands powershell a stdin pipe that is never written
+        // to and never closed. Without this, PowerShell negotiates input on that dead pipe.
+        List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-InputFormat', 'None',
+                            '-ExecutionPolicy', 'Bypass', '-File', tempScript.absolutePath]
         return runProcess(cmd, workingDir, timeout, 'powershell', requestId, envOverrides, options, tempScript)
     }
 
@@ -376,6 +382,46 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
      * carelessly. When {@code job} is non-null, output is mirrored into it as it arrives so a
      * caller can tail a running build, and the Process is registered so it can be cancelled.
      */
+    /**
+     * The PATHEXT a Windows child needs in order to run native executables at all.
+     * Standard Windows default; extras found in the inherited value are appended, not discarded.
+     */
+    private static final String BASE_PATHEXT = '.COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC'
+
+    /**
+     * FS 0.9.15 FS-EXEC-PATHEXT -- repair an inherited PATHEXT that cannot run executables.
+     *
+     * <p>Observed live 2026-09-02: this server inherited {@code PATHEXT=.CPL}. With {@code .EXE}
+     * absent, PowerShell classifies {@code git.exe} as a DOCUMENT rather than an application and
+     * hands it to file-association activation instead of running it. The failure is silent in
+     * every channel: {@code $LASTEXITCODE} is never set, {@code $?} stays True, {@code $Error} is
+     * empty, stdout and stderr are empty, and the process exits 0. An empty
+     * {@code git status --porcelain} then reads as a CLEAN TREE, and a push check comparing
+     * {@code git rev-parse HEAD} with {@code origin/&lt;branch&gt;} compares two empty strings and
+     * passes. cmd.exe was immune because it normalises PATHEXT itself rather than trusting what
+     * it inherits.</p>
+     *
+     * <p>Applied AFTER envOverrides, and only when the effective value is unusable, so a caller
+     * who passes a working PATHEXT keeps exactly that one. Existing entries are preserved rather
+     * than replaced -- the inherited value may be wrong without being worthless.
+     * See ExecuteServiceNativeCommandSpec.</p>
+     */
+    @groovy.transform.CompileDynamic
+    private static void repairPathExt(Map<String, String> env) {
+        if (!System.getProperty('os.name', '').toLowerCase().contains('win')) return
+        String key = env.keySet().find { it?.equalsIgnoreCase('PATHEXT') } ?: 'PATHEXT'
+        String current = env.get(key) ?: ''
+        List<String> entries = current.split(';').collect { it.trim() }.findAll { it }
+        boolean usable = entries.any { it.equalsIgnoreCase('.EXE') }
+        if (usable) return
+        List<String> base = BASE_PATHEXT.split(';').toList()
+        List<String> extras = entries.findAll { String e -> !base.any { it.equalsIgnoreCase(e) } }
+        String repaired = (base + extras).join(';')
+        env.put(key, repaired)
+        log.warn('ExecuteService: inherited PATHEXT [{}] cannot run executables (.EXE absent); ' +
+                 'repaired to [{}] for the child process', current, repaired)
+    }
+
     private Map<String, Object> runAndCapture(List<String> cmd, String workingDir, int timeout,
                                               String action, Map<String, String> envOverrides,
                                               int maxStdout, int maxStderr, String grepPattern,
@@ -387,6 +433,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             pb.directory(new File(workingDir))
             pb.redirectErrorStream(false)
             if (envOverrides) pb.environment().putAll(envOverrides)
+            repairPathExt(pb.environment())
 
             process = pb.start()
             if (job) job.process = process
