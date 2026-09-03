@@ -112,7 +112,14 @@ mcp-groovy-filesystem-server:tools action=gradle subcommand=installMcpbLocal
 execute action=cmd script="gradlew.bat bootJar"   <-- deprecated
 ```
 
-### execute -- multi-line, long-running, and native commands (FS 0.9.11 / 0.9.12 / 0.9.15)
+### execute -- multi-line, long-running, and native commands (FS 0.9.11 / 0.9.12 / 0.9.15 / 0.9.16)
+
+**An unread stream is not an empty stream (0.9.16).** `success` now requires that FS actually READ
+the child's output: `exitCode == 0 && streamsOk`. If a reader thread died or was abandoned at the
+join, the response carries `stream_error` -- in the compact shape as well as the verbose one -- and
+`success` is withheld. Before this, a reader that threw left an empty buffer and the call returned
+`exitCode 0` with empty stdout, indistinguishable from a command that printed nothing. Treat
+`stream_error` as "I could not measure it", never as "there was no output".
 
 **Native executables run under powershell regardless of inherited PATHEXT (0.9.15).** FS repairs
 `PATHEXT` for every child it spawns when the inherited value cannot run executables. It had been

@@ -636,3 +636,51 @@ The repaired value is the load-bearing detail: the standard set is restored **an
 broken inheritance and overwriting the caller's environment, and it is what PATHEXT-3 exists to
 hold. The push check the working practice mandates — `git rev-parse HEAD` against
 `origin/<branch>` — now compares two real hashes rather than two empty strings.
+
+---
+
+## v0.9.16 (2026-09-03) — FS-EXEC-STREAM: a dead reader was reported as an empty one
+
+Closes the known residue recorded when 0.9.15 shipped.
+
+**The defect.** `runAndCapture` started two virtual threads whose bodies had no try/catch and
+whose completion was never checked. An exception inside the drain loop — `IOException: Stream
+closed`, a decode fault — killed the thread silently and left an empty StringBuilder, and the
+method returned `exitCode 0` with empty stdout and nothing to distinguish it from a command that
+legitimately printed nothing. The second half has the same effect: `join(remainingMs)` can time
+out, leaving the thread alive and the buffer partially drained, and that partial buffer was
+returned as though it were the whole output.
+
+So FS could not tell "the child produced nothing" from "our reader died", and reported the second
+as the first. Identical in shape to the PATHEXT defect fixed one layer up in 0.9.15, and to
+`catch(Exception ignored)` around a value feeding a counter: the failure presents as a legitimate
+zero. An empty `git status --porcelain` reads as a clean tree.
+
+**Why it had never been covered.** The drain loop was inline in a private method, so the failure
+could not be constructed from a spec at all. An untestable condition is one nobody tests.
+
+**Fix.**
+
+- `pumpStream(InputStream, Closure)` extracted as a **protected** seam — practice #1166 seam 2,
+  the same treatment `doCmd` and then `doPowershell` needed.
+- Both reader closures wrapped, catching `Throwable` rather than `Exception` so an Error in a
+  virtual thread cannot vanish either. The failure is recorded in a per-stream `StreamState`,
+  never swallowed.
+- After the joins, a thread still alive is recorded as `abandoned: join timed out after Nms` —
+  the partial-drain half of the defect.
+- `runAndCapture` now returns `streamsOk` and `streamError`, and `success` requires
+  `exitCode == 0 && streamsOk`. **An exit code is evidence the child finished, not evidence we
+  know what it said.**
+- `runProcess` surfaces `stream_error` in **both** response shapes. Compact is what most callers
+  read, and a guard present only in the verbose shape is one most callers never see.
+
+**Specs.** `ExecuteServiceStreamCaptureSpec`, confirmed red against the pre-fix behaviour by
+reverting the response-side gating and re-running:
+
+- STREAM-1 — the control. A healthy run still succeeds and reports no stream error, so the fix
+  cannot pass by failing everything. Passed both before and after.
+- STREAM-2 — a reader that throws must not yield success with empty output. Failed before on
+  `r.success == false`; the pre-fix code returned `success: true` with empty stdout.
+- STREAM-3 — the compact shape carries the reason too. Failed before.
+
+Suite 323 tests, 0 failures (320 before).

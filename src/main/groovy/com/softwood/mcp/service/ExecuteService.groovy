@@ -350,17 +350,30 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             String stderrStr = cap.stderr as String
             boolean stderrTruncated = capturedErr >= maxStderr
 
+            // FS 0.9.16: an unread stream is not an empty one. If a reader died or was abandoned
+            // we cannot claim to know what the child printed, so success is withheld and the
+            // reason is carried in EVERY response shape -- compact included, because compact is
+            // the shape most callers actually read, and a guard only present in the verbose form
+            // is a guard most callers never see.
+            boolean streamsOk  = (cap.streamsOk != false)
+            String streamError = cap.streamError as String
+            if (!streamsOk) {
+                log.warn("execute {}: stream capture incomplete -- {}", action, streamError)
+            }
+
             if (compact) {
-                Map<String, Object> cr = [success: exitCode == 0, exitCode: exitCode,
+                Map<String, Object> cr = [success: exitCode == 0 && streamsOk, exitCode: exitCode,
                                           stdout: stdoutStr, stderr: stderrStr] as Map<String, Object>
                 if (stdoutTruncated) cr.stdout_truncated = true
                 if (stderrTruncated) cr.stderr_truncated = true
+                if (streamError) cr.stream_error = streamError
                 return textResponse(requestId, cr)
             }
-            Map<String, Object> er = [action: action, success: exitCode == 0, exitCode: exitCode,
+            Map<String, Object> er = [action: action, success: exitCode == 0 && streamsOk, exitCode: exitCode,
                                       stdout: stdoutStr, stderr: stderrStr, durationMs: durationMs] as Map<String, Object>
             if (stdoutTruncated) er.stdout_truncated = true
             if (stderrTruncated) er.stderr_truncated = true
+            if (streamError) er.stream_error = streamError
             return textResponse(requestId, er)
         } catch (Exception e) {
             log.error("execute {} failed: {}", action, sanitize(e.message))
@@ -422,6 +435,32 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                  'repaired to [{}] for the child process', current, repaired)
     }
 
+    /**
+     * FS 0.9.16 -- per-stream drain outcome.
+     *
+     * <p>Before this, a reader thread that died mid-drain left an empty StringBuilder and nothing
+     * recorded the death, so the call returned exitCode 0 with empty stdout: indistinguishable
+     * from a command that legitimately printed nothing. That is the same shape as the PATHEXT
+     * defect one layer up, and the same shape as catch(Exception ignored) around a counter --
+     * the failure presents as a legitimate zero.</p>
+     */
+    private static class StreamState {
+        volatile String  error    = null
+        volatile boolean complete = false
+    }
+
+    /**
+     * The drain loop, as a seam.
+     *
+     * <p>protected, not private: a @CompileStatic private method is unreachable from a
+     * @CompileDynamic Spock spec even in the same package (practice #1166 seam 2). Without a
+     * seam there is no way to force a reader failure, which is exactly why the swallow below
+     * went uncovered -- the condition could not be constructed in a test.</p>
+     */
+    protected void pumpStream(InputStream stream, Closure<?> onLine) {
+        stream.eachLine { String line -> onLine.call(line) }
+    }
+
     private Map<String, Object> runAndCapture(List<String> cmd, String workingDir, int timeout,
                                               String action, Map<String, String> envOverrides,
                                               int maxStdout, int maxStderr, String grepPattern,
@@ -448,24 +487,38 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             boolean uncapped = (grepPattern != null) || (job != null)
 
             Process p = process
+            StreamState outState = new StreamState()
+            StreamState errState = new StreamState()
             Thread stdoutThread = Thread.ofVirtual().start({
-                p.inputStream.eachLine { String line ->
-                    if (uncapped || capturedOut < maxStdout) {
-                        String s = sanitize(line)
-                        stdout.append(s).append('\n')
-                        capturedOut += s.length() + 1
-                        if (job) job.appendStdout(s + '\n')
+                try {
+                    pumpStream(p.inputStream) { String line ->
+                        if (uncapped || capturedOut < maxStdout) {
+                            String s = sanitize(line)
+                            stdout.append(s).append('\n')
+                            capturedOut += s.length() + 1
+                            if (job) job.appendStdout(s + '\n')
+                        }
                     }
+                    outState.complete = true
+                } catch (Throwable t) {
+                    // Recorded, never swallowed. Throwable rather than Exception: an Error in a
+                    // virtual thread would otherwise vanish just as quietly.
+                    outState.error = t.class.simpleName + ': ' + (t.message ?: 'no message')
                 }
             })
             Thread stderrThread = Thread.ofVirtual().start({
-                p.errorStream.eachLine { String line ->
-                    if (uncapped || capturedErr < maxStderr) {
-                        String s = sanitize(line)
-                        stderr.append(s).append('\n')
-                        capturedErr += s.length() + 1
-                        if (job) job.appendStderr(s + '\n')
+                try {
+                    pumpStream(p.errorStream) { String line ->
+                        if (uncapped || capturedErr < maxStderr) {
+                            String s = sanitize(line)
+                            stderr.append(s).append('\n')
+                            capturedErr += s.length() + 1
+                            if (job) job.appendStderr(s + '\n')
+                        }
                     }
+                    errState.complete = true
+                } catch (Throwable t) {
+                    errState.error = t.class.simpleName + ': ' + (t.message ?: 'no message')
                 }
             })
 
@@ -474,6 +527,14 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
             stdoutThread.join(remainingMs)
             stderrThread.join(remainingMs)
+
+            // A join that times out leaves the thread alive and the buffer partially drained.
+            // Returning that as if it were the whole output is the second half of the same
+            // defect: we would be reporting a measurement we did not finish taking.
+            if (stdoutThread.isAlive()) outState.error = outState.error ?: 'stdout reader abandoned: join timed out after ' + remainingMs + 'ms'
+            if (stderrThread.isAlive()) errState.error = errState.error ?: 'stderr reader abandoned: join timed out after ' + remainingMs + 'ms'
+            List<String> streamErrors = [outState.error, errState.error].findAll { it } as List<String>
+            boolean streamsOk = streamErrors.isEmpty() && outState.complete && errState.complete
 
             if (!finished) {
                 process.destroyForcibly()
@@ -484,7 +545,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
             return [timedOut    : false,
                     exitCode    : process.exitValue(),
-                    success     : process.exitValue() == 0,
+                    // success now requires that we actually READ the streams. An exit code is
+                    // evidence the child finished, not evidence we know what it said.
+                    success     : process.exitValue() == 0 && streamsOk,
+                    streamsOk   : streamsOk,
+                    streamError : streamErrors.isEmpty() ? null : streamErrors.join('; '),
                     durationMs  : System.currentTimeMillis() - start,
                     stdout      : stdout.toString(),
                     stderr      : stderr.toString(),
