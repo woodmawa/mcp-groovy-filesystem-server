@@ -5,7 +5,8 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.9.9` (check `build.gradle` to confirm)
+- **Current version:** `0.9.17` (check `build.gradle` to confirm)
+- **Baseline stack:** FS 0.9.17 / CS 1.0.26 / AW 1.30.8 — 2026-09-04
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -13,6 +14,10 @@
 ## Session start — do this every time
 
 ```
+0. CLAIM THIS FS PROCESS (FS 0.9.17). Right after session-bootstrap, from your OWN connection:
+     server_lifecycle action=claim_session sessionId=<id> groupId=mcp-servers
+   Without it this process is UNBOUND and FS telemetry and range-cache keys resolve to nothing.
+   server_lifecycle action=claim_status reports what this process is serving.
 1. context_lifecycle action=start
 2. context_read scope=project action=context groupId=mcp-servers  (pass last_stable_hash)
 3. context_read scope=session action=resume
@@ -360,18 +365,36 @@ file_write action=abort_write options={sessionId:"test-1"}
 
 ---
 
-## ContextServerClient — session ID contract (FS 0.8.82+)
+## Session ID contract — this process's own claim (FS 0.9.17)
 
-`ContextServerClient.resolveSessionId()` **always reads the live `active_session` table** via
-`FilesystemTelemetryService.readActiveSessionId()` on every invocation. It compares the live
-value to the cached `activeSessionId` field and updates the cache if they differ.
+**FS no longer reads `active_session`.** That table is a machine-wide singleton
+(`CHECK (id = 1)`), and with two Claude chats open the second chat's bootstrap overwrote the row
+the first was resolving through — so FS attributed one chat's telemetry to the other. The MCP
+stdio contract is one JVM per client connection: **the process is the chat**, and identity is now
+per-process.
 
-This eliminates the stale-cache bug (OW-3) where FS held the previous session's ID after a DT
-restart, causing all `recordRangeCacheAsync` writes and `checkRangeCache` lookups to target the
-wrong session. Root cause of `real_kh_pct` being stuck at ~15% despite FS 0.8.81 auto-range-cache
-being mechanically correct.
+`FilesystemTelemetryService.readActiveSessionId()` resolves in three steps and then stops:
 
-**Do not add back a permanent cache-on-first-resolve.** The JDBC read is sub-millisecond.
+. the in-process claim held in memory (no TTL — a process cannot outlive itself)
+. this process's own `session_claims` row, keyed on `ProcessIdentity.OWNER_KEY`
+. **null — UNBOUND**
+
+There is no fourth step, and its absence is the fix. It returns `null` rather than a sentinel:
+callers must handle UNBOUND, because a manufactured `'unknown'` is a value, and a value is not a
+refusal — it lands upstream of every guard that checks for null.
+
+`ProcessIdentity` mints `OWNER_KEY` as `fs-<pid>-<jvmStartMillis>-<random>`. The JVM start time is
+load-bearing: an OS reuses pids, so pid alone would let a new process inherit a dead one's claim.
+CS's reaper decides liveness for all three servers' rows, conservatively — only a positive
+determination of death reaps.
+
+Tools: `server_lifecycle action=claim_session | release_claim | claim_status`.
+
+**Do not add back a permanent cache-on-first-resolve, and do not add back a read of
+`active_session`.** The earlier stale-cache bug (OW-3, fixed in 0.8.82 by revalidating against the
+singleton on every call) is now structurally impossible rather than merely revalidated: a
+restarted process is a new process with a new `OWNER_KEY` and no claim, so it reports UNBOUND
+instead of holding a stale id.
 
 ---
 
@@ -379,7 +402,8 @@ being mechanically correct.
 
 FS's only permitted direct JDBC access to `best_practices.db` (CS's database) is through
 `FilesystemTelemetryService` for:
-- Reading `active_session.session_id`
+- Reading **and upserting its own `session_claims` row** (own `owner_key` only — never another
+  process's row; FS 0.9.17. Was `active_session.session_id`, read-only, before that)
 - Writing `tool_call_telemetry` rows
 - Reading/writing `pending_reindex` queue
 

@@ -684,3 +684,63 @@ reverting the response-side gating and re-running:
 - STREAM-3 — the compact shape carries the reason too. Failed before.
 
 Suite 323 tests, 0 failures (320 before).
+
+## [0.9.17]
+
+Session identity moved off the machine-wide singleton, and a manifest that had been understating
+the server by half.
+
+**FS no longer reads `active_session`.** It was `SELECT session_id FROM active_session ORDER BY id
+DESC LIMIT 1` against a table declared `CHECK (id = 1)` — one row per machine, while the MCP stdio
+contract is one JVM per client connection. With two Claude chats open, the second chat's bootstrap
+overwrote the row the first was resolving through, and FS attributed one chat's telemetry and
+range-cache keys to the other. Nothing errored. **The process is the chat**, so identity is now
+per-process.
+
+- `ProcessIdentity` (new) — `OWNER_KEY` = `fs-<pid>-<jvmStartMillis>-<random>`. The JVM start time
+  is load-bearing: an OS reuses pids, so pid alone would let a new process inherit a dead one's
+  claim.
+- `FilesystemTelemetryService.readActiveSessionId()` resolves in three steps and stops: in-process
+  claim → own `session_claims` row (keyed on `OWNER_KEY`) → **null**. It returns null rather than a
+  sentinel, because a manufactured value lands upstream of every guard that checks for absence.
+- `server_lifecycle action=claim_session | release_claim | claim_status`. The claim is model-issued
+  from your own connection; a server cannot tell from the inside which chat it is serving.
+- One table, one liveness rule: FS writes rows tagged `server='fs'` and **CS's reaper decides
+  liveness for all three servers**, so FS gets no separate bookkeeping to drift out of step with.
+- This makes the 0.8.82 stale-cache fix (OW-3) structurally unnecessary rather than merely correct:
+  a restarted process is a new process with a new `OWNER_KEY` and no claim, so it reports UNBOUND
+  instead of holding a previous session's id.
+
+**The MCPB manifest declared four tools against eight served.** `file_list`, `file_lifecycle`,
+`execute` and `tools` were missing. The Claude Desktop extensions panel renders that manifest, so
+the server had been advertising half of itself — and the installed copy had been regenerated the
+same day and still said four. A literal cannot go stale loudly.
+
+**Deriving it at build time was built and rejected on evidence.** A `--emit-tool-manifest` mode
+that boots the app and asks Spring for `List<ToolHandler>` does produce the true set, and the
+attempt bound **Tomcat on 8081 — FS's own port** — opened the live `best_practices.db` in WAL, had
+`ContextServerClient` resolve the running session, and had `ServerLifecycleService` probe the
+companions on 8082 and 8084. It cannot be made inert either, because `ServerLifecycleService` *is*
+one of the `ToolHandler` beans being enumerated. A packaging step must not be able to disturb the
+running platform.
+
+The guarantee moved into `McpbManifestToolCoverageSpec`, which compares the manifest against the
+live Spring context's `List<ToolHandler>` by an independent path — the same pattern as CS's
+`ActionSurfaceDriftSpec`, and the same property: the list cannot drift without the build going red.
+When derivation has side effects, assert the equality instead.
+
+**A regression this work caused, attributed properly.** `WriteCommitterSpec` CT-PCOMMIT-2 (20
+concurrent writes) went deterministically red, attributed by `git stash` experiment rather than
+assumption. `McpController` calls `readActiveSessionId()` once per tool call, and that had meant a
+JDBC connection per call; the latency was accidentally serialising the twenty threads. An unclaimed
+process now resolves in memory, the writes became genuinely concurrent, and the atomic-rename
+window the spec's own helper comment already described started being hit — its direct-`File`
+fallback was a single shot returning null, which NPE'd the assertion. The fallback now retries.
+
+**The underlying property is unchanged and unmeasured.** FS's write path still has a window in
+which the target file does not exist on disk, and nothing measures how wide it is. It was tolerable
+while every tool call paid for a JDBC connect; it is worth measuring now that they do not. Do not
+read the green spec as evidence the window closed — only that the test no longer trips over it.
+
+Specs red first: `McpbManifestToolCoverageSpec` 2 tests / 1 failed, `FsSessionClaimSpec` 6 tests /
+5 failed. Suite 331 tests, 0 failures.

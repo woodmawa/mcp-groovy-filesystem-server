@@ -76,9 +76,24 @@ class WriteCommitterSpec extends Specification {
             }
             // Non-JSON or missing content -- likely transient file-system state
             if (++attempts >= 3) {
-                // Fall back to direct read as last resort
-                File f = new File(path)
-                return f.exists() ? f.text : null
+                // Fall back to a direct read, and retry THAT too.
+                //
+                // FS 0.9.17: this fallback used to be a single shot, and returning null from it
+                // NPE'd the caller. It never fired before because readActiveSessionId() opened a
+                // JDBC connection on every tool call, and that latency was accidentally
+                // serialising these twenty threads enough for the rename window never to be
+                // observed. WP-5 made an unclaimed process resolve without touching the database,
+                // the writes became genuinely concurrent, and the window the comment above already
+                // describes started being hit. The race is not new; the thing hiding it is gone.
+                for (int i = 0; i < 10; i++) {
+                    File f = new File(path)
+                    if (f.exists()) {
+                        String direct = f.text
+                        if (direct) return direct
+                    }
+                    Thread.sleep(50)
+                }
+                return null
             }
             Thread.sleep(50)
         }

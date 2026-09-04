@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.16'
+version = '0.9.17'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -124,6 +124,22 @@ def fsJvmArgs = [
 ]
 // ─── generateMcpbManifest ────────────────────────────────────────────────────
 
+// FS 0.9.17: this list is enforced, not merely written.
+//
+// It had drifted -- four names declared against eight tools served, missing file_list,
+// file_lifecycle, execute and tools. The Claude Desktop extensions panel renders this manifest,
+// so it understated the server's reach by half to anyone deciding whether to trust the extension.
+// The installed copy had been REGENERATED the day it was spotted and still said four: a literal
+// cannot go stale loudly, which is what makes it dangerous.
+//
+// DERIVING IT AT BUILD TIME WAS TRIED AND REJECTED, 2026-09-04. Booting the app to ask for
+// List<ToolHandler> does produce the true set, but the context is not inert: the attempt bound
+// Tomcat on 8081 (FS's own port), opened the live best_practices.db in WAL, had ContextServerClient
+// resolve the running session, and had ServerLifecycleService probe the companions on 8082/8084.
+// It cannot be made inert either, because ServerLifecycleService IS one of the ToolHandlers, so
+// collecting the set necessarily constructs it. A packaging step must not be able to disturb the
+// running platform, so the guarantee lives in a test instead -- same pattern as CS's
+// ActionSurfaceDriftSpec, and the same guarantee: the list cannot drift without going red.
 tasks.register('generateMcpbManifest') {
     group       = 'mcpb'
     description = 'Generates manifest.json for the thin MCPB bundle into build/mcpb-staging/'
@@ -168,11 +184,18 @@ tasks.register('generateMcpbManifest') {
             compatibility : [
                 platforms : ['win32']
             ],
+            // KEEP IN STEP WITH THE REGISTERED SET. McpbManifestToolCoverageSpec compares this
+            // list against the live Spring context's List<ToolHandler> and fails the build if they
+            // diverge, so adding a tool without adding it here goes red rather than quiet.
             tools : [
-                [name: 'file_read',       description: 'Read files and directories — read, head, tail, range, grep, structure, list and more'],
-                [name: 'file_write',      description: 'Write and modify files — write, append, patch, multi_replace, server_transform'],
-                [name: 'file_search',     description: 'Search file contents or filenames by regex'],
-                [name: 'server_lifecycle', description: 'Manage HTTP MCP server processes — start, stop, status, ensure, reload']
+                [name: 'file_read',        description: 'Read files and directories — read, head, tail, range, grep, structure, get_method and more'],
+                [name: 'file_write',       description: 'Write and modify files — write, append, replace, patch, multi_replace, server_transform'],
+                [name: 'file_list',        description: 'List directory contents — children, list, tree, sizes'],
+                [name: 'file_search',      description: 'Search file contents or filenames by regex'],
+                [name: 'file_lifecycle',   description: 'File and directory operations — create, delete, copy, move, rename, touch'],
+                [name: 'execute',          description: 'Execute scripts and shell commands — bash, powershell, cmd, groovy, python, with background jobs'],
+                [name: 'server_lifecycle', description: 'Manage HTTP MCP server processes — start, stop, status, ensure, reload'],
+                [name: 'tools',            description: 'Project tooling entry point — gradle and related build actions']
             ]
         ]
 

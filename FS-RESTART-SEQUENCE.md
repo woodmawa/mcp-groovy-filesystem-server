@@ -1,7 +1,8 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 2.9
+**Version:** 3.0  
+**Stack:** FS 0.9.17 / CS 1.0.26 / AW 1.30.8 — 2026-09-04
 **Last updated:** 2026-07-30
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
@@ -68,7 +69,7 @@ Shared SQLite DB: C:/Users/willw/claude-sync/best_practices.db
   ├─ Written by: context-server (primary owner, creates schema)
   ├─ Written by: FS stdio via FilesystemTelemetryService JDBC
   ├─ Written by: FS async via ContextServerClient HTTP → :8082 → context HTTP companion → JDBC
-  └─ Tables relevant to FS: tool_call_telemetry, session_working_files, active_session
+  └─ Tables relevant to FS: tool_call_telemetry, session_working_files, session_claims
 ```
 
 ### HTTP companion jar source (v0.9.10+)
@@ -96,15 +97,41 @@ on the context HTTP companion (:8082). That endpoint returns the HTTP companion'
 NOT the DT stdio user session. Result: `activeSessionId` was never set correctly, all FS telemetry
 used `session='unknown'`. 49,212 rows accumulated under `'unknown'` before the fix.
 
-**The fix (0.8.37+):** `FilesystemTelemetryService.readActiveSessionId()` reads directly:
+**The fix (0.8.37+), now superseded:** `FilesystemTelemetryService.readActiveSessionId()` read
+`SELECT session_id FROM active_session ORDER BY id DESC LIMIT 1` over a short-lived read-only JDBC
+connection. Transport-agnostic, and correct — for exactly as long as one chat was open at a time.
+
+**The second problem, and the current answer (0.9.17).** `active_session` is declared
+`CHECK (id = 1)`: one row per machine. The MCP stdio contract is one JVM per client connection, so
+with two Claude chats open the second chat's bootstrap overwrote the row the first was resolving
+through, and FS filed one chat's telemetry and range-cache keys under the other chat's session.
+Nothing errored — which is why it went unnoticed while 0.8.37 was believed to have closed this.
+
+**The process is the chat.** Identity is now per-process, in `session_claims`:
+
 ```sql
-SELECT session_id FROM active_session ORDER BY id DESC LIMIT 1
+-- resolution, in order, stopping at the first hit
+-- 1. in-process claim held in memory (no TTL -- a process cannot outlive itself)
+-- 2. this process's own row:
+SELECT session_id FROM session_claims WHERE owner_key = ?   -- ProcessIdentity.OWNER_KEY
+-- 3. null == UNBOUND. Never a sentinel, never "the newest session on the machine".
 ```
-Uses a short-lived read-only JDBC connection. Transport-agnostic — correct in both stdio and HTTP modes.
-`active_session` schema: `(id INTEGER PK, session_id TEXT, updated_at TEXT)` — no `status` column.
+
+`session_claims` schema: `(owner_key TEXT PK, server, session_id, group_id, pid, jvm_started_at,
+claimed_at, last_seen_at)`, indexed on `session_id` and `(pid, jvm_started_at)`. `OWNER_KEY` is
+`fs-<pid>-<jvmStartMillis>-<random>`; the JVM start time is load-bearing because an OS reuses pids.
+CS's reaper decides liveness for all three servers' rows and is deliberately conservative — only a
+positive determination of death reaps one.
+
+The claim is issued by the caller (`server_lifecycle action=claim_session sessionId=<id>
+groupId=<group>`), not inferred, because a server cannot tell from the inside which chat it is
+serving: an HTTP companion is a different process from the stdio JVM talking to the user.
 
 **Where it fires:** `FilesystemTelemetryService.recordToolCall()` — called on every tool response.
-Lazy-resolves on first call, caches in `trackedSessionId` volatile field. Zero I/O on subsequent calls.
+Resolves from the in-process claim, caching in the `trackedSessionId` volatile field. Zero I/O on
+subsequent calls, and now zero I/O on the *first* call too when the process is unclaimed — which is
+what exposed the atomic-rename window in `WriteCommitterSpec` that per-call JDBC latency had been
+masking (see CHANGELOG 0.9.17).
 
 ### Hot path rule — McpController
 

@@ -53,6 +53,10 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
     @Autowired
     ServerRegistry registry
 
+    /** FS 0.9.17 WP-5: holds this process's session claim. required=false so specs can omit it. */
+    @Autowired(required = false)
+    FilesystemTelemetryService telemetryService
+
     @Autowired(required = false)
     FileReadService fileReadService
 
@@ -176,14 +180,20 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
             name       : TOOL_NAME,
             description: '''\
 Manage HTTP MCP server processes. Config from claude-sync/mcp-http-servers.json.
-Actions: start_eager (all eager servers) | ensure (start named lazy server) | stop (named or all) | status | reload (re-read config).''',
+Actions: start_eager (all eager servers) | ensure (start named lazy server) | stop (named or all) | status | reload (re-read config).
+SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS process to your chat -- issue it right after session-bootstrap, from your own connection, or FS telemetry and range-cache keys resolve to nothing. release_claim drops it; claim_status reports what this process is serving.''',
             inputSchema: [
                 type      : 'object',
                 properties: [
-                    action : [type: 'string', enum: ['start_eager', 'ensure', 'stop', 'status', 'reload'],
+                    action : [type: 'string', enum: ['start_eager', 'ensure', 'stop', 'status', 'reload',
+                                                     'claim_session', 'release_claim', 'claim_status'],
                               description: 'Lifecycle action'],
                     name   : [type: 'string',
                               description: 'Server name (filesystem|context|orchestrator|agentic-workflow). Required for ensure/stop a specific server.'],
+                    sessionId: [type: 'string',
+                              description: 'claim_session: the session id session-bootstrap returned, to bind THIS process to.'],
+                    groupId: [type: 'string',
+                              description: 'claim_session: the project group for this session (optional).'],
                     verbose: [type: 'boolean',
                               description: 'Set verbose:true for full status response including jar/startupPolicy/managedBySession/processAlive. Default: compact (name/port/state only).']
                 ],
@@ -207,6 +217,13 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
                 case 'stop'       : return doStop(name, arguments.force as boolean ?: false, requestId)
                 case 'status'     : return doStatus(arguments, requestId)
                 case 'reload'     : return doReload(requestId)
+                // FS 0.9.17 WP-5: per-connection session claim. This has to be issued by the
+                // MODEL, not by a bootstrap flow node -- a node runs inside AW and reaches FS over
+                // AW's own connection, which is a different FS process from the one serving this
+                // chat (CS observation 10366).
+                case 'claim_session': return doClaimSession(arguments, requestId)
+                case 'release_claim': return doReleaseClaim(requestId)
+                case 'claim_status' : return doClaimStatus(requestId)
                 default:
                     return McpResponse.toolError(requestId, "Unknown server_lifecycle action: ${action}" as String)
             }
@@ -450,6 +467,53 @@ Actions: start_eager (all eager servers) | ensure (start named lazy server) | st
             success: true,
             servers: servers.collect { [name: it.name, jar: it.jar, port: it.port, startupPolicy: it.startupPolicy] }
         ])
+    }
+
+    // -----------------------------------------------------------------------
+    // FS 0.9.17 WP-5: per-connection session claim
+    // -----------------------------------------------------------------------
+
+    /**
+     * {@code action=claim_session sessionId= groupId=} -- bind THIS FS process to a session.
+     *
+     * <p>The process receiving this call is provably the one serving the calling chat, because it
+     * received it on the only pipe that chat has to it. Until claimed, FS resolves no session at
+     * all: it will not adopt whichever chat wrote {@code active_session} last, because that
+     * adoption is what filed one chat's file reads under another chat's session.
+     */
+    private McpResponse doClaimSession(Map<String, Object> arguments, Object requestId) {
+        if (!telemetryService) {
+            return McpResponse.toolError(requestId, 'telemetry service unavailable -- cannot hold a claim')
+        }
+        String sessionId = arguments.sessionId as String
+        String groupId   = arguments.groupId as String
+        if (!sessionId) {
+            return McpResponse.toolError(requestId,
+                'claim_session requires sessionId -- pass the id session-bootstrap returned')
+        }
+        Map<String, Object> out = [action: 'claim_session', success: true] as Map<String, Object>
+        out.putAll(telemetryService.claimSession(sessionId, groupId))
+        return textResponse(requestId, out)
+    }
+
+    /** {@code action=release_claim} -- drop this process's claim so it reads as UNBOUND. */
+    private McpResponse doReleaseClaim(Object requestId) {
+        if (!telemetryService) {
+            return McpResponse.toolError(requestId, 'telemetry service unavailable')
+        }
+        Map<String, Object> out = [action: 'release_claim', success: true] as Map<String, Object>
+        out.putAll(telemetryService.releaseClaim())
+        return textResponse(requestId, out)
+    }
+
+    /** {@code action=claim_status} -- what THIS FS process believes it is serving. */
+    private McpResponse doClaimStatus(Object requestId) {
+        if (!telemetryService) {
+            return McpResponse.toolError(requestId, 'telemetry service unavailable')
+        }
+        Map<String, Object> out = [action: 'claim_status', success: true] as Map<String, Object>
+        out.putAll(telemetryService.claimStatus())
+        return textResponse(requestId, out)
     }
 
     // -----------------------------------------------------------------------

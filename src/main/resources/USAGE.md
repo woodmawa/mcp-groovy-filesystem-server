@@ -7,6 +7,9 @@ _Retrieve this with: `file_read action=help topic=<tool>` or `topic=all`_
 
 ### Session start (every conversation)
 ```
+0. CLAIM THIS FS PROCESS (FS 0.9.17) -- from your own connection, right after session-bootstrap:
+     server_lifecycle action=claim_session sessionId=<id> groupId=<group>
+   Without it this process is UNBOUND: FS telemetry and range-cache keys resolve to nothing.
 1. context_lifecycle action=start
 2. context_read scope=project action=context groupId=<group>  (pass knownHash if available)
 3. context_read scope=session action=resume
@@ -210,7 +213,7 @@ Do NOT use `execute action=cmd script='gradlew.bat ...'` — that is the depreca
 Previously `autoStartHttpCompanions` would launch `filesystem` on port 8081, then Spring Boot
 tried to bind the same port and the stdio process crashed silently. Now uses `ownPort` guard to skip self.
 
-### Actions: start_eager | ensure | stop | status | reload
+### Actions: start_eager | ensure | stop | status | reload | claim_session | release_claim | claim_status
 
 Manages HTTP MCP server processes via `claude-sync/mcp-http-servers.json`.
 
@@ -219,5 +222,23 @@ Manages HTTP MCP server processes via `claude-sync/mcp-http-servers.json`.
 - `stop name=<server>` — stop named server (omit name to stop all)
 - `status` — list all servers with state. `verbose=true` for full detail.
 - `reload` — re-read config without restarting
+
+### Session claim (FS 0.9.17)
+
+- `claim_session sessionId=<id> groupId=<group>` — bind THIS FS process to your chat
+- `release_claim` — drop the binding
+- `claim_status` — report what this process is serving
+
+**Why you have to issue this rather than FS working it out.** Session identity used to come from
+`active_session`, a table declared `CHECK (id = 1)` — one row per machine — while the MCP stdio
+contract is one JVM per client connection. With two chats open, the second chat's bootstrap
+overwrote the row the first was resolving through, and FS attributed one chat's telemetry to the
+other, silently. **The process is the chat**, so identity is now per-process, held in
+`session_claims` and keyed on this JVM's own `owner_key`.
+
+A server cannot tell from the inside which chat it is serving — an HTTP companion is a different
+process from the stdio JVM talking to you — so the claim is issued by the caller, not inferred.
+An unclaimed process resolves to **UNBOUND** (null), never to whichever session started most
+recently.
 
 Server names: `filesystem` | `context` | `orchestrator` | `agentic-workflow`
