@@ -176,15 +176,24 @@ were always correct.
 
 ### Long-running work — `options.async` (FS 0.9.12)
 
-`execute` is bounded by a hard **~60s deadline imposed by the MCP client**. `options.timeout` does
-**not** extend it: FS honours that value, but the caller has already given up — and the blocked call
-**serialises every call behind it**.
+A **blocking** `execute` is bounded by a hard **~60s deadline imposed by the MCP client**.
+`options.timeout` does **not** extend that: FS honours the value, but the caller has already given
+up — and the blocked call **serialises every call behind it**.
 
-For anything that might exceed 60s (gradle builds, full test suites), submit it:
+For anything that might exceed 60s (gradle builds, full test suites), submit it with `async:true`.
+
+**Pass `options.timeout` as well.** An async job has its own cap, defaulting to 60s, and
+`options.timeout` is what raises it — the sentence above is about the CLIENT deadline and was read
+for a year as though it applied to jobs too. Measured 2026-09-07, same command three times, only
+this option differing: without it the job reported `status:"timeout"` at 61,011 ms and 61,010 ms;
+with `timeout:400` the identical command ran to 66,604 ms and returned a real `exitCode`. A CS full
+suite is ~70–85s, so the default cap kills it a few seconds before it finishes — and a killed job
+leaves the previous run's `build/test-results` in place, which reads as a stale pass if you check
+the XML without checking its timestamp.
 
 ```
-execute action=cmd script="gradlew.bat test" options={async:true, workingDir:"<dir>"}
-  -> {jobId:"...", status:"running"}
+execute action=cmd script="gradlew.bat test" options={async:true, timeout:400, workingDir:"<dir>"}
+  -> {jobId:"...", status:"running", timeoutSec:400}   # echo back the cap you asked for
 
 execute action=job_status jobId="..."        # status, exitCode, elapsedMs, byte counts
 execute action=job_output jobId="..." sinceOffset=0
