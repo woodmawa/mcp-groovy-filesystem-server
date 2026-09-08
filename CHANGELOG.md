@@ -814,6 +814,7 @@ brief, and it needs its own pass, not a ride-along on an unrelated fix.
 
 **ROOT CAUSE of the intermittent tool-list drops. In stdio mode the server must not write to
 stderr at all.** Observation 10497. Aligned across FS, CS and AW in the same pass.
+> **[WITHDRAWN in 0.9.20]** The root-cause claim on the two lines above is withdrawn. The blocking hazard is real and was measured; it was not shown to cause the drops. See the correction at the end of this file.
 
 ### The mechanism
 
@@ -867,5 +868,63 @@ single `appender-ref` is the tidier-looking form and does not work: logback reso
 the appender registry and every Spring test failed with `Failed to find appender named [STDERR]`.
 `springProfile` as a direct child of `<configuration>` is the documented, supported shape. The suite
 caught this immediately, which is the machinery working.
+
+Suite: 30 suites, 342 tests, 0 failures.
+
+## [0.9.20]
+
+**Two-day rolling logs, a heartbeat, and a correction to 0.9.19's claim.**
+
+### Retention that survives being useful
+
+0.9.19 gave stdio a FILE appender and took stderr away. That was the right move, and it
+immediately created the problem it was always going to create: the reason stderr output had
+been truncated by hand was file growth, and moving the volume into a file we keep does not
+make the volume smaller.
+
+The FILE appender now uses `SizeAndTimeBasedRollingPolicy`: 20MB per file, `maxHistory=2`
+days, `totalSizeCap=100MB`. Two days is the window that matters. A tool-list drop is noticed
+within minutes to hours, never next week; and the size cap is what stops one runaway loop
+filling the disk before the daily roll arrives. All three servers now carry identical policy.
+
+### HEARTBEAT
+
+`McpHeartbeat` (new, `com.softwood.mcp.support`): a daemon thread on a 60s interval, started
+by `StdioMcpServer` before the read loop and fed by `recordRequest()` on every accepted
+request line. It emits
+
+    HEARTBEAT server=<name> v=<version> pid=<pid> uptime=<n>s requests=<n> idle=<n>s
+
+at INFO, promoted to WARN once idle passes 120s, and reports `idle=never-any-request` before
+the first request arrives.
+
+This is the instrument the last three days lacked. When the tool list next goes empty, the log
+distinguishes two very different situations without anyone being present:
+
+- **heartbeats continuing, `idle` climbing** - the server is alive and nothing is being sent
+  to it. The fault is upstream of the server.
+- **heartbeats stopped** - the server is wedged or gone, and the last line before the gap is
+  the evidence.
+
+Until now that question could only be answered by attaching to a live process at the moment of
+failure, which requires someone to be watching.
+
+### Correction to the 0.9.19 entry
+
+The 0.9.19 entry calls the stderr fix "ROOT CAUSE of the intermittent tool-list drops". That
+claim was not supported by the evidence and is withdrawn.
+
+What *was* established: writing to an undrained stderr pipe in stdio mode is a real blocking
+hazard, and it was measured - 0.9.18 gave no answer to `initialize` in 40s where 0.9.19
+answered in 2.48s. A genuine latent defect, correctly found and correctly fixed.
+
+What was **not** established is that it caused the observed drops. `jstack` taken against live
+FS stdio PIDs *while the tool list was empty* showed `main` RUNNABLE inside `System.in.read()`
+- healthy, idle, receiving nothing. A server blocked on a stderr write does not look like
+that. The cause of the drops lies upstream of the server, in the client or the bridge, and
+remains open. Observation 10507.
+
+The heartbeat above exists so that the next occurrence is settled from a log file rather than
+from a hypothesis.
 
 Suite: 30 suites, 342 tests, 0 failures.

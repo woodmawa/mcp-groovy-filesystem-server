@@ -47,9 +47,19 @@
 
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>C:/Users/willw/claude-sync/logs/mcp-filesystem.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-            <fileNamePattern>C:/Users/willw/claude-sync/logs/mcp-filesystem.%d{yyyy-MM-dd}.log</fileNamePattern>
-            <maxHistory>7</maxHistory>
+        <!--
+            FS 0.9.20. Bounded on BOTH axes, because time alone does not bound anything: on
+            2026-09-08 the context server's current-day file reached 96.9 MB while its retention
+            policy was perfectly happy, since one day is one day however big it gets.
+            maxHistory 7 -> 2: no investigation in this codebase has ever needed log history
+            beyond the current session. totalSizeCap is the backstop that makes a runaway day
+            survivable instead of a disk problem.
+        -->
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>C:/Users/willw/claude-sync/logs/mcp-filesystem.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>2</maxHistory>
+            <totalSizeCap>100MB</totalSizeCap>
         </rollingPolicy>
         <encoder>
             <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>

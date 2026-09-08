@@ -9,6 +9,7 @@ import com.softwood.mcp.model.McpRequest
 import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.support.JsonRpcWriter
 import com.softwood.mcp.support.LogCleaner
+import com.softwood.mcp.support.McpHeartbeat
 import com.softwood.mcp.support.Sanitizer
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
@@ -70,6 +71,10 @@ class StdioMcpServer implements CommandLineRunner {
         // Log when server is ready for input
         log.info("STDIO server ready, waiting for input...")
 
+        // FS 0.9.20: a server receiving nothing logs nothing, which is why the 2026-09-08
+        // tool-list drops were invisible in every log we had. See McpHeartbeat.
+        McpHeartbeat.start('filesystem', '0.9.20')
+
         try {
             while (true) {
                 String line
@@ -93,6 +98,7 @@ class StdioMcpServer implements CommandLineRunner {
                 if (line.isEmpty()) continue
 
                 requestCount++
+                McpHeartbeat.recordRequest()
                 long startNanos = System.nanoTime()
                 int payloadSize = line.length()
 
