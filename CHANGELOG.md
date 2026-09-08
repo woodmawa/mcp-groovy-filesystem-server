@@ -807,3 +807,65 @@ random port that nothing connects to, four per restart, and it is a plausible co
 (`McpController`), and disabling the servlet context is a change that cannot be verified without a
 restart, with FS stdio — the thing that serves everything — as the blast radius. It is F-3 of the
 brief, and it needs its own pass, not a ride-along on an unrelated fix.
+
+---
+
+## [0.9.19] — 2026-09-08
+
+**ROOT CAUSE of the intermittent tool-list drops. In stdio mode the server must not write to
+stderr at all.** Observation 10497. Aligned across FS, CS and AW in the same pass.
+
+### The mechanism
+
+stderr is a pipe with a fixed OS buffer, and whether it is drained is the **client's** choice, not
+ours. If the client is slow to read it, pauses, or stops, the buffer fills and the next log write
+**blocks the writing thread** — which is the thread reading stdin and answering MCP. The process
+stays alive, healthy, holding its session claim, with no restart and no new pid, and answers
+nothing. From the outside that is indistinguishable from the server being gone: the tool list
+empties and later refills on its own.
+
+FS emitted **6,676 bytes / 50 lines** to stderr on a bare stdio startup — root at INFO plus
+`com.softwood.mcp` at DEBUG, through an unconditional `ConsoleAppender`.
+
+### Measured, not argued
+
+A probe performs the real MCP handshake over stdio with stderr redirected and **deliberately never
+read**, which is exactly what a stalled client looks like from the server's side. One variable:
+
+| | undrained stderr |
+|---|---|
+| FS 0.9.18 | **no answer in 40s** |
+| FS 0.9.19 | **answered in 2.48s** |
+| AW 1.30.9 | **no answer in 35s** |
+| AW 1.30.10 | answered in 3.68s |
+| CS 1.0.39 | answered in 2.41s *(never vulnerable)* |
+
+CS was never exposed, and not because of its logback: its `application.yml` stdio profile sets
+logging levels to `OFF`, a block its own config marks **CRITICAL**. FS and AW never received it.
+The correct strategy existed in this codebase, in writing, applied to one server of three.
+
+### The fix
+
+`logback-spring.xml` now defines two complete `<root>` blocks, each inside a top-level
+`<springProfile>`: stdio gets FILE only, everything else gets STDERR + FILE. The FILE appender is
+what makes detaching stderr free — the logs do not disappear, they stop going down a pipe we do not
+control.
+
+The comment that justified the unconditional appender said *"stderr is a separate pipe from stdout,
+it does NOT corrupt MCP JSON-RPC messages"*. True about corruption, and it answers a question
+nobody asked. The hazard is blocking. That comment is replaced with the measurement.
+
+### Two traps on the way, both worth keeping
+
+**The first fix appeared not to work.** XML comments may not contain a double hyphen; I had used
+them as dashes. Logback failed to parse the file, Spring Boot fell back to its **default console
+appender**, and the server blocked on stderr exactly as before. *An invalid config fails in the
+shape of the bug it fixes*, and that is very easy to read as the diagnosis being wrong.
+
+**The second fix broke 279 of 342 tests.** `<springProfile>` nested *inside* `<root>` around a
+single `appender-ref` is the tidier-looking form and does not work: logback resolves the ref outside
+the appender registry and every Spring test failed with `Failed to find appender named [STDERR]`.
+`springProfile` as a direct child of `<configuration>` is the documented, supported shape. The suite
+caught this immediately, which is the machinery working.
+
+Suite: 30 suites, 342 tests, 0 failures.

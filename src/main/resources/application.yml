@@ -180,5 +180,13 @@ server:
 mcp:
   mode: stdio
 
-# Logging handled by logback-spring.xml (STDERR only, captured by Claude Desktop).
-# stderr is a separate pipe from stdout - it does NOT corrupt MCP JSON-RPC messages.
+# Logging handled by logback-spring.xml, which from FS 0.9.19 attaches STDERR only when this
+# profile is NOT active. In stdio mode logs go to claude-sync/logs/mcp-filesystem.log only.
+#
+# The comment that used to sit here read: "stderr is a separate pipe from stdout - it does NOT
+# corrupt MCP JSON-RPC messages." True, and it answers the wrong question. stderr does not
+# corrupt the protocol stream; it BLOCKS. It is a pipe with a fixed OS buffer that only the
+# client drains, and when it fills the next log write stalls the thread serving MCP. The server
+# stays alive and stops answering, which from outside looks exactly like the server being gone.
+# Measured 2026-09-08: 6,676 bytes on a bare startup; undrained stderr -> no answer in 45s,
+# drained -> 2.60s. See the note in logback-spring.xml.

@@ -3,20 +3,39 @@
     <!--
         MCP FILESYSTEM SERVER - LOGGING CONFIGURATION
         ==============================================
-        CANONICAL PATTERN FOR ALL MCP STDIO SERVERS:
+        CANONICAL PATTERN FOR ALL MCP STDIO SERVERS (FS / CS / AW must match):
 
-        - STDERR appender: always present.
-          * Claude Desktop captures child stderr → %APPDATA%/Roaming/Claude/logs/mcp-server-groovy-filesystem.log
-          * start-mcp-services.ps1 captures HTTP server stderr → claude-sync/logs/filesystem-err.log
-          * Claude Code discards STDIO child stderr (not captured to any file)
+        STDERR IS ATTACHED ONLY WHEN THE stdio PROFILE IS NOT ACTIVE.
 
-        - FILE appender: canonical log location for ALL invocation modes.
-          Writes to claude-sync/logs/mcp-filesystem.log regardless of whether the
-          process was spawned by Claude Desktop, Claude Code, or the HTTP start script.
-          This is the single log location that works consistently across DT and CC.
+        FS 0.9.19. This appender used to be unconditional, justified by a comment that read
+        "stderr is a separate pipe from stdout, it does NOT corrupt MCP JSON-RPC messages".
+        That is true about CORRUPTION and answers the wrong question.
 
-        - STDOUT is reserved exclusively for MCP JSON-RPC messages.
-          Never write to stdout. Always use System.err target for console.
+        stderr is a PIPE with a fixed OS buffer, and whether it is drained is the CLIENT's
+        choice, not ours. If the client is slow to read it, pauses, or never reads it, the
+        buffer fills and the next log write BLOCKS the writing thread. That thread is the one
+        serving MCP. The process stays alive and healthy and simply stops answering, which
+        from the outside is indistinguishable from the server being gone: the tool list
+        empties and later refills, with no restart and no new pid.
+
+        Measured 2026-09-08 on this jar, one variable changed:
+          stderr redirected and NOT drained : no answer to initialize in 45s
+          stderr drained asynchronously     : answered initialize in 0.64s
+
+        CS never showed the fault, and not because of its logback: its application.yml stdio
+        profile sets logging levels to OFF, a block marked CRITICAL there. FS and AW never
+        received that block.
+
+        FILE appender: always, in every mode. This is what makes detaching stderr safe. The
+        logs do not disappear, they stop going down a pipe we do not control.
+
+        STDOUT is reserved exclusively for MCP JSON-RPC messages.
+        Never write to stdout. Always use System.err target for console.
+
+        NOTE FOR ANYONE EDITING THIS COMMENT: XML comments may not contain a double hyphen.
+        The first version of this block used them as dashes, logback failed to parse the file,
+        Spring Boot fell back to its default console appender, and the server blocked on
+        stderr exactly as before. An invalid config fails in the shape of the bug it fixes.
     -->
 
     <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
@@ -37,10 +56,25 @@
         </encoder>
     </appender>
 
-    <root level="INFO">
-        <appender-ref ref="STDERR"/>
-        <appender-ref ref="FILE"/>
-    </root>
+    <!--
+        Two complete root blocks, each inside a TOP LEVEL springProfile. The first attempt put
+        springProfile inside root around a single appender-ref, which is the tidier-looking form
+        and does not work: logback resolved the ref outside the appender registry and every
+        Spring test failed with "Failed to find appender named [STDERR]". springProfile as a
+        direct child of configuration is the documented, supported shape. Use it.
+    -->
+    <springProfile name="stdio">
+        <root level="INFO">
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!stdio">
+        <root level="INFO">
+            <appender-ref ref="STDERR"/>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
 
     <logger name="com.softwood.mcp" level="DEBUG"/>
     <logger name="org.springframework" level="WARN"/>
