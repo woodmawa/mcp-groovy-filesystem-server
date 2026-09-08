@@ -475,3 +475,94 @@ baked into the source. These are kept in sync with the help_sections rows.
 | 2.0 | 2026-04-04 | Full rewrite: FS↔Context architecture section, session ID resolution design, AW transport routing, mcp-deploy:3.5 with jarPrefix, Windows pipe deadlock rule, UTF-8 stdio fix, all changes from v0.8.34–0.8.40 documented |
 | 1.1 | 2026-04-01 | mcp-deploy:3.4 validated end-to-end. Phase 1 node graph, config file table, AW 1.4.38 GString fix, Phase 2 auto-detect, cross-restart mechanism validated in production |
 | 1.0 | 2026-04-01 | Initial — v2 runtime format, killHttpCompanions, deploy-state.json design |
+
+---
+
+## Logging and startup, aligned across FS / CS / AW (2026-09-08)
+
+FS 0.9.19-0.9.20, CS 1.0.40-1.0.41, AW 1.30.10-1.30.11. All three servers now share one strategy.
+
+### The rule
+
+**In stdio mode the server must not write to stderr at all.** stderr is a pipe with a fixed OS
+buffer whose draining is the client's choice; when it fills, the next write blocks the writing
+thread, and if that is the thread reading stdin the server stops answering while looking alive.
+
+`logback-spring.xml` in all three defines two complete `<root>` blocks, each inside a **top-level**
+`<springProfile>`: `stdio` gets FILE only, `!stdio` gets STDERR + FILE.
+
+Two traps, both real, both hit:
+
+- `springProfile` must be a **direct child of `<configuration>`**. Nested inside `<root>` it fails
+  with `Failed to find appender named [STDERR]` and took out 279 of FS's 342 tests.
+- **XML comments may not contain `--`.** Logback then fails to parse, Spring Boot falls back to its
+  default console appender, and the server blocks on stderr exactly as before. An invalid config
+  fails in the shape of the bug it fixes.
+
+Measured with stderr redirected and never drained: FS 0.9.18 no answer in 40s vs 0.9.19 in 2.48s;
+AW 1.30.9 no answer in 35s vs 1.30.10 in 3.68s.
+
+### Retention
+
+All three FILE appenders use `SizeAndTimeBasedRollingPolicy`: **20MB per file, `maxHistory=2` days,
+`totalSizeCap=100MB`.** Two days is the diagnostic window that matters; the size cap is what stops
+one runaway loop filling the disk before the daily roll arrives.
+
+Note: logback's size trigger counts bytes written by the *current* appender instance, not the length
+of the file it appended to, so an already-oversized file inherited across a restart rolls at the next
+date boundary rather than immediately.
+
+### HEARTBEAT
+
+`McpHeartbeat` in all three, started by `StdioMcpServer` before the read loop, fed by
+`recordRequest()` on every accepted request line, 60s interval:
+
+```
+HEARTBEAT server=<name> v=<version> pid=<pid> uptime=<n>s requests=<n> idle=<n>s
+```
+
+INFO normally, WARN past 120s idle, `idle=never-any-request` before the first request. It separates
+two situations that are otherwise indistinguishable from outside:
+
+| observation | meaning |
+| --- | --- |
+| heartbeats continuing, `idle` climbing | alive, receiving nothing. Fault is upstream. |
+| heartbeats stopped | wedged or gone. The last line before the gap is the evidence. |
+
+### What it found on its first restart
+
+2026-09-08 17:22, heartbeat live for the first time:
+
+- **Claude Desktop spawned four stdio instances of every server** (FS pids 53808 / 54536 / 61568 /
+  64780; four CS; five AW).
+- Each FS stdio instance ran `autoStartHttpCompanions`, so one restart produced **6 FS JVMs, 6 AW
+  companions on 8084, 19 CS companion attempts on 8082, 3 FS companions racing for 8081**.
+- **FS Spring startup took 49.6 seconds**, then answered `initialize` and `tools/list` correctly
+  (18,727 bytes in 19ms) and received nothing further. Two instances sat at `requests=3` with `idle`
+  climbing; one AW instance reported `requests=0 idle=never-any-request`.
+- FS's tools were absent from the live session during that window and returned unprompted about two
+  minutes later.
+- The `SQLITE_BUSY_SNAPSHOT` errors blocking AW flow starts are the same storm contending on
+  `best_practices.db`.
+
+### A claim withdrawn
+
+FS 0.9.19 / CS 1.0.40 / AW 1.30.10 each called the stderr fix the **root cause** of the intermittent
+tool-list drops. Withdrawn in the following release of each. The hazard is real and was measured, but
+`jstack` against live stdio PIDs *while the tool list was empty* showed `main` RUNNABLE inside
+`System.in.read()`, and the logs show `tools/list` answered in full. A server blocked on a stderr
+write does not look like that.
+
+### Open
+
+1. **The companion storm.** `autoStartHttpCompanions` runs inside Spring startup on every stdio
+   instance; no single process owns companion startup and the guards are check-then-act across
+   processes. Live suspect for the drops: a ~50s cold start is long enough for a client to give up
+   while the server carries on looking healthy. Not proven.
+2. **We were deleting the evidence.** `LogCleaner` truncates Claude Desktop's own MCP client logs on
+   startup; `mcp-server-groovy-filesystem.log` was 154 bytes, a banner written at the exact second of
+   the drop.
+3. **A logback logger level is a default, not a setting.** Spring Boot applies `logging.level.*`
+   after parsing `logback-spring.xml`, so `application.yml` always wins. CS 1.0.41 lowered
+   `com.woodmawa.mcp.context` to INFO in logback and the running companion kept logging DEBUG.
+   Verify a logging change from the running process's output, never from the config or the jar.
