@@ -2,57 +2,47 @@ package com.softwood.mcp.support
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.Paths
 
 /**
- * Clears MCP log files on startup to keep logs relevant to current session.
+ * Startup log handling for this server.
  *
- * Clears:
- *   ~/.mcp-logs/filesystem-server.log
- *   Claude AppData logs (mcp-server-groovy-filesystem.log, mcp.log if >1MB)
+ * WP-0 (0.9.21): this class no longer clears anything. It used to truncate, on every
+ * stdio start:
+ *
+ *   %APPDATA%/Roaming/Claude/logs/mcp-server-groovy-filesystem.log
+ *   %APPDATA%/Roaming/Claude/logs/mcp.log            (when larger than 1MB)
+ *
+ * Both of those are Claude Desktop's OWN files. They are the client's half of the MCP
+ * conversation and the only place a client-side timeout, disconnect or re-spawn is
+ * recorded. Truncating them at the exact second the server starts is why three separate
+ * investigations of the intermittent tool-list drop (2026-09-06..08) had to be built out
+ * of server-side logs alone: every one of them read a file we had just emptied. See
+ * BUILD-BRIEF-2026-09-08-the-four-that-were-spawned, WP-0.
+ *
+ * mcp.log is shared by every MCP server on this machine, so a single server clearing it
+ * destroys the evidence for all of them.
+ *
+ * Our own logs are capped where they are written (claude-sync/logs: 2 days / 20MB /
+ * 100MB total) and need no help from here. If a future need to clear something arises,
+ * it must be a path we own -- never one under Claude Desktop's directory.
+ *
+ * The method and its caller are kept so the startup path is unchanged and the decision
+ * stays visible at the point where it used to happen.
  *
  * v0.0.5: Extracted from StdioMcpServer.
+ * v0.9.21: WP-0 -- clearing removed; Claude Desktop's logs are left intact.
  */
 @Slf4j
 @CompileStatic
 class LogCleaner {
 
+    /**
+     * Deliberately clears nothing. Returns 0 files cleared, always.
+     *
+     * @return 0
+     */
     static int clearLogsOnStartup() {
-        String sessionHeader = "=== Log cleared on startup - New Claude session ===\n" +
-                               "Timestamp: ${new Date()}\n" +
-                               "=" * 60 + "\n\n"
-
-        int clearedCount = 0
-        String userHome = System.getProperty("user.home")
-
-        // Clear Claude AppData logs (canonical log location - ~/.mcp-logs is abolished)
-        Path claudeLogsDir = Paths.get(userHome, "AppData", "Roaming", "Claude", "logs")
-        if (Files.exists(claudeLogsDir)) {
-            clearedCount += clearFile(claudeLogsDir.resolve("mcp-server-groovy-filesystem.log"), sessionHeader)
-
-            Path mcpLog = claudeLogsDir.resolve("mcp.log")
-            if (Files.exists(mcpLog) && Files.size(mcpLog) > 1_000_000) {
-                clearedCount += clearFile(mcpLog, sessionHeader)
-            }
-        }
-
-        log.debug("Log cleanup complete: {} file(s) cleared", clearedCount)
-        return clearedCount
-    }
-
-    private static int clearFile(Path path, String header) {
-        try {
-            if (Files.exists(path)) {
-                Files.newBufferedWriter(path).withCloseable { writer ->
-                    writer.write(header)
-                }
-                return 1
-            }
-        } catch (Exception e) {
-            log.debug("Could not clear log file {}: {}", path, e.message)
-        }
+        log.debug("LogCleaner: clearing disabled (WP-0) - Claude Desktop's mcp-server-*.log and mcp.log are left intact")
         return 0
     }
 }

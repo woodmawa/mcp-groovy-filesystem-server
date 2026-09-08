@@ -88,30 +88,51 @@ action=list returns listing_hash. Pass as options.knownHash to get {unchanged:tr
 action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches.
 All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.'''
 
+    /**
+     * WP-1 (0.9.21): the tool description is not worth a single second of startup.
+     *
+     * DEFAULT_DESC is installed synchronously so the bean is fully usable the moment it
+     * is constructed; the refresh from CS then runs on a daemon thread. The old loop slept
+     * 0/500/1000/2000/3000ms INLINE, and on a cold start -- where CS :8082 does not exist
+     * yet because our own sibling is about to spawn it -- it always spent the whole 6.5s
+     * budget and then fell back to DEFAULT_DESC anyway. Measured 2026-09-08 17:23:11-24:
+     * 13.5s across this service and FileWriteService, sitting on the critical path between
+     * Claude Desktop spawning us and our answering initialize, to arrive at the same string
+     * we now start with. Nothing is lost: a cold start served DEFAULT_DESC before this
+     * change too, and ServerLifecycleService still calls reloadDescriptionsFromCs() once
+     * the companions are confirmed up.
+     */
     @PostConstruct
     void init() {
-        // Retry with backoff: CS HTTP companion may not be ready at FS @PostConstruct time.
-        // DT cold-start launches all servers in parallel -- CS :8082 typically needs 2-4s.
-        // 5 attempts at 0/500/1000/2000/3000ms = max ~6.5s wait before falling back to DEFAULT_DESC.
-        int[] delays = [0, 500, 1000, 2000, 3000]
-        for (int i = 0; i < delays.length; i++) {
-            if (delays[i] > 0) {
-                try { Thread.sleep(delays[i]) } catch (InterruptedException ignored) { Thread.currentThread().interrupt() }
-            }
-            try {
-                String loaded = contextServerClient?.getHelpSection('tool_desc_file_read')
-                if (loaded) {
-                    toolDescription = loaded
-                    log.debug('FileReadService: loaded tool description from CS help_sections (attempt {})', i + 1)
-                    return
-                }
-                log.debug('FileReadService: CS section missing on attempt {} -- retrying', i + 1)
-            } catch (Exception e) {
-                log.debug('FileReadService.init attempt {} failed (non-fatal): {}', i + 1, e.message)
-            }
-        }
         toolDescription = DEFAULT_DESC
-        log.debug('FileReadService: CS unavailable after retries -- using DEFAULT_DESC fallback')
+
+        Thread refresher = new Thread({ ->
+            int[] delays = [0, 500, 1000, 2000, 3000]
+            for (int i = 0; i < delays.length; i++) {
+                if (delays[i] > 0) {
+                    try {
+                        Thread.sleep(delays[i])
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt()
+                        return
+                    }
+                }
+                try {
+                    String loaded = contextServerClient?.getHelpSection('tool_desc_file_read')
+                    if (loaded) {
+                        toolDescription = loaded
+                        log.debug('FileReadService: loaded tool description from CS help_sections (attempt {})', i + 1)
+                        return
+                    }
+                    log.debug('FileReadService: CS section missing on attempt {} -- retrying', i + 1)
+                } catch (Exception e) {
+                    log.debug('FileReadService.init attempt {} failed (non-fatal): {}', i + 1, e.message)
+                }
+            }
+            log.debug('FileReadService: CS unavailable after retries -- keeping DEFAULT_DESC fallback')
+        } as Runnable, 'fs-tooldesc-read')
+        refresher.daemon = true
+        refresher.start()
     }
 
     /**

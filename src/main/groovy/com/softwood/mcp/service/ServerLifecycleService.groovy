@@ -10,6 +10,9 @@ import org.springframework.stereotype.Service
 
 import jakarta.annotation.PostConstruct
 import java.net.Socket
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import org.springframework.beans.factory.annotation.Autowired
@@ -89,6 +92,29 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
         if (!claudeSyncPath || claudeSyncPath == 'DERIVE') {
             claudeSyncPath = System.getProperty('user.home').replace('\\', '/') + '/claude-sync'
         }
+
+        // WP-1 (0.9.21): companion startup is NOT on the Spring startup path any more.
+        //
+        // This method used to spawn each companion and wait up to 10s per port for it to
+        // listen, inline, inside @PostConstruct -- so the stdio server did not reach its read
+        // loop until every companion was up. Measured on 2026-09-08: a cold start (companions
+        // absent) took 49.595s to "Started McpGroovyFileSystemServerApplication"; a warm start
+        // 34 minutes later, same jar, same machine, where all three ports were already served
+        // and this method did nothing, took 2.07s. The 24x is entirely this work. Nothing about
+        // answering initialize or tools/list needs a companion to exist, so it now runs on a
+        // daemon thread and the read loop starts immediately.
+        Thread starter = new Thread({ -> startCompanionsNow() } as Runnable, 'fs-companion-starter')
+        starter.daemon = true
+        starter.start()
+    }
+
+    /**
+     * The companion startup work, off the Spring startup path (WP-1).
+     *
+     * Package-visible rather than private so a spec can drive it directly and assert on the
+     * claim behaviour without standing up a context.
+     */
+    void startCompanionsNow() {
         try {
             Map<String, Object> config = loadConfig()
             List<Map> servers = config.servers as List<Map>
@@ -112,8 +138,8 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
                     return
                 }
 
-                log.info('ServerLifecycleService: auto-starting HTTP companion: {} on port {}', name, port)
-                Map result = startServer(server)
+                Map<String, Object> result = startCompanionUnderClaim(server, name, port)
+                if (result == null) return          // another instance owns this port's startup
                 started << result
                 if (result.started) {
                     log.info('ServerLifecycleService: HTTP companion {} started (pid={})', name, result.pid)
@@ -136,6 +162,58 @@ class ServerLifecycleService extends AbstractFileService implements ToolHandler 
         } catch (Exception e) {
             // Non-fatal — companion startup failure must not prevent the filesystem server from serving Claude
             log.warn('ServerLifecycleService: autoStartHttpCompanions failed (non-fatal): {}', e.message)
+        }
+    }
+
+    /**
+     * Start one companion, guarded by an atomic cross-process claim (WP-1).
+     *
+     * The old sequence was isPortListening(port) and then spawn -- check-then-act across
+     * processes, which is not a guard at all. On the 2026-09-08 17:22 restart six FS JVMs ran
+     * it at once: three raced for :8081 (two lost and exited quietly), :8082 was attempted 19
+     * times across the log, and six AW companions were spawned for one port.
+     *
+     * The claim is an OS file lock, not a lock file. FileChannel.tryLock() either succeeds or
+     * returns null, atomically, and the OS drops it if this JVM dies -- so there is no stale
+     * lock to reason about, and a loser pays microseconds instead of a 50-second startup.
+     *
+     * @return the startServer result, or null if another process holds the claim or the port
+     *         turned out to be served while we were claiming it
+     */
+    private Map<String, Object> startCompanionUnderClaim(Map server, String name, int port) {
+        File locksDir = new File(claudeSyncPath, 'locks')
+        locksDir.mkdirs()
+        File lockFile = new File(locksDir, "companion-${name}-${port}.lock")
+
+        RandomAccessFile raf = null
+        FileLock lock = null
+        try {
+            raf = new RandomAccessFile(lockFile, 'rw')
+            FileChannel channel = raf.getChannel()
+            try {
+                lock = channel.tryLock()
+            } catch (OverlappingFileLockException ignored) {
+                lock = null     // another thread in THIS jvm already holds it -- same answer
+            }
+            if (lock == null) {
+                log.info('ServerLifecycleService: {} on port {} - another instance owns companion startup, skipping', name, port)
+                return null
+            }
+
+            // Re-check inside the claim: the previous holder may have finished while we waited.
+            if (isPortListening(port)) {
+                log.info('ServerLifecycleService: HTTP companion {} already on port {} - skipping (claimed)', name, port)
+                return null
+            }
+
+            log.info('ServerLifecycleService: auto-starting HTTP companion: {} on port {} (claim held)', name, port)
+            return startServer(server)
+        } catch (Exception e) {
+            log.warn('ServerLifecycleService: companion claim for {} on port {} failed (non-fatal): {}', name, port, e.message)
+            return null
+        } finally {
+            try { lock?.release() } catch (Exception ignored) { }
+            try { raf?.close() } catch (Exception ignored) { }
         }
     }
 
@@ -587,13 +665,22 @@ SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS proc
             ProcessBuilder pb = new ProcessBuilder(cmd)
             pb.redirectErrorStream(false)
             pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            // Redirect stderr to AppData/Roaming/Claude/logs - consistent with STDIO server log location.
-            // HTTP-only instances aren't captured by Claude Desktop automatically so we redirect manually
-            // to the same directory, using the same mcp-server-{name}.log naming convention.
-            String appData = System.getenv('APPDATA') ?: (System.getProperty('user.home') + '/AppData/Roaming')
-            File logsDir = new File(appData, 'Claude/logs')
+            // WP-0 (0.9.21): companion stderr goes to OUR log directory, not Claude Desktop's.
+            //
+            // It used to be written to %APPDATA%/Roaming/Claude/logs/mcp-server-<name>.log, on the
+            // stated assumption that this was "consistent with STDIO server log location". That was
+            // true once and is not true now: Claude Desktop app-1.46388.4 writes no MCP log to that
+            // directory at all -- nothing there has been touched by the client since 2026-08-26 --
+            // so every mcp-server-*.log sitting in it today is the output of THIS redirect, written
+            // into a directory we do not own, under a name that invites it to be read as the
+            // client's own record of the conversation. It was, for three days.
+            // claude-sync/logs is ours and is already capped (2 days / 20MB / 100MB).
+            String syncPath = (!claudeSyncPath || claudeSyncPath == 'DERIVE') \
+                    ? (System.getProperty('user.home').replace('\\', '/') + '/claude-sync')
+                    : claudeSyncPath
+            File logsDir = new File(syncPath, 'logs')
             logsDir.mkdirs()
-            File stderrLog = new File(logsDir, "mcp-server-${name}.log")
+            File stderrLog = new File(logsDir, "mcp-companion-${name}-stderr.log")
             pb.redirectError(stderrLog)
 
 

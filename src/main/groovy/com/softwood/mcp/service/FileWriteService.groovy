@@ -85,37 +85,49 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
         super(pathService)
     }
 
+    /**
+     * WP-1 (0.9.21): baked-in defaults are installed synchronously and the CS refresh runs
+     * on a daemon thread. See the matching note on FileReadService.init -- the two inline
+     * retry loops together cost 13.5s of measured cold-start time (2026-09-08 17:23:11-24)
+     * on the critical path to answering initialize, and on a cold start they always ended
+     * at the defaults anyway, because the CS companion they were waiting for had not been
+     * spawned yet. ServerLifecycleService still calls reloadDescriptionsFromCs() once the
+     * companions are confirmed up.
+     */
     @PostConstruct
     void init() {
-        // CS HTTP companion may not be ready immediately at DT startup -- the companion
-        // is spawned as a child process by ServerLifecycleService.autoStartHttpCompanions()
-        // which returns after fork, before :8082 is actually listening.
-        // DT cold-start launches all servers in parallel -- CS :8082 typically needs 2-4s.
-        // 5 attempts at 0/500/1000/2000/3000ms = max ~6.5s wait before falling back to DEFAULT_DESC.
-        // Falls back to DEFAULT_DESC_* if all attempts fail (CS unreachable or missing row).
-        int[] delays = [0, 500, 1000, 2000, 3000]
-        for (int i = 0; i < delays.length; i++) {
-            if (delays[i] > 0) {
-                try { Thread.sleep(delays[i]) } catch (InterruptedException ignored) { Thread.currentThread().interrupt() }
-            }
-            try {
-                String compact = contextServerClient?.getHelpSection('tool_desc_file_write')
-                String verbose = contextServerClient?.getHelpSection('tool_desc_file_write_verbose')
-                if (compact && verbose) {
-                    toolDescriptionCompact = compact
-                    toolDescriptionVerbose = verbose
-                    log.debug('FileWriteService: loaded tool descriptions from CS help_sections (attempt {})', i + 1)
-                    return
-                }
-                log.debug('FileWriteService: CS section(s) missing on attempt {} -- retrying', i + 1)
-            } catch (Exception e) {
-                log.debug('FileWriteService.init attempt {} failed (non-fatal): {}', i + 1, e.message)
-            }
-        }
-        // All retries exhausted -- use baked-in defaults
         if (!toolDescriptionCompact) toolDescriptionCompact = DEFAULT_DESC_COMPACT
         if (!toolDescriptionVerbose) toolDescriptionVerbose = DEFAULT_DESC_VERBOSE
-        log.debug('FileWriteService: CS unavailable after retries -- using DEFAULT_DESC fallback')
+
+        Thread refresher = new Thread({ ->
+            int[] delays = [0, 500, 1000, 2000, 3000]
+            for (int i = 0; i < delays.length; i++) {
+                if (delays[i] > 0) {
+                    try {
+                        Thread.sleep(delays[i])
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt()
+                        return
+                    }
+                }
+                try {
+                    String compact = contextServerClient?.getHelpSection('tool_desc_file_write')
+                    String verbose = contextServerClient?.getHelpSection('tool_desc_file_write_verbose')
+                    if (compact && verbose) {
+                        toolDescriptionCompact = compact
+                        toolDescriptionVerbose = verbose
+                        log.debug('FileWriteService: loaded tool descriptions from CS help_sections (attempt {})', i + 1)
+                        return
+                    }
+                    log.debug('FileWriteService: CS section(s) missing on attempt {} -- retrying', i + 1)
+                } catch (Exception e) {
+                    log.debug('FileWriteService.init attempt {} failed (non-fatal): {}', i + 1, e.message)
+                }
+            }
+            log.debug('FileWriteService: CS unavailable after retries -- keeping DEFAULT_DESC fallback')
+        } as Runnable, 'fs-tooldesc-write')
+        refresher.daemon = true
+        refresher.start()
     }
 
     /**

@@ -928,3 +928,59 @@ The heartbeat above exists so that the next occurrence is settled from a log fil
 from a hypothesis.
 
 Suite: 30 suites, 342 tests, 0 failures.
+
+## [0.9.21]
+WP-1 — companion startup is off the Spring startup path, and the claim on each port is atomic.
+
+`autoStartHttpCompanions` used to spawn each companion and wait up to 10s per port for it to
+listen, inline, inside `@PostConstruct`, so the stdio server did not reach its read loop until
+every companion was up. Measured 2026-09-08 on one machine, one jar: a cold start (companions
+absent) took **49.595s** to `Started McpGroovyFileSystemServerApplication`; a warm start 34
+minutes later, where all three ports were already served and the method did nothing, took
+**2.07s**, with `STDIO server ready` 0.04s behind it. The 24x is entirely this work, and it is
+why the tool-list drops are intermittent: the drop follows the cold path, not the warm one.
+The work now runs on a daemon thread (`fs-companion-starter`) started from `@PostConstruct`.
+
+The guard on each port was `isPortListening(port)` and then spawn — check-then-act across
+processes, which is not a guard. On the 17:22 restart six FS JVMs ran it at once: three raced
+for :8081 (two lost and exited quietly), :8082 was attempted 19 times across the log, and six
+AW companions were spawned for one port. Replaced with `startCompanionUnderClaim`, an OS file
+lock (`FileChannel.tryLock()` on `claude-sync/locks/companion-<name>-<port>.lock`) with the
+port re-checked inside the claim. tryLock either succeeds or returns null, atomically; the OS
+drops the lock if the JVM dies, so there is no stale-lock case; and a loser now pays
+microseconds instead of a 50-second startup.
+
+Also off the startup path: the `@PostConstruct` retry loops in `FileReadService.init` and
+`FileWriteService.init`, which slept 0/500/1000/2000/3000ms inline waiting for CS help_sections.
+On a cold start they always spent the full budget and fell back to the baked-in defaults anyway,
+because the CS companion they were waiting for had not been spawned yet — 13.5s of measured
+cold-start time (17:23:11–24) to arrive at the string they now start with. Defaults are installed
+synchronously; the CS refresh runs on a daemon thread; `reloadDescriptionsFromCs()` after the
+companions come up is unchanged.
+
+WP-0 — this server no longer writes into Claude Desktop's log directory, in either direction.
+
+`LogCleaner` cleared nothing any more (it truncated `mcp-server-groovy-filesystem.log` and
+`mcp.log` under `%APPDATA%/Roaming/Claude/logs` on every start), and `startServer` no longer
+redirects companion stderr there: it writes `claude-sync/logs/mcp-companion-<name>-stderr.log`,
+inside our own rotation.
+
+**Correction to the WP-0 rationale in BUILD-BRIEF-2026-09-08-the-four-that-were-spawned.**
+The brief says LogCleaner was destroying Claude Desktop's own client-side logs, and that this is
+why three investigations had no client-side evidence. Measured: Claude Desktop app-1.46388.4
+writes **no** MCP log to that directory at all — nothing in it has been touched by the client
+since 2026-08-26. Every `mcp-server-*.log` sitting there today was written by *us*, by the
+stderr redirect above, under Claude Desktop's own naming convention. The 154-byte file at
+17:23:35 that read as erased evidence was our own header over a file that never held any.
+Historical client logs do exist and do carry the right lines (`main1.log`:
+`[LocalMcpServerManager] Connected to mcp-groovy-filesystem-server (8 tools)`,
+`[localMcpBridge] announcing ... 8 tool(s)`, `... disconnected`) but the newest is 2026-08-04,
+before the drops began. The section 3 hypothesis therefore cannot be settled from Claude
+Desktop's logs and needs a different instrument. Both changes above stand on their own merits —
+neither is ours to write and neither is ours to erase — but WP-0 does not unlock the proof it
+was written to unlock.
+
+Tests: 344 (342 + 2 new in `LogCleanerSpec`), 0 regressions. `WriteCommitterSpec` CT-PCOMMIT-2
+fails roughly one run in four **on unmodified master** (verified by stashing this change and
+re-running: 1 failure in 4 baseline runs, 1 in 4 with the change), so the "FS 342 / 0" baseline
+in the brief is not a reliable gate — that spec is flaky and needs its own fix.
