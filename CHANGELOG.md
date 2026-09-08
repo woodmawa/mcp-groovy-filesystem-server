@@ -744,3 +744,66 @@ read the green spec as evidence the window closed — only that the test no long
 
 Specs red first: `McpbManifestToolCoverageSpec` 2 tests / 1 failed, `FsSessionClaimSpec` 6 tests /
 5 failed. Suite 331 tests, 0 failures.
+
+---
+
+## [0.9.18] — 2026-09-08
+
+**Losing a companion start race is a normal outcome, not a failure.**
+See `BUILD-BRIEF-2026-09-08-the-companions-that-race` in the mcp-servers project.
+
+`ServerLifecycleService.autoStartHttpCompanions` checks `isPortListening(port)` and then spawns a
+JVM that takes **~24 seconds** to bind. Four stdio instances boot within four seconds of a desktop
+restart and each runs that pass, so two can both pass the check before either has bound. The loser
+aborted with `APPLICATION FAILED TO START — Port 8081 was already in use`, printed twice into the
+log every instance shares.
+
+Measured on the 14:05 restart: one FS companion won 8081 (pid 50000); a second attempt died at
+14:06:02. AW's companion on 8084 was started **twice**, pids 45440 and 52520 ten seconds apart, and
+neither owns the port now — orphans accumulate. CS showed the identical failure on 8082.
+
+**The cost was not the wasted JVM.** It was the banner: `APPLICATION FAILED TO START` is the first
+thing anyone finds when investigating something unrelated, and on 2026-09-08 it sent an
+investigation into an unrelated tool-listing problem down the wrong path for an hour.
+
+### The fix, and where it had to go
+
+The check cannot be made safe where it is — it sits 24 seconds and one process away from the bind
+it is predicting. So the arbiter moves **into the child**, immediately before Spring starts, where
+the window is milliseconds; the residual case is caught after `run()` and exits 0.
+
+- `configuredHttpPort()` — the port this process will actually bind, or null. **Only the `http`
+  profile takes a fixed port.** A stdio instance must never resolve one.
+- `isServed(port)` — a **connect** test, deliberately not a trial bind: a trial bind would briefly
+  occupy the port and make a competing instance's probe fail for the wrong reason, turning one race
+  into two.
+- `portInUseFrom(t)` — walks the cause chain for `PortInUseException`, matched by simple name and
+  read reflectively so it survives the exception moving package between Boot versions. Carries a
+  cycle guard, because a looping cause chain would hang startup — a worse defect than the one being
+  fixed.
+
+**Neither is a lock.** Who *owns* companions is F-4 of the brief and is a decision, not something to
+invent here.
+
+### The dangerous case is this fix, not the defect
+
+If `configuredHttpPort()` ever returned a port for a **stdio** instance, every stdio FS instance
+would exit the moment a companion happened to be listening — and FS stdio serves every file read,
+write and shell command there is. `FRE-1` asserts the profile guard holds with `MCP_HTTP_PORT`
+explicitly set, which is exactly the state a stdio instance is in while a companion runs.
+
+A/B'd in both directions by removing the guard: `FRE-1` and the no-profile row of `FRE-3` fail, the
+other nine stay green. Restored to a byte-identical hash. `FRE-5` is the other half — an unrelated
+startup failure must still throw, so this never becomes a blanket catch.
+
+Suite: 30 suites, 342 tests, 0 failures.
+
+### Deliberately NOT done
+
+FS's `stdio` profile sets `server.port: 0` but, unlike CS's, does **not** set
+`spring.main.web-application-type: none` — so every stdio FS instance boots a full Tomcat on a
+random port that nothing connects to, four per restart, and it is a plausible contributor to the
+24-second startup. Left alone on purpose: `StdioMcpServer` holds an `@RestController`
+(`McpController`), and disabling the servlet context is a change that cannot be verified without a
+restart, with FS stdio — the thing that serves everything — as the blast radius. It is F-3 of the
+brief, and it needs its own pass, not a ride-along on an unrelated fix.
