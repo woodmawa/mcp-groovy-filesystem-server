@@ -379,6 +379,22 @@ class FilesystemTelemetryService {
                 ps.setString(1, ProcessIdentity.OWNER_KEY)
                 ps.executeUpdate()
                 ps.close()
+
+                // FS 0.9.24 / CS 1.0.51: close the history. AFTER the delete and in its own
+                // try/catch: releasing the claim is the job, the log is the record of it, and
+                // the first cut had these the other way round -- a missing session_claim_log
+                // threw before the DELETE and left the process holding a dead session, which is
+                // precisely what releaseClaim exists to prevent.
+                try {
+                    PreparedStatement mark = conn.prepareStatement(
+                        "UPDATE session_claim_log SET released_at = datetime('now') " +
+                        'WHERE owner_key = ? AND released_at IS NULL')
+                    mark.setString(1, ProcessIdentity.OWNER_KEY)
+                    mark.executeUpdate()
+                    mark.close()
+                } catch (Exception logEx) {
+                    log.debug('releaseClaim: session_claim_log stamp skipped: {}', logEx.message)
+                }
             }
         } catch (Exception e) {
             log.debug('releaseClaim: session_claims delete failed (non-fatal): {}', e.message)
@@ -421,6 +437,46 @@ class FilesystemTelemetryService {
                 ps.setString(6, ProcessIdentity.JVM_STARTED_AT)
                 ps.executeUpdate()
                 ps.close()
+
+                // FS 0.9.24 / CS 1.0.51: the upsert above just destroyed this process's previous
+                // claim, which is what made the displacement contract's exclusion void. Record
+                // the claim as a fact too.
+                //
+                // Its OWN try/catch, and after the claim, deliberately. CS owns this table's
+                // schema, so FS reaches a table it does not create -- and the first cut of this
+                // put the log write inside the enclosing block, where a missing table aborted the
+                // claim write-through and reported persisted=false for a claim that had actually
+                // landed. FsSessionClaimSpec caught the same shape on the release path. A new
+                // step must not be able to break the path it was added to.
+                try {
+                PreparedStatement closePrev = conn.prepareStatement(
+                    "UPDATE session_claim_log SET released_at = datetime('now') " +
+                    'WHERE owner_key = ? AND released_at IS NULL AND session_id <> ?')
+                closePrev.setString(1, ProcessIdentity.OWNER_KEY)
+                closePrev.setString(2, sessionId)
+                closePrev.executeUpdate()
+                closePrev.close()
+
+                PreparedStatement openLog = conn.prepareStatement(
+                    'INSERT INTO session_claim_log ' +
+                    '(owner_key, server, session_id, group_id, pid, jvm_started_at, source, claimed_at) ' +
+                    "SELECT ?, ?, ?, ?, ?, ?, 'claim', datetime('now') " +
+                    'WHERE NOT EXISTS (SELECT 1 FROM session_claim_log ' +
+                    '                   WHERE owner_key = ? AND session_id = ? AND released_at IS NULL)')
+                openLog.setString(1, ProcessIdentity.OWNER_KEY)
+                openLog.setString(2, ProcessIdentity.SERVER)
+                openLog.setString(3, sessionId)
+                openLog.setString(4, groupId)
+                openLog.setLong(5, ProcessIdentity.PID)
+                openLog.setString(6, ProcessIdentity.JVM_STARTED_AT)
+                openLog.setString(7, ProcessIdentity.OWNER_KEY)
+                openLog.setString(8, sessionId)
+                openLog.executeUpdate()
+                openLog.close()
+                } catch (Exception logEx) {
+                    log.debug('claimSession: session_claim_log write skipped ({}) -- the claim ' +
+                              'itself is persisted', logEx.message)
+                }
             }
             return true
         } catch (Exception e) {
