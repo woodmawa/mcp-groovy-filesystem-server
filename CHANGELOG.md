@@ -1057,3 +1057,54 @@ logged the sweep. The pre-per-pid files are correctly left in place for now — 
 today, so they are inside the retention window, and will be collected once they age out.
 
 Suite: 32 suites, 350 tests, 0 failures.
+
+
+## 0.9.25 — the flake that was losing writes
+
+The suite failed exactly one spec per full run and a different one each time —
+`WriteCommitterSpec CT-PCOMMIT-2` on one tree, `FileContractSpec CT-18` on a clean one — while
+every one of them passed in isolation. Carried as "the suite is flaky", which is the reading that
+makes a suite useless: a check that fails at random is a check nobody can read, and it had already
+been written up as *"Suite: 32 suites, 350 tests, 0 failures"* on the strength of a run that
+happened to be green.
+
+It was never flakiness. It was a real, intermittent, **data-losing** defect in
+`WriteUtils.atomicWrite`, and the suite had been reporting it honestly all along.
+
+The CT-18 failure text was the whole diagnosis, sitting in the XML the entire time:
+
+```
+...\ct18.groovy.tmp -> ...\ct18.groovy    isError:true
+```
+
+A bare `source -> target` with no reason is `java.nio.file.FileSystemException.toString()`.
+Reproduced deliberately rather than inferred: hold any open handle on the target and
+`Files.move(tmp, target, REPLACE_EXISTING, ATOMIC_MOVE)` throws `AccessDeniedException` with
+message `"<tmp> -> <target>"` and `getReason()` null — the exact shape observed — and the same move
+succeeds the instant the handle closes.
+
+On Windows that handle is routinely somebody else's and gone milliseconds later: Defender scanning
+the freshly created `.tmp`, the search indexer, an editor, a sibling thread. `atomicWrite` caught
+only `AtomicMoveNotSupportedException`, so the transient case propagated as permanent, the
+enclosing `catch` deleted the `.tmp`, and **the write was lost** — surfaced to the caller as
+"atomic write failed". Under a 350-test suite hammering `%TEMP%` the odds of hitting one such
+window per run are high; inside a single spec they are nearly nil. That asymmetry is exactly what
+made a real defect look like test noise, and why it survived: every investigation re-ran the one
+spec, alone, and it passed.
+
+`moveIntoPlace` now retries the rename 10 times with linear backoff (25ms … 225ms, 1125ms total).
+`NoSuchFileException` is never retried — a missing source cannot appear — and the last exception is
+rethrown unchanged so the caller still sees the real reason.
+
+**Bounded on purpose, and the spec says so.** `AtomicWriteRetrySpec` CT-AWR-3 holds a lock that is
+never released and asserts the write still throws, within 15s, with the original content intact and
+no `.tmp` left behind. A retry loop that turned a permanent failure into a hang, or into silence,
+would pass CT-AWR-1 and be worse than the defect it replaced. CT-AWR-4 pins the uncontended path:
+exact bytes, no backoff paid by a write that never needed one.
+
+This also retires an assumption in `WriteCommitterSpec`'s own comment — *"WriteCommitter reduces
+(but cannot eliminate on Windows) the concurrent-write race window"*. The window it could not
+eliminate was this one, and it was in the layer below.
+
+Suite: 33 suites, 354 tests, 0 failures — measured over **6 consecutive full runs**, not one.
+Before the fix it was one failure per run, reliably, and a different spec each time.

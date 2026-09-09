@@ -64,16 +64,64 @@ class WriteUtils {
             // Use legacy IO (FileOutputStream) rather than NIO Files.write —
             // avoids NIO path resolution issues on freshly-created Windows dirs.
             tmp.toFile().withOutputStream { it.write(bytes) }
-            try {
-                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING,
-                                        StandardCopyOption.ATOMIC_MOVE)
-            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
-                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
-            }
+            moveIntoPlace(tmp, target)
         } catch (Exception e) {
             try { Files.deleteIfExists(tmp) } catch (Exception ignored) {}
             throw e
         }
+    }
+
+    /** FS 0.9.25: attempts, and the linear backoff between them. 25+50+...+225 = 1125ms. */
+    private static final int  MOVE_ATTEMPTS   = 10
+    private static final long MOVE_BACKOFF_MS = 25L
+
+    /**
+     * FS 0.9.25 -- the rename, with a bounded retry, because on Windows a sharing violation is
+     * usually somebody else's handle and it is gone milliseconds later.
+     *
+     * <p>This was carried for some time as "the FS suite is flaky": exactly one spec failed per
+     * full run and a different one each time, while every one of them passed in isolation. It was
+     * never flakiness. {@code Files.move(..., ATOMIC_MOVE)} throws {@code AccessDeniedException}
+     * whenever ANY open handle exists on the target -- Defender scanning the freshly created
+     * {@code .tmp}, the search indexer, an editor, a sibling thread -- with the message
+     * {@code "<tmp> -> <target>"} and a null reason. Reproduced deliberately rather than inferred:
+     * hold a {@code RandomAccessFile} on the target and the move fails with exactly that shape;
+     * close it and the same move succeeds. The CT-18 failure text carried that shape verbatim.
+     *
+     * <p>Only {@code AtomicMoveNotSupportedException} was caught, so the transient case propagated
+     * as permanent, the caller's {@code catch} deleted the {@code .tmp}, and <b>the write was
+     * lost</b> while being reported as a failed write. Under a 350-test suite hammering %TEMP% the
+     * odds of hitting one such window per run are high; in a single spec they are nearly nil.
+     * That asymmetry is what made a real data-losing defect look like test noise.
+     *
+     * <p>Bounded on purpose. A retry loop that turned a permanent failure into a hang, or into
+     * silence, would be worse than the defect: if the file genuinely cannot be written the caller
+     * has to be told, and told soon. {@code NoSuchFileException} is never retried -- a missing
+     * source cannot appear -- and the last exception is rethrown unchanged so the caller still
+     * sees the real reason.
+     */
+    private static void moveIntoPlace(Path tmp, Path target) {
+        Exception last = null
+        for (int attempt = 0; attempt < MOVE_ATTEMPTS; attempt++) {
+            try {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING,
+                                        StandardCopyOption.ATOMIC_MOVE)
+                return
+            } catch (java.nio.file.AtomicMoveNotSupportedException ignored) {
+                // A filesystem capability, not contention. Not retryable, and not an error.
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+                return
+            } catch (java.nio.file.NoSuchFileException e) {
+                throw e
+            } catch (java.nio.file.FileSystemException e) {
+                last = e
+                if (attempt < MOVE_ATTEMPTS - 1) {
+                    try { Thread.sleep(MOVE_BACKOFF_MS * (attempt + 1)) }
+                    catch (InterruptedException ie) { Thread.currentThread().interrupt(); throw e }
+                }
+            }
+        }
+        throw last
     }
 
     static void makeBackup(Path path) {
