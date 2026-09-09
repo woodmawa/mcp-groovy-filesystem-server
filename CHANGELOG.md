@@ -984,3 +984,26 @@ Tests: 344 (342 + 2 new in `LogCleanerSpec`), 0 regressions. `WriteCommitterSpec
 fails roughly one run in four **on unmodified master** (verified by stashing this change and
 re-running: 1 failure in 4 baseline runs, 1 in 4 with the change), so the "FS 342 / 0" baseline
 in the brief is not a reliable gate — that spec is flaky and needs its own fix.
+
+## [0.9.22]
+No behaviour change. The EOF shutdown path gets a test, and a seam so it can have one.
+
+FS has shut down correctly on stdin EOF since v0.7.17 and needed no fix. The reason this version
+exists is that **nothing in any of the three servers tested that path**, and AW turned out not to
+do it at all — found from the process table on 2026-09-09 when two AW instances survived a Claude
+Desktop auto-update that replaced every FS and CS instance. A contract that three servers are
+supposed to share, which one of them silently broke and no test noticed, needs a test in all three.
+
+`System.exit(...)` inside `triggerCleanShutdown()` is now `exitAction.accept(...)`, where
+`exitAction` is a static seam defaulting to `System.exit`. That is the only production-visible
+change and it is behaviour-preserving.
+
+`StdioMcpServerEofShutdownSpec` — 3 tests, identical in shape to the AW and CS copies. They drive
+the real `run()` loop with `System.in` replaced by an empty stream, which is what Claude Desktop
+closing the pipe looks like to `readLine()`, and use a real refreshed `GenericApplicationContext`
+rather than a mock so that removing `SpringApplication.exit` would fail rather than pass. The
+efficacy of this spec shape was proven by mutation in the AW repository, where deleting the
+`triggerCleanShutdown()` call fails 2 of 3 tests.
+
+Suite: 32 suites, 347 tests, 0 failures (344 + 3). `WriteCommitterSpec` CT-PCOMMIT-2 passed this
+run; it remains flaky at roughly 1 in 4 on master and is still not a gate.

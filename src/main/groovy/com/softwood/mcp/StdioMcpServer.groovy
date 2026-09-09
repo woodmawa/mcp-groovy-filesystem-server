@@ -21,6 +21,8 @@ import org.springframework.context.ApplicationContext
 import org.springframework.context.ApplicationEventPublisher
 import org.springframework.stereotype.Component
 
+import java.util.function.IntConsumer
+
 /**
  * STDIO MCP Server - reads JSON-RPC from stdin, writes responses to stdout.
  *
@@ -44,6 +46,26 @@ import org.springframework.stereotype.Component
 class StdioMcpServer implements CommandLineRunner {
 
     private static final boolean DEBUG = System.getenv("MCP_DEBUG") != null
+
+    /**
+     * What terminating the JVM means in production. Held as a field, not called inline, purely so
+     * that a spec can drive the real read loop to EOF and assert the exit path fired without
+     * killing the test runner. See StdioMcpServerEofShutdownSpec.
+     *
+     * FS 0.9.22: this server has shut down correctly on EOF since v0.7.17 and needed no fix. The
+     * seam and its spec exist because AW did NOT - it logged an EOF message, returned from
+     * CommandLineRunner.run() and left the JVM resident, which went unnoticed until two AW
+     * instances survived a Claude Desktop auto-update on 2026-09-09. Nothing in any of the three
+     * servers tested this path. The guard is identical in all three so none can drift into AW's
+     * state unobserved again.
+     */
+    static final IntConsumer DEFAULT_EXIT_ACTION = new IntConsumer() {
+        @Override
+        void accept(int code) { System.exit(code) }
+    }
+
+    /** Replaced only by tests. Restore to DEFAULT_EXIT_ACTION in cleanup. */
+    static volatile IntConsumer exitAction = DEFAULT_EXIT_ACTION
 
     private final McpController mcpController
     private final ApplicationEventPublisher eventPublisher
@@ -73,7 +95,7 @@ class StdioMcpServer implements CommandLineRunner {
 
         // FS 0.9.20: a server receiving nothing logs nothing, which is why the 2026-09-08
         // tool-list drops were invisible in every log we had. See McpHeartbeat.
-        McpHeartbeat.start('filesystem', '0.9.21')
+        McpHeartbeat.start('filesystem', '0.9.22')
 
         try {
             while (true) {
@@ -184,10 +206,10 @@ class StdioMcpServer implements CommandLineRunner {
         try {
             int exitCode = SpringApplication.exit(applicationContext, [] as ExitCodeGenerator[])
             log.info('Spring context closed cleanly (exitCode={})', exitCode)
-            System.exit(exitCode)
+            exitAction.accept(exitCode)
         } catch (Exception e) {
             log.warn('Clean shutdown failed, forcing exit: {}', e.message)
-            System.exit(1)
+            exitAction.accept(1)
         }
     }
 
