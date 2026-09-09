@@ -442,9 +442,13 @@ during AW 1.28.10 stabilisation. `FlowTypeRegistryExtractFieldSpec` caps test ca
 
 ---
 
-## Logging and startup, aligned across FS / CS / AW (2026-09-08)
+## Logging and startup, aligned across FS / CS / AW (2026-09-08, revised 2026-09-09)
 
-FS 0.9.19-0.9.20, CS 1.0.40-1.0.41, AW 1.30.10-1.30.11. All three servers now share one strategy.
+FS 0.9.21-0.9.22, CS 1.0.42-1.0.45, AW 1.30.12-1.30.13. All three servers share one stderr rule and one EOF shutdown contract (AW had neither until 1.30.13 -- it logged an EOF message and left the JVM resident, orphaning a process on every restart).
+
+TWO CLAIMS MADE UNDER THIS HEADING ON 2026-09-08 HAVE SINCE BEEN CORRECTED. (1) The stderr fix is NOT the cause of the intermittent tool-list drops; those were Claude Desktop auto-updating and relaunching itself, which closes stdin on every stdio child, proven from Squirrel's own update log on 2026-09-09. (2) The rolling policy described below is declared but does NOT bound these files in practice: logback's size trigger counts bytes written by the current appender instance and every restart resets it, so no instance lives long enough to count 20MB. Exactly one rolled archive existed on the machine when this was measured, and it rolled at a restart rather than on size. Treat file growth as unbounded between date boundaries and check sizes directly.
+
+Full account, including the startup and shutdown sequencing rules and the evidence discipline that came out of it: "The one that would not exit" -- CS docs ch58, AW docs ch22.
 
 ### The rule
 
