@@ -1007,3 +1007,53 @@ efficacy of this spec shape was proven by mutation in the AW repository, where d
 
 Suite: 32 suites, 347 tests, 0 failures (344 + 3). `WriteCommitterSpec` CT-PCOMMIT-2 passed this
 run; it remains flaky at roughly 1 in 4 on master and is still not a gate.
+
+## [0.9.23]
+Log rotation starts working, and `LogCleaner` earns its name back.
+
+### Why the rolling policy was never bounding anything
+
+FS 0.9.19 specified 20MB per file, `maxHistory=2`, `totalSizeCap=100MB` for the FILE appender, and
+a note warned that logback's size trigger counts bytes written by the *current* appender instance
+rather than the length of the file it appends to. Measured on 2026-09-09, that note understated it.
+
+**Exactly one rolled archive existed on the entire machine.** It rolled at a process *restart*, not
+on reaching 20MB and not at a date boundary, while `mcp-agentic-workflow.log` sat at 16.85MB having
+never rolled and `mcp-context.log` had previously reached 96.6MB.
+
+The mechanism fits both: the byte counter belongs to the appender instance and **every restart
+resets it**. These processes restart constantly — the companions on every client restart, the stdio
+instances on every replacement wave — so no instance ever lives long enough to count 20MB however
+large the file on disk becomes. Several JVMs appending to one file compounds it, since logback does
+not support that at all without `prudent` mode and each instance counts only its own bytes. So
+`maxHistory` and `totalSizeCap` only act *once a roll occurs*, and rolls were not occurring.
+
+### One file per pid
+
+`<file>` and `fileNamePattern` now carry `${PID:-nopid}`, so each JVM owns the file it counts bytes
+against and the size trigger has something to reach. `prudent` mode was the alternative and was
+rejected: it takes a file lock on every append and logback documents it as materially slower, which
+on a stdio server is latency on the path FS 0.9.21 just spent two days clearing.
+
+### The consequence that per-pid brings, and its fix
+
+`maxHistory` prunes only archives matching the pattern of the appender that wrote them, so a dead
+pid's file is managed by nobody and stays forever. At four to five instances per server per restart
+that accumulates quickly — per-pid on its own trades a file that grows without bound for a
+directory that does.
+
+`LogCleaner`, which had done nothing since 0.9.21 removed its Claude-Desktop clearing, now prunes
+**our own** logs: names beginning `mcp-filesystem` and ending `.log`, under `claude-sync/logs` only,
+older than 2 days — the same window `maxHistory` promises — never its own live file, never another
+server's prefix, and still never anything under Claude Desktop's directory. That last point has its
+own test, because it is the behaviour that was removed and must not come back.
+
+6 tests, including that a sibling's recent file is kept whatever its pid, and that a stale file
+belonging to CS or AW is left alone: a sweep that reached across servers would delete a sibling's
+live file the moment that sibling had been idle for two days.
+
+Verified live: every instance wrote `mcp-filesystem-<pid>.log`, each a few tens of KB, and every one
+logged the sweep. The pre-per-pid files are correctly left in place for now — they were modified
+today, so they are inside the retention window, and will be collected once they age out.
+
+Suite: 32 suites, 350 tests, 0 failures.

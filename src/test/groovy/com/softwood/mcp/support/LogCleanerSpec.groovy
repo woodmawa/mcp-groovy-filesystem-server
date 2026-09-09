@@ -6,71 +6,128 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * WP-0 regression guard.
+ * FS 0.9.23. Two obligations, both learned the hard way.
  *
- * LogCleaner used to truncate files under %APPDATA%/Roaming/Claude/logs on every stdio start.
- * That directory belongs to Claude Desktop. Whether or not the client is writing there in any
- * given app build, it is not ours to empty, and for three days a 154-byte file in it was read
- * as erased evidence of a fault.
+ * <p><b>It must not touch Claude Desktop's directory.</b> This class used to truncate files under
+ * {@code %APPDATA%/Roaming/Claude/logs} on every start, including the shared {@code mcp.log}.
+ * Those are not ours.</p>
  *
- * This spec asserts on persisted state - what is on disk after the call - rather than on a
- * return value, because the return value was never the thing that hurt.
+ * <p><b>It must prune our own per-pid files.</b> FS 0.9.23 moved to one log file per pid so that
+ * logback's size trigger works at all. {@code maxHistory} cannot prune a dead pid's file, because
+ * that file is managed by an appender that no longer exists -- so without this sweep, per-pid
+ * simply trades an unbounded file for an unbounded directory.</p>
  */
 class LogCleanerSpec extends Specification {
 
-    def "clearLogsOnStartup leaves Claude Desktop's log files untouched"() {
-        given: 'a home directory laid out like the real one, with client logs in it'
-        Path fakeHome = Files.createTempDirectory('logcleaner-home')
-        Path claudeLogs = fakeHome.resolve('AppData/Roaming/Claude/logs')
-        Files.createDirectories(claudeLogs)
+    private Path fakeHome
+    private String originalHome
 
-        Path serverLog = claudeLogs.resolve('mcp-server-groovy-filesystem.log')
-        Path aliasLog = claudeLogs.resolve('mcp-server-filesystem.log')
-        Path mcpLog = claudeLogs.resolve('mcp.log')
-
-        String serverBody = 'connected to mcp-groovy-filesystem-server (8 tools)'
-        String aliasBody = 'announcing mcp-groovy-filesystem-server: 8 tool(s)'
-        // (bodies deliberately carry no trailing newline - the assertion is byte equality)
-        // Comfortably over the 1MB threshold the old code used to decide mcp.log was fair game
-        String mcpBody = 'x' * 1_200_000
-
-        serverLog.text = serverBody
-        aliasLog.text = aliasBody
-        mcpLog.text = mcpBody
-
-        and: 'user.home points at it for the duration of the call'
-        String originalHome = System.getProperty('user.home')
+    def setup() {
+        fakeHome = Files.createTempDirectory('logcleaner-home')
+        originalHome = System.getProperty('user.home')
         System.setProperty('user.home', fakeHome.toAbsolutePath().toString())
+    }
 
-        when:
-        int cleared = LogCleaner.clearLogsOnStartup()
-
-        then: 'nothing was cleared, and every file is byte-for-byte what it was'
-        cleared == 0
-        serverLog.text == serverBody
-        aliasLog.text == aliasBody
-        mcpLog.text.length() == mcpBody.length()
-
-        cleanup:
+    def cleanup() {
         System.setProperty('user.home', originalHome)
         fakeHome.toFile().deleteDir()
     }
 
-    def "clearLogsOnStartup creates nothing when the Claude log directory is absent"() {
+    private Path logsDir() {
+        Path d = fakeHome.resolve('claude-sync/logs')
+        Files.createDirectories(d)
+        return d
+    }
+
+    private Path aged(Path dir, String name, int daysOld) {
+        Path p = dir.resolve(name)
+        p.text = 'x'
+        p.toFile().setLastModified(System.currentTimeMillis() - (daysOld * 24L * 60L * 60L * 1000L))
+        return p
+    }
+
+    def "stale per-pid log files and their archives are removed"() {
         given:
-        Path fakeHome = Files.createTempDirectory('logcleaner-empty-home')
-        String originalHome = System.getProperty('user.home')
-        System.setProperty('user.home', fakeHome.toAbsolutePath().toString())
+        Path dir = logsDir()
+        Path oldLive    = aged(dir, 'mcp-filesystem-12345.log', 5)
+        Path oldArchive = aged(dir, 'mcp-filesystem-12345.2026-09-01.0.log', 5)
+        Path legacy     = aged(dir, 'mcp-filesystem.log', 5)
 
         when:
-        int cleared = LogCleaner.clearLogsOnStartup()
+        int deleted = LogCleaner.clearLogsOnStartup()
+
+        then: 'all three are ours, all three are stale'
+        deleted == 3
+        !Files.exists(oldLive)
+        !Files.exists(oldArchive)
+        !Files.exists(legacy)
+    }
+
+    def "recent files are kept, whatever their pid"() {
+        given: 'a sibling instance writing right now, and one from this morning'
+        Path dir = logsDir()
+        Path fresh  = aged(dir, 'mcp-filesystem-99999.log', 0)
+        Path today  = aged(dir, 'mcp-filesystem-88888.log', 1)
+
+        when:
+        int deleted = LogCleaner.clearLogsOnStartup()
+
+        then: 'the retention window is the same 2 days logback promises for its own archives'
+        deleted == 0
+        Files.exists(fresh)
+        Files.exists(today)
+    }
+
+    def "other servers' logs and the companion stderr captures are never touched"() {
+        given: 'all stale, none of them this server\'s'
+        Path dir = logsDir()
+        Path cs        = aged(dir, 'mcp-context-111.log', 9)
+        Path aw        = aged(dir, 'mcp-agentic-workflow-222.log', 9)
+        Path csStdio   = aged(dir, 'mcp-context-stdio-333.log', 9)
+        Path companion = aged(dir, 'mcp-companion-filesystem-stderr.log', 9)
+        Path unrelated = aged(dir, 'config-watcher.log', 9)
+
+        when:
+        int deleted = LogCleaner.clearLogsOnStartup()
+
+        then: '''each server prunes only its own prefix. A sweep that reached across servers would
+                 delete a sibling's live file the moment that sibling was idle for two days'''
+        deleted == 0
+        Files.exists(cs)
+        Files.exists(aw)
+        Files.exists(csStdio)
+        Files.exists(companion)
+        Files.exists(unrelated)
+    }
+
+    def "Claude Desktop's log directory is left untouched"() {
+        given: 'the files this class used to truncate on every start'
+        Path claudeLogs = fakeHome.resolve('AppData/Roaming/Claude/logs')
+        Files.createDirectories(claudeLogs)
+        Path serverLog = claudeLogs.resolve('mcp-server-groovy-filesystem.log')
+        Path mcpLog = claudeLogs.resolve('mcp.log')
+        String body = 'connected to mcp-groovy-filesystem-server (8 tools)'
+        String big = 'x' * 1_200_000
+        serverLog.text = body
+        mcpLog.text = big
+        serverLog.toFile().setLastModified(System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000))
+        mcpLog.toFile().setLastModified(System.currentTimeMillis() - (30L * 24 * 60 * 60 * 1000))
+        logsDir()
+
+        when: 'even though both are far older than the retention window'
+        LogCleaner.clearLogsOnStartup()
+
+        then: 'they are byte-for-byte what they were. That directory is not ours to prune'
+        serverLog.text == body
+        mcpLog.text.length() == big.length()
+    }
+
+    def "a missing claude-sync logs directory is not an error"() {
+        when:
+        int deleted = LogCleaner.clearLogsOnStartup()
 
         then:
-        cleared == 0
-        !Files.exists(fakeHome.resolve('AppData/Roaming/Claude/logs'))
-
-        cleanup:
-        System.setProperty('user.home', originalHome)
-        fakeHome.toFile().deleteDir()
+        deleted == 0
+        noExceptionThrown()
     }
 }

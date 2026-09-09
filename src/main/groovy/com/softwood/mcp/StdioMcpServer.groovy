@@ -95,7 +95,7 @@ class StdioMcpServer implements CommandLineRunner {
 
         // FS 0.9.20: a server receiving nothing logs nothing, which is why the 2026-09-08
         // tool-list drops were invisible in every log we had. See McpHeartbeat.
-        McpHeartbeat.start('filesystem', '0.9.22')
+        McpHeartbeat.start('filesystem', '0.9.23')
 
         try {
             while (true) {

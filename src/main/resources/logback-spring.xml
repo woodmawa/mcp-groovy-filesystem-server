@@ -46,7 +46,7 @@
     </appender>
 
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>C:/Users/willw/claude-sync/logs/mcp-filesystem.log</file>
+        <file>C:/Users/willw/claude-sync/logs/mcp-filesystem-${PID:-nopid}.log</file>
         <!--
             FS 0.9.20. Bounded on BOTH axes, because time alone does not bound anything: on
             2026-09-08 the context server's current-day file reached 96.9 MB while its retention
@@ -56,7 +56,7 @@
             survivable instead of a disk problem.
         -->
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-            <fileNamePattern>C:/Users/willw/claude-sync/logs/mcp-filesystem.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <fileNamePattern>C:/Users/willw/claude-sync/logs/mcp-filesystem-${PID:-nopid}.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
             <maxFileSize>20MB</maxFileSize>
             <maxHistory>2</maxHistory>
             <totalSizeCap>100MB</totalSizeCap>
