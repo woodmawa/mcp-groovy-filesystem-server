@@ -5,8 +5,8 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.9.19` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.19 / CS 1.0.40 / AW 1.30.10 — 2026-09-08
+- **Current version:** `0.9.23` (check `build.gradle` to confirm)
+- **Baseline stack:** FS 0.9.23 / CS 1.0.50 / AW 1.30.14 — 2026-09-09
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---

@@ -2,8 +2,8 @@
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
 **Version:** 3.0  
-**Stack:** FS 0.9.17 / CS 1.0.26 / AW 1.30.8 — 2026-09-04
-**Last updated:** 2026-07-30
+**Stack:** FS 0.9.23 / CS 1.0.50 / AW 1.30.14 — 2026-09-09
+**Last updated:** 2026-09-09
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
 
