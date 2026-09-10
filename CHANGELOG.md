@@ -1108,3 +1108,56 @@ eliminate was this one, and it was in the layer below.
 
 Suite: 33 suites, 354 tests, 0 failures — measured over **6 consecutive full runs**, not one.
 Before the fix it was one failure per run, reliably, and a different spec each time.
+
+
+## 0.9.26 — ONTOLOGY-GATE: one question, asked at dispatch
+
+Paired with **CS 1.0.56**, which carries the measurement and the two-defect analysis in full.
+Neither half works alone: repair the path lookup on its own and every read blocks, repair the
+locate recorder on its own and nothing changes.
+
+**`checkOntologyGate` no longer decides anything itself.** It asks CS one question about one path —
+`ontologyGateCheck(normalizedPath, claimedSessionId)` — and takes the answer. Gone with the old
+implementation:
+
+- the bare-**stem** fuzzy lookup and the path-scope guard that followed it, which between them
+  switched the gate off for every file with a sibling `Spec` (which is most of the tree);
+- `sessionLocatedStems` and `recordLocateCalled`, an in-memory Set and **a writer with no callers**;
+- the `.groovy`/`.java` extension filter. Whether a file is gated is now decided by whether the
+  **ontology** holds it, which is the actual question — `.md`, `.adoc` and anything else an indexer
+  covers are gated on the same terms, and anything unindexed passes.
+
+**The session passed to CS is this process's CLAIMED session** (`readActiveSessionId()`), not a
+singleton and not CS's own idea of it. A claim arrives on this process's own pipe, so it is the one
+thing that actually identifies the chat.
+
+### The gate moved to dispatch, because three actions out of eight was gating the exception
+
+It used to be applied inside `doRead`, `doRange` and `doGetMethod`. `grep`, `head`, `tail`,
+`structure` and `summary` walked straight past — and those are the *cheap* calls, which is to say
+the ones actually used. The check now runs once in `FileReadService` **before the action switch**,
+the same correction CS 1.0.52 made when it moved its knowledge dirty-flag ahead of the handler
+fast path.
+
+The exempt set is **named explicitly** rather than left to fall through, so an action added later is
+gated by default and has to be argued out of the set instead of quietly missing it. Exempt because
+they return no file content (`exists`, `stat`, `info`, `checksum`, `normalize`, `project_root`,
+`allowed_dirs`, `list`, `help`) or carry no single path (`multi`, `multi_grep`, `chunk_read`,
+`finalise_read`). `multi` applies its own per-path guard; **`multi_grep` does not, and that is a
+known remaining gap rather than a decision.**
+
+### The specs that proved a world that does not exist
+
+`OntologyGateEnforcementSpec` OGE-1..11 passed the whole time the gate was inert. It stubbed
+`getOntologyRange` to return the file's own path — in reality the stem resolves to the Spec — and
+stubbed `locateCalledThisSession` to be capable of returning `true` — in reality its writer had no
+callers. The stubs hand-built the exact conditions production never produces. They now stub the
+single gate answer: a stub can still lie, but only about the answer, not about the shape of the
+world.
+
+`OntologyGateCoverageSpec` OGC-1..4 holds both defects shut and pins the gate ahead of the switch,
+with every assertion run over **code lines only** — this release's own comments discuss
+`getOntologyRange` and `recordLocateCalled` at length, and a raw-source absence check would be
+satisfied by that prose, which is exactly how CS 1.0.55 red-built earlier the same day.
+
+Suite: FS **358 tests, 34 suites, 0 failures** — counted from the JUnit XML.

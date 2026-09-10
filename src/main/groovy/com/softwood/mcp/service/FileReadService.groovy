@@ -222,6 +222,32 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                 return McpResponse.toolError(requestId, "file_read '${action}' requires a 'path' parameter (received null).")
             }
 
+            // FS 0.9.26 -- ONTOLOGY-GATE AT DISPATCH, not from a per-action list.
+            //
+            // The gate used to be applied inside doRead, doRange and doGetMethod. Everything else
+            // that returns file content -- grep, head, tail, structure, summary -- walked straight
+            // past it, and those are the CHEAP calls, which is to say the ones actually used. Three
+            // gated actions out of eight was gating the exception. This is the same correction CS
+            // 1.0.52 made when it moved the knowledge dirty-flag into dispatch, ahead of the
+            // handler-registry fast path, for exactly the same reason.
+            //
+            // The exempt set is named EXPLICITLY rather than left to fall through, so an action
+            // added later is gated by default and has to be argued out of the set instead of
+            // quietly missing it. Exempt because they return no file content (exists, stat, info,
+            // checksum, normalize, project_root, allowed_dirs, list, help) or because they carry
+            // no single path (multi, multi_grep, chunk_read, finalise_read). multi already applies
+            // its own per-path guard; multi_grep does not, and that is a known remaining gap
+            // rather than a decision.
+            if (responseHelper != null && path &&
+                !(action in ['exists', 'stat', 'info', 'checksum', 'normalize', 'project_root',
+                             'allowed_dirs', 'list', 'help', 'chunk_read', 'finalise_read',
+                             'multi', 'multi_grep'])) {
+                String gateNorm = pathService.normalizePath(path)
+                McpResponse gateBlock =
+                    responseHelper.checkOntologyGate(gateNorm, options, requestId, action)
+                if (gateBlock != null) return gateBlock
+            }
+
             switch (action) {
                 case 'read' : {
                     McpResponse r = contentReader.doRead(path, options, requestId)

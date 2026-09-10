@@ -407,34 +407,51 @@ class ReadResponseHelper extends AbstractFileService {
                                    Object requestId, String action) {
         if (!ontologyGateEnforced) return null
         if (contextServerClient == null || !contextServerClient.isCsReachable()) return null
-        if (!(normalized?.endsWith('.groovy') || normalized?.endsWith('.java'))) return null
 
-        String fileStem = new File(normalized).name.replaceFirst(/\.[^.]+$/, '')
-
-        // Use getOntologyRange (reuses existing locate call) and path-verify the result.
-        // CRITICAL: check that CS's source_file for this stem matches our normalized path.
-        // Without the path check, a stem like 'ct30' from a TempDir test file can match
-        // a residual ontology entry from a prior test run, causing a spurious gate block.
-        // The gate only applies when THIS EXACT FILE is indexed in the source ontology.
-        Map<String, Object> range
+        // FS 0.9.26 -- ONE QUESTION, ASKED OF THE SERVER THAT OWNS BOTH FACTS.
+        //
+        // What was here before was two checks that cancelled each other into silence. The file was
+        // resolved by its bare STEM through a fuzzy locate, and the method then returned null
+        // whenever the resolved source_file differed from the file being read. In a codebase where
+        // nearly every Foo.groovy has a FooSpec.groovy the stem resolves to the SPEC, so that guard
+        // -- added correctly, to stop a TempDir stem collision producing a spurious block -- turned
+        // the gate off for most of the tree. The second check, locateCalledThisSession, read an
+        // in-process Set whose only writer had NO CALLERS anywhere in the repository, so it could
+        // only ever answer false. Repair the path lookup alone and every read blocks; repair the
+        // recorder alone and nothing changes. Measured before the repair: ONE block since
+        // 2026-05-29, against 2,269 reads in 30 days and 21 sessions with zero locate calls.
+        //
+        // The extension filter has gone with them. Whether a file is gated is now decided by
+        // whether the ONTOLOGY has it, which is the actual question -- .md, .adoc and anything else
+        // an indexer covers is gated on the same terms, and anything unindexed passes.
+        String claimedSession = null
         try {
-            range = contextServerClient.getOntologyRange(fileStem)
+            claimedSession = telemetryService?.readActiveSessionId()
+        } catch (Exception ignored) { }
+
+        Map<String, Object> gate
+        try {
+            gate = contextServerClient.ontologyGateCheck(normalized, claimedSession)
         } catch (Exception e) {
-            log.debug('ontology-gate range check failed (fail-open) [{}]: {}', fileStem, e.message)
-            return null  // fail-open
+            log.debug('ontology-gate check failed (fail-open) [{}]: {}', normalized, e.message)
+            return null
         }
-        if (range == null || range.get('found') != true) return null
+        // null = CS unreachable or errored. allow != false covers not-indexed, no-session and
+        // locate-called. Every uncertain path allows: a gate that cannot reach its evidence must
+        // not stop work, and it says so in the reason field rather than silently.
+        if (gate == null) return null
+        if (gate.get('allow') != false) return null
 
-        // Path-scope guard: only block when CS's indexed path matches this file.
-        // Normalise both to forward slashes, lowercase for comparison.
-        String csSourceFile = (range.get('source_file') as String)?.replace('\\', '/') ?: ''
-        String normFwd      = normalized.replace('\\', '/')
-        if (!csSourceFile.equalsIgnoreCase(normFwd)) return null
+        String fname = new File(normalized).name
+        int dotAt = fname.lastIndexOf((int) 46)
+        String fileStem = dotAt > 0 ? fname.substring(0, dotAt) : fname
 
-        // Locate was called this session → allow
-        if (contextServerClient.locateCalledThisSession(fileStem)) return null
+        // CS returns the symbol_name that actually resolves to THIS path, so the hint names a query
+        // that will work. The old hint guessed the stem -- which, for every file with a sibling
+        // spec, was a query that resolved somewhere else.
+        String locateQuery = (gate.get('locate_query') as String) ?: fileStem
 
-        // allowNoLocate=true override → allow but increment telemetry
+        // allowNoLocate=true override -> allow, but count it, so overrides stay visible
         boolean override = options?.get('allowNoLocate') as boolean
         if (override) {
             contextServerClient.incrementOntologyGateBlockedToken(fileStem)
@@ -444,12 +461,12 @@ class ReadResponseHelper extends AbstractFileService {
         // Block: write observation async, return error response
         contextServerClient.writeOntologyGateObservationAsync(fileStem, action)
 
-        String hint = "Call context_read scope=ontology action=locate query=${fileStem} BEFORE file_read to allow this read. " +
+        String hint = "Call context_read scope=ontology action=locate query=${locateQuery} BEFORE file_read to allow this read. " +
                       "locate returns source_line+end_line in <100 tokens. " +
                       "Pass options.allowNoLocate=true to override the block (telemetry still incremented)."
         Map<String, Object> errorMap = [
             error       : 'BLOCKED_ONTOLOGY_GATE',
-            locate_query: fileStem,
+            locate_query: locateQuery,
             action      : action,
             file        : normalized,
             hint        : hint

@@ -88,30 +88,43 @@ class OntologyGateEnforcementSpec extends Specification {
         text ? (Map) new JsonSlurper().parseText(text) : [:]
     }
 
-    /** Fresh stub: indexed, CS reachable, NO prior locate this session.
-     *  The stub returns a getOntologyRange result whose source_file matches the
-     *  provided absolutePath so the path-scope check in checkOntologyGate passes.
+    /**
+     * Fresh stub: CS reachable, this PATH is indexed, and locate has not been called for it.
+     *
+     * <p>FS 0.9.26 rewrote these helpers, and the reason is the point of the release. The previous
+     * versions stubbed {@code getOntologyRange} and {@code locateCalledThisSession} -- two facts FS
+     * used to decide for itself -- and in doing so <b>constructed by hand the exact conditions that
+     * never occur in production</b>: a range lookup returning the file's own path (in reality the
+     * bare stem resolves to the sibling Spec) and a locate flag capable of returning true (in
+     * reality its only writer had no callers). OGE-1..11 passed throughout, proving the gate's
+     * logic correct given inputs the system could not produce, while the live gate blocked once in
+     * three and a half months.</p>
+     *
+     * <p>The gate is now ONE question answered by CS, so that is what is stubbed. A stub can still
+     * lie, but it can now only lie about the answer, not about the shape of the world.</p>
+     *
+     * @param absolutePath retained so call sites are unchanged; the path no longer steers the stub
      */
     private ContextServerClient stubIndexed(String stem, boolean locateCalled = false,
                                              String absolutePath = null) {
         def s = Stub(ContextServerClient)
-        s.isCsReachable()               >> true
-        s.isOntologyIndexed(stem)       >> true
-        s.locateCalledThisSession(stem) >> locateCalled
-        // getOntologyRange must return source_file matching the actual file path.
-        // If absolutePath is null the stub returns a path that won't match (safe default
-        // for tests that never reach the path-scope check).
-        String srcFile = absolutePath ?: "/some/project/src/main/groovy/${stem}.groovy"
-        s.getOntologyRange(stem) >> [found: true, source_file: srcFile,
-                                     source_line: 1, end_line: 10]
+        s.isCsReachable() >> true
+        s.ontologyGateCheck(_, _) >> [scope        : 'ontology',
+                                      action       : 'gate_check',
+                                      indexed      : true,
+                                      locate_called: locateCalled,
+                                      allow        : locateCalled,
+                                      locate_query : stem,
+                                      reason       : locateCalled ? 'locate-called' : 'blocked-no-locate']
         s
     }
 
-    /** Fresh stub: not indexed, CS reachable. */
+    /** Fresh stub: CS reachable, path not in the ontology -- the gate must allow. */
     private ContextServerClient stubNotIndexed(String stem) {
         def s = Stub(ContextServerClient)
-        s.isCsReachable()               >> true
-        s.isOntologyIndexed(stem)       >> false
+        s.isCsReachable() >> true
+        s.ontologyGateCheck(_, _) >> [scope : 'ontology', action: 'gate_check',
+                                      indexed: false, allow: true, reason: 'not-indexed']
         s
     }
 
@@ -225,11 +238,10 @@ class OntologyGateEnforcementSpec extends Specification {
         File f    = writeGroovy('OverrideService.groovy')
         String np = norm(f)
         def csMock = Mock(ContextServerClient)
-        csMock.isCsReachable()                       >> true
-        csMock.isOntologyIndexed('OverrideService')  >> true
-        csMock.locateCalledThisSession('OverrideService') >> false
-        csMock.getOntologyRange('OverrideService') >> [found: true, source_file: np,
-                                                        source_line: 1, end_line: 10]
+        csMock.isCsReachable() >> true
+        csMock.ontologyGateCheck(_, _) >> [indexed: true, locate_called: false, allow: false,
+                                           locate_query: 'OverrideService',
+                                           reason: 'blocked-no-locate']
         helper.contextServerClient = csMock
 
         when:
@@ -251,11 +263,10 @@ class OntologyGateEnforcementSpec extends Specification {
         File f    = writeGroovy('ObservableService.groovy')
         String np = norm(f)
         def csMock = Mock(ContextServerClient)
-        csMock.isCsReachable()                            >> true
-        csMock.isOntologyIndexed('ObservableService')     >> true
-        csMock.locateCalledThisSession('ObservableService') >> false
-        csMock.getOntologyRange('ObservableService') >> [found: true, source_file: np,
-                                                          source_line: 1, end_line: 10]
+        csMock.isCsReachable() >> true
+        csMock.ontologyGateCheck(_, _) >> [indexed: true, locate_called: false, allow: false,
+                                           locate_query: 'ObservableService',
+                                           reason: 'blocked-no-locate']
         helper.contextServerClient = csMock
 
         when:

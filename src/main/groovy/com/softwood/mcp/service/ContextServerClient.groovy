@@ -928,35 +928,59 @@ class ContextServerClient {
     // -----------------------------------------------------------------------
 
     /**
-     * In-memory set of file stems for which {@code context_read scope=ontology action=locate}
-     * has been called this session. Populated by {@link #recordLocateCalled(String)}.
-     * ConcurrentHashSet via ConcurrentHashMap.newKeySet() for thread safety.
-     * Cleared on a new session registration ({@link #setActiveSessionId(String)}).
-     */
-    private final Set<String> sessionLocatedStems =
-        java.util.Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>())
-
-    /**
-     * Returns {@code true} if a {@code context_read scope=ontology action=locate} call has been
-     * recorded for {@code fileStem} in the current session.
-     * Called by {@link com.softwood.mcp.service.read.ReadResponseHelper#checkOntologyGate}.
+     * FS 0.9.26 -- asks CS whether this exact PATH may be read, and takes its answer.
      *
-     * @param fileStem  file name without extension (e.g. "DistillationService")
-     * @return {@code true} if locate was called; {@code false} otherwise
-     */
-    boolean locateCalledThisSession(String fileStem) {
-        return fileStem != null && sessionLocatedStems.contains(fileStem)
-    }
-
-    /**
-     * Records that a {@code context_read scope=ontology action=locate} call succeeded for
-     * {@code fileStem}. Called by the CS MCP response path when a locate action completes
-     * so subsequent {@code file_read} calls on the same file are allowed through the gate.
+     * <p>Replaces the two halves that used to live here and cancelled each other out. FS resolved
+     * the file by its bare STEM through a fuzzy locate and bailed out whenever the resolved path
+     * differed from the file being read -- and in this codebase the stem usually resolves to the
+     * SPEC, so the gate almost never fired. The other half, {@code locateCalledThisSession}, read an
+     * in-process Set whose only writer, {@code recordLocateCalled}, HAD NO CALLERS ANYWHERE. Fix one
+     * and every read blocks; fix the other and nothing changes. Measured before the repair: the gate
+     * had blocked once, on 2026-05-29, while 21 sessions in 30 days read files with zero locates.</p>
      *
-     * @param fileStem  file name without extension
+     * <p>Neither fact belonged in this process. CS serves {@code locate} and CS owns the ontology,
+     * so CS answers both -- one question, one authority, no second copy to drift.</p>
+     *
+     * <p>{@code sessionId} is passed EXPLICITLY by the caller and must be this process's CLAIMED
+     * session. CS deliberately does not resolve it: a gate check arrives over HTTP and lands in the
+     * shared companion, which is not the chat. That is the same distinction that made owner_key
+     * useless for FB-2.</p>
+     *
+     * @return the gate answer, or {@code null} on any error/timeout/CS-down (caller fails open)
      */
-    void recordLocateCalled(String fileStem) {
-        if (fileStem) sessionLocatedStems.add(fileStem)
+    Map<String, Object> ontologyGateCheck(String path, String sessionId) {
+        if (!isCsReachable() || !path) return null
+        try {
+            Map<String, Object> args = [scope: 'ontology', action: 'gate_check', path: path]
+            if (sessionId) args.put('sessionId', sessionId)
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_read', arguments: args]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod  = 'POST'
+                conn.doOutput       = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) return (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('ontologyGateCheck failed (fail-open) [{}]: {}', path, e.message)
+        }
+        return null
     }
 
     /**
