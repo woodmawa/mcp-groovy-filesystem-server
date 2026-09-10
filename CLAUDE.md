@@ -534,3 +534,76 @@ write does not look like that.
    after parsing `logback-spring.xml`, so `application.yml` always wins. CS 1.0.41 lowered
    `com.woodmawa.mcp.context` to INFO in logback and the running companion kept logging DEBUG.
    Verify a logging change from the running process's output, never from the config or the jar.
+
+---
+
+## FS 0.9.26 (2026-09-10) — ONTOLOGY-GATE actually blocks now
+
+**Baseline:** FS 0.9.26 · CS 1.0.58 · AW 1.30.17 (2026-09-10)
+
+**Call `context_read scope=ontology action=locate` before any `file_read` on an indexed file.** This
+stopped being advice in 0.9.26.
+
+### It had blocked once, ever
+
+`ONTOLOGY-GATE` is a declared hard gate — `on_violation: block_and_observe`, enforced by default
+since FS 0.9.8. One block, on **2026-05-29**. Over the trailing 30 days: **111 sessions, 2,269 reads,
+average `ontology_pct` 70.9%, and 21 sessions at literally zero locate calls** — none refused. A
+review from 2026-05-07 had already written down *"ontology_pct 17–23% = ~80% of file reads bypass
+ontology locate"*; the number was known for four months, what it meant was not.
+
+### Two defects that cancelled each other into silence
+
+1. `checkOntologyGate` resolved the file by its bare **stem** through a fuzzy locate, then returned
+   `null` whenever the resolved `source_file` differed from the file being read. In a codebase where
+   nearly every `Foo.groovy` has a `FooSpec.groovy`, **the stem resolves to the Spec**. The
+   path-scope guard responsible was added deliberately and correctly, to stop a TempDir stem
+   collision producing a spurious block — and it switched the gate off for most of the tree.
+2. `locateCalledThisSession` read `sessionLocatedStems`, an in-memory `Set` **in the FS process**,
+   whose only writer `recordLocateCalled` **had no callers anywhere in the repository**. It could
+   only ever answer `false`.
+
+Repair the first alone and every read blocks. Repair the second alone and nothing changes. **The gate
+read as working because both were broken.** And `OntologyGateEnforcementSpec` OGE-1..11 passed
+throughout, because its stubs hand-built the exact conditions production never produces.
+
+### What 0.9.26 does instead
+
+`checkOntologyGate` decides nothing itself. It asks CS **one question about one path** —
+`ontologyGateCheck(normalizedPath, claimedSessionId)` — and takes the answer. CS owns the ontology
+and serves `locate`, so both facts live there; FS keeps no second copy.
+
+- **The session sent to CS is this process's CLAIMED session** (`readActiveSessionId()`), never a
+  singleton. A claim arrives on this process's own pipe, so it is the one thing that identifies the
+  chat.
+- **The `.groovy`/`.java` filter is gone.** Whether a file is gated is decided by whether the
+  **ontology** holds it — `.md` and `.adoc` are gated on the same terms, anything unindexed passes.
+- **The gate runs at dispatch**, ahead of the action switch. It used to sit inside `doRead`,
+  `doRange` and `doGetMethod`; `grep`, `head`, `tail`, `structure` and `summary` walked straight
+  past, and those are the *cheap* calls, which is to say the ones actually used. Same correction
+  CS 1.0.52 made by moving its dirty-flag ahead of the handler fast path.
+- The exempt set is **named explicitly**, so an action added later is gated by default and has to be
+  argued out of the set: `exists`, `stat`, `info`, `checksum`, `normalize`, `project_root`,
+  `allowed_dirs`, `list`, `help` return no file content; `multi`, `multi_grep`, `chunk_read`,
+  `finalise_read` carry no single path. **`multi_grep` is therefore still ungated — a known gap, not
+  a decision.**
+
+Every uncertain path **allows** — CS unreachable, path not indexed, no claimed session, check
+errored — and says which in `reason`. A gate that cannot reach its evidence must not stop work, and
+must not go quiet about it either.
+
+### Using it
+
+```
+context_read scope=ontology action=locate query=<ClassName>     # <100 tokens, returns line range
+file_read    action=range path=<file> options.startLine=… maxLines=…
+```
+
+`options.allowNoLocate=true` overrides the block and **increments telemetry**, so overrides stay
+visible. Use it when locate genuinely cannot name your target — not as a habit.
+
+**When the hint's query lands on the wrong file**, pass the path-qualified `node_id` instead of the
+bare name: `locate query=doc:mcp-groovy-context-server/CLAUDE.md`. `locate` matches `node_id`
+exactly before it tries any `LIKE`, so it is unambiguous where a symbol name is not. CS 1.0.58 fixed
+the `Foo` vs `FooSpec` case (exact name now outranks a substring); files that **share** a name
+across directories still need the `node_id`.
