@@ -64,19 +64,32 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     // Falls back to DEFAULT_DESC if CS is unreachable on first boot.
     private String toolDescription
 
+    // FS 0.9.33 W14: the KNOWNHASH OBLIGATION block that opened this description is gone.
+    // It declared the metric "tracked per session and FAILING if <30%" and rode on every FS tool
+    // definition in every session. Measured 2026-09-11 over 30 days: 66 eligible repeat reads
+    // across 34 sessions out of 2,406 file_read calls in 161 sessions -- 2.7% of reads are even
+    // ELIGIBLE, and 79% of sessions produce no measurement at all. knownhash_pct is NULL on 125
+    // of 159 sessions because NULL is the correct answer: eligibleReads counts repeat reads only,
+    // after two deliberate narrowings (0.54.7 RC-8, 0.93.0 WP-D2), and W13 was STRUCK on the
+    // finding that this narrowing is right. CS 1.0.2 RC-C had already written "knownhash_pct
+    // cannot serve" in a comment and chosen orientation_tok instead.
+    //
+    // So the text mandated a threshold on a number that is absent by design -- this arc's shape
+    // in its third face: not an unreachable guard, but an unmeasurable obligation, repeated to
+    // every model on every connect. What remains says what knownHash DOES and how to get one.
+    // The narrow signal survives untouched: ContextServerClient.writeMissingKnownHashObservationAsync
+    // still fires when a cached file is re-read without a hash, because THAT case is real,
+    // reachable, and specific.
     // DEFAULT_DESC kept in sync with tool_desc_file_read section_key in help_sections.
     // Update via: context_lifecycle execute_sql UPDATE help_sections SET content=? WHERE section_key='tool_desc_file_read'
     private static final String DEFAULT_DESC = '''\
 Read files/directories.
 Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
 
-KNOWNHASH IS MANDATORY ON EVERY REPEAT READ (practice #497).
-Sources: (1) bootstrap globals working_file_hashes[path].hash for prior-session files.
-         (2) file_content_hash field returned by every read response -- capture immediately.
-         (3) _knownhash_hint field -- appears in every content response where knownHash was omitted.
-Usage:   Pass as options.knownHash on action=read (whole-file) or action=get_method only.
-Result:  Unchanged file returns {unchanged:true} = ZERO tokens consumed.
-Metric:  knownhash_pct tracked per session. FAILING in mid-session-audit if <30%.
+knownHash saves re-sending content you already hold. Pass the file_content_hash from a previous
+read as options.knownHash on action=read (whole-file) or action=get_method; an unchanged file then
+returns {unchanged:true} at zero token cost. Get the hash from any read response, from the
+_knownhash_hint when you omit it, or from bootstrap globals working_file_hashes[path].hash.
 
 CRITICAL: Do NOT pass options.knownHash to action=range.
   action=range with a matching knownHash returns {unchanged:true} instead of content.
