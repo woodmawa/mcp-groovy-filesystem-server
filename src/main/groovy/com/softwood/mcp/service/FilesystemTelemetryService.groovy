@@ -287,41 +287,31 @@ class FilesystemTelemetryService {
             Class.forName('org.sqlite.JDBC')
             dbConn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
             dbConn.autoCommit = true
+            applyPragmas(dbConn)
             log.debug('FilesystemTelemetryService: persistent JDBC connection opened at {}', dbPath)
-            // Ensure table exists even when context server has never run (standalone mode)
-            def stmt = dbConn.createStatement()
-            stmt.execute('''CREATE TABLE IF NOT EXISTS tool_call_telemetry (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id          TEXT NOT NULL,
-                tool_name           TEXT NOT NULL,
-                server_name         TEXT NOT NULL DEFAULT 'context-server',
-                called_at           TEXT DEFAULT (datetime('now')),
-                response_char_count INTEGER DEFAULT 0,
-                response_token_est  INTEGER DEFAULT 0,
-                is_repeat_call      INTEGER DEFAULT 0,
-                args_hash           TEXT
-            )''')
-            stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_session ON tool_call_telemetry(session_id)')
-            stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_tool ON tool_call_telemetry(tool_name)')
-            stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_server ON tool_call_telemetry(server_name)')
-            // Addendum C: safe migration - add new columns if table exists but columns are absent
+
+            // FS 0.9.32 R2 -- ALL DDL REMOVED FROM THIS METHOD, AS 0.9.29 SAID IT WOULD BE.
             //
-            // FS 0.9.29: owner_key/caller_session were briefly added to this list in 0.9.28 and are
-            // deliberately NOT here. FS does not own this schema. CS does, and a server's database
-            // is scoped to that server alone -- DDL from another process is the clearest possible
-            // breach of that, whatever the ordering argument for it. The ordering hazard that
-            // motivated it does not need solving: it disappears once FS stops writing these rows
-            // directly at all, which is what this list is now the last remnant of.
-            ['action', 'path_hash', 'outcome'].each { String col ->
-                try {
-                    dbConn.createStatement().execute("ALTER TABLE tool_call_telemetry ADD COLUMN ${col} TEXT")
-                    log.info('telemetry: added column {}', col)
-                } catch (Exception ignored) {
-                    // column already exists - fine
-                    log.debug('telemetry column {} already present', col)
-                }
-            }
-            ensurePendingReindexTable()
+            // What was here: CREATE TABLE tool_call_telemetry, three indexes on it, an
+            // ALTER-ADD-COLUMN loop for action/path_hash/outcome, and ensurePendingReindexTable().
+            // Both tables belong to CS, and 0.9.29's own comment set the condition for deleting
+            // the first: "the ordering hazard that motivated it does not need solving -- it
+            // disappears once FS stops writing these rows directly at all, which is what this
+            // list is now the last remnant of." FS stopped writing them in 0.9.29.
+            // recordToolCall has forwarded through ContextServerClient ever since, so this was
+            // a server creating and migrating a table it no longer writes to.
+            //
+            // pending_reindex went with it, and that one was still doing harm. FS's shape had no
+            // `source` column while CS's two creators did, so on a fresh database the winner of
+            // the startup race decided the schema -- which is precisely why CS's queue handler
+            // carried a CREATE, an ALTER and a CREATE UNIQUE INDEX, each wrapped in a swallow.
+            // CS 1.0.65 makes SqliteSchemaManager the single owner and creates it at startup.
+            //
+            // FS still INSERTs into pending_reindex, from exactly one place: the catch block in
+            // ContextServerClient.reindexFileAsync, where CS HTTP is unreachable. That INSERT
+            // cannot be routed through a CS action -- doing so would make it a no-op in the only
+            // circumstance it runs. Writing a row into a table you did not create is not the
+            // breach; deciding its shape is.
         } catch (Exception e) {
             log.debug('FilesystemTelemetryService: DB connection failed (non-fatal): {}', e.message)
         }
@@ -343,6 +333,30 @@ class FilesystemTelemetryService {
     // Private helpers
     // -------------------------------------------------------------------------
 
+    /**
+     * FS 0.9.32 -- the contention settings every other writer on this database already has.
+     *
+     * <p>{@code UsageTracker} has set {@code busy_timeout=10000} since FIX-1; CS uses 5000
+     * throughout. The connections in THIS class set nothing, and SQLite's default is zero --
+     * a concurrent writer is an immediate {@code SQLITE_BUSY}. Both paths that use them swallow
+     * it: a failed claim write-through logs a warning and reports {@code persisted:false},
+     * leaving the process holding a claim no diagnostic can see, and a failed reindex queue logs
+     * at debug and is gone.
+     *
+     * <p><b>Stated plainly because the evidence does not support more:</b> this is hardening, not
+     * a fix for an observed fault. 119 FS log files carry zero {@code SQLITE_BUSY} and zero
+     * "database is locked"; the four {@code write-through failed} lines that exist are all from
+     * a {@code [Test worker]} thread. Do not record this as a defect that was found in
+     * production, because it was not.
+     */
+    private static void applyPragmas(Connection conn) {
+        try {
+            conn.createStatement().withCloseable { it.execute('PRAGMA busy_timeout=10000') }
+        } catch (Exception e) {
+            log.debug('FilesystemTelemetryService: busy_timeout pragma failed (non-fatal): {}', e.message)
+        }
+    }
+
     private void withConnection(Closure work) {
         if (dbConn) {
             work(dbConn)
@@ -351,6 +365,7 @@ class FilesystemTelemetryService {
             Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
             try {
                 conn.autoCommit = true
+                applyPragmas(conn)
                 work(conn)
             } finally {
                 conn.close()
@@ -521,6 +536,7 @@ class FilesystemTelemetryService {
         Connection conn = DriverManager.getConnection("jdbc:sqlite:${dbPath}")
         try {
             conn.autoCommit = true
+            applyPragmas(conn)
             work(conn)
         } finally {
             conn.close()
@@ -598,30 +614,6 @@ class FilesystemTelemetryService {
             return Integer.toHexString(str.hashCode()).padLeft(8, '0')[0..7]
         } catch (Exception e) {
             return 'hasherr'
-        }
-    }
-
-    /**
-     * Creates pending_reindex table in shared SQLite if absent.
-     * Called from init() so the table is always ready when FS starts.
-     */
-    void ensurePendingReindexTable() {
-        if (!dbPath) return
-        try {
-            withConnection { conn ->
-                conn.createStatement().execute('''
-                    CREATE TABLE IF NOT EXISTS pending_reindex (
-                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                        file_path TEXT NOT NULL,
-                        queued_at TEXT DEFAULT (datetime('now')),
-                        cluster   TEXT
-                    )''')
-                conn.createStatement().execute(
-                    'CREATE INDEX IF NOT EXISTS idx_pending_reindex_path ON pending_reindex(file_path)')
-            }
-            log.debug('FilesystemTelemetryService: pending_reindex table ready')
-        } catch (Exception e) {
-            log.debug('FilesystemTelemetryService: ensurePendingReindexTable failed (non-fatal): {}', e.message)
         }
     }
 
