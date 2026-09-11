@@ -446,9 +446,19 @@ class ReadResponseHelper extends AbstractFileService {
         int dotAt = fname.lastIndexOf((int) 46)
         String fileStem = dotAt > 0 ? fname.substring(0, dotAt) : fname
 
-        // CS returns the symbol_name that actually resolves to THIS path, so the hint names a query
-        // that will work. The old hint guessed the stem -- which, for every file with a sibling
-        // spec, was a query that resolved somewhere else.
+        // CS returns a query that resolves to THIS path, and FS passes it through untouched --
+        // deliberately, because the ontology is CS's and a second opinion here would be a second
+        // copy to drift.
+        //
+        // What that query IS has been wrong twice, each time one layer less obviously. It guessed
+        // the file STEM, which for every file with a sibling spec resolved to the spec. CS 1.0.56
+        // made it the symbol_name that actually belongs to this path. CS 1.0.62 made it the
+        // node_id, because even the correct symbol name is not unique across files: 6 files named
+        // CLAUDE.md, 2,012 names shared by more than one source_file, and a session that hit the
+        // dead end six times in a row following the hint exactly.
+        //
+        // The fileStem fallback is for a CS too old to send one. It is the OLD defect, kept only
+        // so a version skew degrades rather than breaks -- do not read it as still acceptable.
         String locateQuery = (gate.get('locate_query') as String) ?: fileStem
 
         // allowNoLocate=true override -> allow, but count it, so overrides stay visible
