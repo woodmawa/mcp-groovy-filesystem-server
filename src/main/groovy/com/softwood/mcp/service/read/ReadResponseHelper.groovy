@@ -405,6 +405,27 @@ class ReadResponseHelper extends AbstractFileService {
      */
     McpResponse checkOntologyGate(String normalized, Map<String, Object> options,
                                    Object requestId, String action) {
+        Map<String, Object> entry = ontologyGateEntry(normalized, options, action)
+        return entry == null ? null : textResponse(requestId, entry)
+    }
+
+    /**
+     * FS 0.9.30 -- the gate DECISION, with the response shape lifted off it.
+     *
+     * <p>Returns the blocked entry map, or {@code null} to allow. {@code checkOntologyGate} wraps it
+     * as a whole-response error for the single-path actions; the multi-path actions
+     * ({@code multi}, {@code multi_grep}) collect one entry per path and report them together.</p>
+     *
+     * <p>Why this exists: {@code multi} used to carry its OWN guard -- Fix D, v0.8.54 -- which asked
+     * a different question ({@code isOntologyIndexed(stem)}), returned a different error code, and
+     * handed back a bare file STEM as the {@code locate_query}. That stem is precisely the defect
+     * CS 1.0.62 shipped to remove: 6 files are named CLAUDE.md and 2,012 symbol names are shared by
+     * more than one source_file, so following such a hint resolves to a different file and leaves
+     * the caller still blocked. A second guard is a second thing to drift; there is now one
+     * decision, and every caller gets the node_id CS resolved.</p>
+     */
+    Map<String, Object> ontologyGateEntry(String normalized, Map<String, Object> options,
+                                           String action) {
         if (!ontologyGateEnforced) return null
         if (contextServerClient == null || !contextServerClient.isCsReachable()) return null
 
@@ -481,7 +502,7 @@ class ReadResponseHelper extends AbstractFileService {
             file        : normalized,
             hint        : hint
         ] as Map<String, Object>
-        return textResponse(requestId, errorMap)
+        return errorMap
     }
 
     // -----------------------------------------------------------------------

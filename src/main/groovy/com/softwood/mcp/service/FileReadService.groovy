@@ -235,9 +235,11 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
             // added later is gated by default and has to be argued out of the set instead of
             // quietly missing it. Exempt because they return no file content (exists, stat, info,
             // checksum, normalize, project_root, allowed_dirs, list, help) or because they carry
-            // no single path (multi, multi_grep, chunk_read, finalise_read). multi already applies
-            // its own per-path guard; multi_grep does not, and that is a known remaining gap
-            // rather than a decision.
+            // no single path (multi, multi_grep, chunk_read, finalise_read). The two multi-path
+            // actions are NOT ungated -- FS 0.9.30 gates both per path inside their own cases,
+            // through the same ReadResponseHelper decision this guard calls. They are named here
+            // because dispatch has no single `path` to ask about, which is a different thing from
+            // being exempt; until 0.9.30 multi_grep really was exempt, and that was the last hole.
             if (responseHelper != null && path &&
                 !(action in ['exists', 'stat', 'info', 'checksum', 'normalize', 'project_root',
                              'allowed_dirs', 'list', 'help', 'chunk_read', 'finalise_read',
@@ -314,56 +316,52 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                     return r
                 }
                 case 'grep'         : return contentReader.doGrep(path, options, requestId)
-                case 'multi_grep'   : return contentReader.doMultiGrep(options, requestId)
+                case 'multi_grep'   : {
+                    // FS 0.9.30 -- W3: multi_grep was the last file_read action that returned file
+                    // content with no gate at all. The dispatch guard cannot cover it -- there is no
+                    // single `path` to ask about -- so it is gated here, per path, through the same
+                    // decision function dispatch uses. Being named in the exempt list above is about
+                    // the shape of the arguments, not about being exempt.
+                    Map<String, Object> mg = gateMultiPaths(
+                        (options.paths as List<String>) ?: [], options, 'multi_grep', false)
+                    List<Map> mgBlocked = mg.get('blocked') as List<Map>
+                    if (mgBlocked) {
+                        List<String> mgAllowed = mg.get('allowed') as List<String>
+                        if (!mgAllowed) return McpResponse.toolError(requestId,
+                            groovy.json.JsonOutput.toJson([error  : 'BLOCKED_ONTOLOGY_GATE',
+                                blocked: mgBlocked,
+                                hint   : 'All requested files are ontology-indexed and unlocated. locate each locate_query below, then retry.']))
+                        options = new HashMap<String, Object>(options as Map<String, Object>)
+                        options.paths = mgAllowed
+                        options._blocked = mgBlocked
+                    }
+                    return contentReader.doMultiGrep(options, requestId)
+                }
                 case 'multi'        : {
-                    // Fix D (v0.8.54): guard unranged reads on ontology-indexed files.
-                    // Per-path: if CS has this file indexed and no range is specified, block it.
-                    // Fail open: CS unavailable or file not indexed -> allow.
-                    if (contextServerClient != null) {
-                        List<String> rawPaths = (options.paths as List<String>) ?: []
-                        // Exempt paths that have a knownHash supplied -- caller only wants
-                        // hash-change detection, not full content. No content tokens at risk.
-                        // Also exempt if compact=true (hash-only multi read).
-                        Map knownHashMap = (options.knownHashes instanceof Map)
-                            ? (options.knownHashes as Map) : [:]
-                        boolean compactMode = options.compact as boolean ?: false
-                        List<Map> blocked = []
-                        rawPaths.each { String p ->
-                            try {
-                                // Normalise path for knownHashes lookup
-                                String np = pathService.normalizePath(p)
-                                boolean hasKnownHash = knownHashMap.containsKey(np) || knownHashMap.containsKey(p)
-                                if (hasKnownHash || compactMode) return // exempt -- no content risk
-                                String stem = new File(p).name.replaceAll('\\.\\w+$', '')
-                                if (contextServerClient.isOntologyIndexed(stem)) {
-                                    // FS 0.8.69 FIX-6A: include known_hash hint so caller can pass
-                                    // options.knownHash on retry to get ~15-token unchanged response.
-                                    Map<String, Object> blockedEntry = [error: 'BLOCKED_UNRANGED_INDEXED_READ',
-                                                file : p,
-                                                hint : 'This file is ontology-indexed. Use: context_read scope=ontology action=locate query="' + stem + '" then file_read action=range startLine/endLine.',
-                                                locate_query: stem] as Map<String, Object>
-                                    String knownHash = contextServerClient.getKnownHashForPath(np)
-                                    if (knownHash) blockedEntry.known_hash = knownHash
-                                    blocked << blockedEntry
-                                }
-                            } catch (Exception ignored) {}
-                        }
-                        if (blocked) {
-                            boolean allBlocked = blocked.size() == rawPaths.size()
-                            if (allBlocked) {
-                                return McpResponse.toolError(requestId,
-                                    groovy.json.JsonOutput.toJson([error: 'BLOCKED_UNRANGED_INDEXED_READ',
-                                        blocked: blocked,
-                                        hint: 'All requested files are ontology-indexed. Use locate + range instead.']))
-                            }
-                            // Mixed: remove blocked from options, proceed with remainder
-                            List<String> allowed = rawPaths.findAll { String p ->
-                                blocked.every { (it as Map).file != p }
-                            }
-                            options = new HashMap<String, Object>(options as Map<String, Object>)
-                            options.paths = allowed
-                            options._blocked = blocked
-                        }
+                    // Fix D (v0.8.54) guarded this case with a SECOND, different gate: it asked
+                    // isOntologyIndexed(stem), returned BLOCKED_UNRANGED_INDEXED_READ, and handed
+                    // back a bare file stem as the locate_query. That stem is the defect CS 1.0.62
+                    // shipped to remove -- 6 files named CLAUDE.md, 2,012 names shared across
+                    // source_files -- so the hint resolved to a different file and left the caller
+                    // blocked. FS 0.9.30 routes this case through the one decision every other
+                    // action uses, and the hint is now the node_id CS resolved.
+                    //
+                    // The hash-only exemptions are kept: a knownHash supplied for the path, or
+                    // compact=true, means the caller wants change detection, not content, and no
+                    // content tokens are at risk. They are passed for `multi` only -- multi_grep
+                    // has no hash-only mode, so there is nothing there to exempt.
+                    Map<String, Object> mr = gateMultiPaths(
+                        (options.paths as List<String>) ?: [], options, 'multi', true)
+                    List<Map> blocked = mr.get('blocked') as List<Map>
+                    if (blocked) {
+                        List<String> allowed = mr.get('allowed') as List<String>
+                        if (!allowed) return McpResponse.toolError(requestId,
+                            groovy.json.JsonOutput.toJson([error  : 'BLOCKED_ONTOLOGY_GATE',
+                                blocked: blocked,
+                                hint   : 'All requested files are ontology-indexed and unlocated. locate each locate_query below, then retry.']))
+                        options = new HashMap<String, Object>(options as Map<String, Object>)
+                        options.paths = allowed
+                        options._blocked = blocked
                     }
                     return contentReader.doMulti(options, requestId)
                 }
@@ -402,14 +400,12 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                 }
                 case 'structure'    : return structureReader.doStructure(path, options, requestId)
                 case 'get_method'   : {
-                    // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8) -- gate before cache-hit check.
-                    // Delegates to contentReader.doGetMethod which applies the gate and then
-                    // falls through to structureReader.doGetMethod on allow.
-                    if (responseHelper != null) {
-                        String gmNorm = pathService.normalizePath(path)
-                        McpResponse gmGate = responseHelper.checkOntologyGate(gmNorm, options, requestId, 'get_method')
-                        if (gmGate != null) return gmGate
-                    }
+                    // FS 0.9.30 -- W2: the second gate call for this read has gone.
+                    // Dispatch above already asked, for every action not in the exempt list, and
+                    // get_method is not in it. Asking again here cost a CS round trip per read and,
+                    // worse, made the gate look covered at two layers when only one of them decides.
+                    // The layer that decides is dispatch; assert there. (The third copy lived in
+                    // FileContentReader.doGetMethod, a wrapper production never called -- deleted.)
                     // FIX-KH-RANGE-AUTO (FS 0.8.81): auto-lookup range cache before calling doGetMethod.
                     // First read records startLine/endLine in range cache. On repeat call, if
                     // StructureCache has the file hash, we can auto-hit without caller passing knownHash.
@@ -442,6 +438,13 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                             }
                         }
                     }
+                    // FS 0.9.30 -- W2: the missing-knownHash advisory moves to the layer that RUNS.
+                    // It lived in FileContentReader.doGetMethod, the wrapper this very line
+                    // bypasses, so get_method has never once emitted it in production -- while
+                    // MKH-9 proved it worked, by calling the wrapper. Same shape as the gate: a
+                    // thing that only ever ran in the test. Captured before the read, because the
+                    // read populates the cache it is compared against.
+                    String gmPreCachedHash = responseHelper?.peekStructureCache(pathService.normalizePath(path))
                     McpResponse r = structureReader.doGetMethod(path, options, requestId)
                     if (r.error == null && contextServerClient != null) {
                         String h = extractFileHash(r)
@@ -456,6 +459,19 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                             // so the auto-lookup above can detect repeat calls without knowing line numbers.
                             contextServerClient.recordRangeCacheAsync(path, 0, 0, h)
                         }
+                    }
+                    if (r != null && r.error == null && responseHelper != null) {
+                        try {
+                            Map<String, Object> gmPayload = parseResponsePayload(r)
+                            if (gmPayload != null) {
+                                responseHelper.maybeWarnMissingKnownHash(
+                                    gmPayload, pathService.normalizePath(path), options,
+                                    'get_method', gmPreCachedHash)
+                                if (gmPayload.containsKey('_missing_knownhash')) {
+                                    return textResponse(requestId, gmPayload)
+                                }
+                            }
+                        } catch (Exception ignored) { } // fail-open
                     }
                     return r
                 }
@@ -474,6 +490,57 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
             log.error('file_read error: {}', sanitize(e.message), e)
             return McpResponse.toolError(requestId, sanitize(e.message))
         }
+    }
+
+    /**
+     * FS 0.9.30 -- W3: the ontology gate for the two multi-path read actions.
+     *
+     * <p>Asks {@link ReadResponseHelper#ontologyGateEntry} once per path -- the same decision the
+     * dispatch guard makes for single-path actions -- and splits the request into what may proceed
+     * and what is blocked. It replaces Fix D (v0.8.54), which asked a different question of a
+     * different method and answered with a bare file stem.</p>
+     *
+     * <p>Fails open, per path: a path that throws is allowed through, exactly as Fix D did. A gate
+     * that cannot reach its evidence must not stop work.</p>
+     *
+     * @param hashOnlyExempt {@code true} for {@code multi}, where a supplied {@code knownHashes}
+     *        entry or {@code compact=true} means the caller wants change detection rather than
+     *        content. {@code multi_grep} has no such mode, so it passes {@code false} rather than
+     *        inheriting an exemption that would mean nothing there.
+     * @return {@code [allowed: List<String>, blocked: List<Map>]}
+     */
+    private Map<String, Object> gateMultiPaths(List<String> rawPaths, Map<String, Object> options,
+                                               String action, boolean hashOnlyExempt) {
+        List<String> allowed = []
+        List<Map> blocked    = []
+        if (responseHelper == null || !rawPaths) {
+            return [allowed: rawPaths, blocked: blocked] as Map<String, Object>
+        }
+        Map knownHashMap = (options.knownHashes instanceof Map) ? (options.knownHashes as Map) : [:]
+        boolean compactMode = options.compact as boolean ?: false
+        rawPaths.each { String p ->
+            try {
+                String np = pathService.normalizePath(p)
+                if (hashOnlyExempt) {
+                    boolean hasKnownHash = knownHashMap.containsKey(np) || knownHashMap.containsKey(p)
+                    if (hasKnownHash || compactMode) { allowed << p; return }
+                }
+                Map<String, Object> entry = responseHelper.ontologyGateEntry(np, options, action)
+                if (entry == null) { allowed << p; return }
+                Map<String, Object> blockedEntry = new LinkedHashMap<String, Object>(entry)
+                blockedEntry.put('file', p)
+                if (hashOnlyExempt && contextServerClient != null) {
+                    // FS 0.8.69 FIX-6A carried forward: hand back the hash so the caller can retry
+                    // with options.knownHashes and get the ~15-token unchanged response.
+                    String knownHash = contextServerClient.getKnownHashForPath(np)
+                    if (knownHash) blockedEntry.put('known_hash', knownHash)
+                }
+                blocked << blockedEntry
+            } catch (Exception ignored) {
+                allowed << p
+            }
+        }
+        return [allowed: allowed, blocked: blocked] as Map<String, Object>
     }
 
     private void fireRegistryUpsert(String path, McpResponse resp) {

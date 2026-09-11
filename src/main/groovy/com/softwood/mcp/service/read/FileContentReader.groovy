@@ -58,9 +58,7 @@ class FileContentReader extends AbstractFileService {
     @Autowired
     ReadResponseHelper helper
 
-    /** E-5: delegate for doGetMethod gate seam (FS 0.9.8). */
-    @Autowired
-    FileStructureReader structureReader
+    // FS 0.9.30 -- W2: the FileStructureReader injection went with the doGetMethod seam below.
 
     @Value('${mcp.filesystem.read-chunk-threshold-kb:60}')
     int readChunkThresholdKb
@@ -101,10 +99,10 @@ class FileContentReader extends AbstractFileService {
         String normalized = validateFilePath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
 
-        // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8).
-        // Block whole-file reads on indexed .groovy/.java when no locate preceded this session.
-        McpResponse gateBlock = helper.checkOntologyGate(normalized, options, requestId, 'read')
-        if (gateBlock != null) return gateBlock
+        // FS 0.9.30 -- W2: the ONTOLOGY-GATE call that stood here has gone. FileReadService gates
+        // at dispatch, ahead of the action switch, for every action not explicitly exempt -- so
+        // this asked the same question a second time, one CS round trip per read, and made the
+        // gate look covered at two layers when only one of them decides.
 
         // FS 0.9.9: capture pre-read cache state for missing-knownHash detection.
         // Must be checked BEFORE checkKnownHash/storeAndHintKnownHash populate the cache.
@@ -304,10 +302,7 @@ class FileContentReader extends AbstractFileService {
     McpResponse doRange(String path, Map<String, Object> options, Object requestId) {
         String normalized = validateFilePath(path)
 
-        // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8).
-        // Block range reads on indexed .groovy/.java when no locate preceded this session.
-        McpResponse gateBlock = helper.checkOntologyGate(normalized, options, requestId, 'range')
-        if (gateBlock != null) return gateBlock
+        // FS 0.9.30 -- W2: second gate call removed; dispatch owns this. See doRead above.
 
         McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId)
         if (unchanged != null) return unchanged
@@ -508,14 +503,19 @@ class FileContentReader extends AbstractFileService {
             }
         }
 
-        return textResponse(requestId, [
+        Map<String, Object> mgResp = [
             action        : 'multi_grep',
             pattern       : sanitize(patternStr),
             fileCount     : paths.size(),
             matchingFiles : totalMatchingFiles,
             totalMatches  : totalMatches,
             results       : results
-        ] as Map<String, Object>)
+        ] as Map<String, Object>
+        // FS 0.9.30 -- W3: paths the ontology gate refused are REPORTED, not silently dropped.
+        // options._blocked has been set by the multi guard since v0.8.54 and read by nobody, so a
+        // mixed request quietly came back with fewer files than were asked for and said nothing.
+        if (options.get('_blocked')) mgResp.put('blocked', options.get('_blocked'))
+        return textResponse(requestId, mgResp)
     }
 
     // -----------------------------------------------------------------------
@@ -608,46 +608,14 @@ class FileContentReader extends AbstractFileService {
             resp._sizeCapped = true
             resp._sizeCappedNote = ("multi aggregate output capped at ${multiReadCapChars} chars (~${multiReadCapChars / 4000 as int}K tokens). Use fewer files or head/range for targeted reads." as String)
         }
+        // FS 0.9.30 -- W3: as doMultiGrep -- blocked paths are reported rather than dropped.
+        if (options.get('_blocked')) resp.put('blocked', options.get('_blocked'))
         return textResponse(requestId, resp)
     }
 
-    /**
-     * E-5 test seam: gate check + delegation to {@link FileStructureReader#doGetMethod}.
-     * Allows {@link com.softwood.mcp.service.read.OntologyGateEnforcementSpec} to call
-     * {@code fileContentReader.doGetMethod(...)} directly while exercising the same gate
-     * logic that {@code FileReadService} applies in the {@code case 'get_method'} branch.
-     *
-     * @param path       absolute file path
-     * @param options    tool call options (checks {@code method}, {@code allowNoLocate})
-     * @param requestId  MCP request ID
-     * @return gate block error, or the result of {@code structureReader.doGetMethod}
-     */
-    McpResponse doGetMethod(String path, Map<String, Object> options, Object requestId) {
-        String normalized = validateFilePath(path)
-
-        // E-5: ONTOLOGY-GATE hard enforcement.
-        McpResponse gateBlock = helper.checkOntologyGate(normalized, options, requestId, 'get_method')
-        if (gateBlock != null) return gateBlock
-
-        // FS 0.9.9: capture pre-call cache state before structureReader populates it.
-        String preCachedHash = helper.peekStructureCache(normalized)
-
-        McpResponse r = structureReader.doGetMethod(path, options, requestId)
-        // FS 0.9.9: missing-knownHash advisory -- inject hint into response if hash omitted
-        if (r != null && r.error == null) {
-            try {
-                List<Map<String, Object>> content = (List<Map<String, Object>>) r.result?.content
-                Map<String, Object> first = content?.find { (it as Map<String, Object>).type == 'text' } as Map<String, Object>
-                String text = first?.text as String
-                if (text?.startsWith('{')) {
-                    Map<String, Object> resp = (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
-                    helper.maybeWarnMissingKnownHash(resp, normalized, options, 'get_method', preCachedHash)
-                    if (resp.containsKey('_missing_knownhash')) {
-                        return textResponse(requestId, resp)
-                    }
-                }
-            } catch (Exception ignored) {} // fail-open
-        }
-        return r
-    }
+    // FS 0.9.30 -- W2: the doGetMethod test seam is GONE.
+    // FileReadService's case 'get_method' calls structureReader.doGetMethod DIRECTLY, so this
+    // wrapper's gate and its FS 0.9.9 missing-knownHash advisory only ever ran when a spec called
+    // them. The advisory had therefore never fired in production at all, while MKH-9 proved it
+    // worked. Both now live at that dispatch site, which is where OGE-3 and MKH-9 assert.
 }

@@ -2,6 +2,7 @@ package com.softwood.mcp.service.read
 
 import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.service.ContextServerClient
+import com.softwood.mcp.service.FileReadService
 import com.softwood.mcp.service.FilesystemTelemetryService
 import groovy.json.JsonSlurper
 import org.springframework.beans.factory.annotation.Autowired
@@ -51,6 +52,7 @@ class MissingKnownHashDetectionSpec extends Specification {
 
     @Autowired ReadResponseHelper          helper
     @Autowired FileContentReader           fileContentReader
+    @Autowired FileReadService             fileReadService
     @Autowired com.softwood.mcp.service.PathService pathService
     @Autowired com.softwood.mcp.service.StructureCache structureCache
 
@@ -261,7 +263,13 @@ class MissingKnownHashDetectionSpec extends Specification {
         helper.contextServerClient = makeReachableStub()
 
         when:
-        McpResponse resp = fileContentReader.doGetMethod(np, [method: 'execute'] as Map, 'req-mkh-9')
+        // FS 0.9.30 -- W2: through DISPATCH, not through the wrapper.
+        // This assertion used to pass against FileContentReader.doGetMethod, which FileReadService
+        // bypasses entirely -- so the advisory it proved had never once fired for a real caller.
+        // It now runs where get_method actually runs, and the wrapper is gone.
+        McpResponse resp = fileReadService.handleToolCall('file_read',
+            [action: 'get_method', path: np, options: [method: 'execute']] as Map<String, Object>,
+            'req-mkh-9')
         Map data = parse(resp)
 
         then:

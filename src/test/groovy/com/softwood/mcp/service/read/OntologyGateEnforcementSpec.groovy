@@ -2,6 +2,7 @@ package com.softwood.mcp.service.read
 
 import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.service.ContextServerClient
+import com.softwood.mcp.service.FileReadService
 import groovy.json.JsonSlurper
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -66,7 +67,7 @@ import java.nio.file.Path
 class OntologyGateEnforcementSpec extends Specification {
 
     @Autowired ReadResponseHelper       helper
-    @Autowired FileContentReader        fileContentReader
+    @Autowired FileReadService          fileReadService
     @Autowired com.softwood.mcp.service.PathService pathService
 
     @TempDir Path tempDir
@@ -82,6 +83,21 @@ class OntologyGateEnforcementSpec extends Specification {
     }
 
     private String norm(File f) { pathService.normalizePath(f.absolutePath) }
+
+    /**
+     * FS 0.9.30 -- W2: every OGE case now enters through the DISPATCH layer.
+     *
+     * <p>They used to call {@code fileContentReader.doRead/doRange/doGetMethod} directly, because
+     * that is where the gate was. Two of those three were duplicates of the dispatch gate; the
+     * third, {@code doGetMethod}, was a wrapper production never calls -- {@code FileReadService}
+     * goes straight to {@code structureReader.doGetMethod} -- so OGE-3 proved a gate on a path no
+     * caller can reach. Assert at the layer that decides.</p>
+     */
+    private McpResponse dispatch(String action, String np, Map<String, Object> options,
+                                 Object requestId) {
+        return fileReadService.handleToolCall('file_read',
+            [action: action, path: np, options: options] as Map<String, Object>, requestId)
+    }
 
     private Map parse(McpResponse resp) {
         String text = resp.result?.content?.find { it.type == 'text' }?.text
@@ -144,7 +160,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = stubIndexed('MyService', false, np)
 
         when:
-        McpResponse resp = fileContentReader.doRead(np, [:], 'req-oge-1')
+        McpResponse resp = dispatch('read', np, [:] as Map<String, Object>, 'req-oge-1')
         Map data = parse(resp)
 
         then: 'response carries BLOCKED_ONTOLOGY_GATE error'
@@ -167,7 +183,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = stubIndexed('DomainService', false, np)
 
         when:
-        McpResponse resp = fileContentReader.doRange(np, [startLine: 1, maxLines: 10] as Map, 'req-oge-2')
+        McpResponse resp = dispatch('range', np, [startLine: 1, maxLines: 10] as Map<String, Object>, 'req-oge-2')
         Map data = parse(resp)
 
         then:
@@ -185,7 +201,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = stubIndexed('WorkerBean', false, np)
 
         when:
-        McpResponse resp = fileContentReader.doGetMethod(np, [method: 'execute'] as Map, 'req-oge-3')
+        McpResponse resp = dispatch('get_method', np, [method: 'execute'] as Map<String, Object>, 'req-oge-3')
         Map data = parse(resp)
 
         then:
@@ -203,7 +219,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = stubIndexed('LocatedService', true, np) // locate WAS called
 
         when:
-        McpResponse resp = fileContentReader.doRead(np, [:], 'req-oge-4')
+        McpResponse resp = dispatch('read', np, [:] as Map<String, Object>, 'req-oge-4')
         Map data = parse(resp)
 
         then: 'no block error'
@@ -223,7 +239,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = stubIndexed('LocatedRouter', true, np)
 
         when:
-        McpResponse resp = fileContentReader.doRange(np, [startLine: 1, maxLines: 5] as Map, 'req-oge-5')
+        McpResponse resp = dispatch('range', np, [startLine: 1, maxLines: 5] as Map<String, Object>, 'req-oge-5')
         Map data = parse(resp)
 
         then:
@@ -245,7 +261,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = csMock
 
         when:
-        McpResponse resp = fileContentReader.doRead(np, [allowNoLocate: true] as Map, 'req-oge-6')
+        McpResponse resp = dispatch('read', np, [allowNoLocate: true] as Map<String, Object>, 'req-oge-6')
         Map data = parse(resp)
 
         then: 'read proceeds (not blocked)'
@@ -270,7 +286,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = csMock
 
         when:
-        McpResponse resp = fileContentReader.doRead(np, [:], 'req-oge-7')
+        McpResponse resp = dispatch('read', np, [:] as Map<String, Object>, 'req-oge-7')
 
         then: 'block triggered'
         parse(resp).error == 'BLOCKED_ONTOLOGY_GATE'
@@ -291,7 +307,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = s
 
         when:
-        McpResponse resp = fileContentReader.doRead(np, [:], 'req-oge-8')
+        McpResponse resp = dispatch('read', np, [:] as Map<String, Object>, 'req-oge-8')
         Map data = parse(resp)
 
         then:
@@ -309,7 +325,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = stubNotIndexed('PlainScript')
 
         when:
-        McpResponse resp = fileContentReader.doRead(np, [:], 'req-oge-9')
+        McpResponse resp = dispatch('read', np, [:] as Map<String, Object>, 'req-oge-9')
         Map data = parse(resp)
 
         then:
@@ -327,7 +343,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.ontologyGateEnforced = false
 
         when:
-        McpResponse resp = fileContentReader.doRead(np, [:], 'req-oge-10')
+        McpResponse resp = dispatch('read', np, [:] as Map<String, Object>, 'req-oge-10')
 
         then:
         parse(resp).error == null
@@ -343,7 +359,7 @@ class OntologyGateEnforcementSpec extends Specification {
         helper.contextServerClient = stubIndexed('ShapeCheck', false, np)
 
         when:
-        Map data = parse(fileContentReader.doRead(np, [:], 'req-oge-11'))
+        Map data = parse(dispatch('read', np, [:] as Map<String, Object>, 'req-oge-11'))
 
         then:
         data.error       == 'BLOCKED_ONTOLOGY_GATE'

@@ -1330,3 +1330,92 @@ when CS HTTP is unreachable, so routing it through CS HTTP is circular. `CLAUDE.
 those as the open questions rather than as permissions.
 
 Suite: FS **364 tests, 35 suites, 0 failures**.
+
+## 0.9.30 — 2026-09-11 — one gate, asked once, by everyone
+
+W2 and W3 of `BUILD-BRIEF-2026-09-11-the-exception-that-named-itself.md`, taken together because
+they are the same file and the same defect seen twice.
+
+### W2 — the gate ran twice, and one copy of it ran only in the test
+
+0.9.26 moved the gate to dispatch but left the old per-action calls in place. Five call sites for
+one decision:
+
+| where | reached in production? |
+|---|---|
+| `FileReadService` dispatch | yes |
+| `FileReadService` `case 'get_method'` | yes — second call |
+| `FileContentReader.doRead` | yes — second call |
+| `FileContentReader.doRange` | yes — second call |
+| `FileContentReader.doGetMethod` | **no** |
+
+`FileReadService` calls `structureReader.doGetMethod` directly, so the `FileContentReader` wrapper
+is unreachable. Its own javadoc said specs call it "while exercising the same gate" — a guard that
+runs only in the test, which is this platform's signature defect wearing its other face.
+
+Deleted: the three duplicate calls and the wrapper. Dispatch decides; the exempt list beside it is
+the statement of what it covers.
+
+**And the wrapper was hiding more than a gate.** It also carried the FS 0.9.9 missing-knownHash
+advisory — `peekStructureCache` before the call, `maybeWarnMissingKnownHash` after — and that
+advisory exists nowhere else for `get_method`. So `get_method` has never emitted it to a real
+caller, while MKH-9 proved it worked by calling the wrapper. The advisory moved to the dispatch
+case with the gate, which is the first time it has ever run for a user.
+
+**Found by the A/B, not by reading:** the duplicate gate was inflating its own telemetry. On
+0.9.29, one `allowNoLocate=true` read produced **two** `incrementOntologyGateBlockedToken` calls.
+The override counter has been ~2x for `read`, `range` and `get_method` and 1x for `grep`, `head`,
+`tail` and `structure` since 0.9.26 — a metric that cannot be compared across the actions it
+counts. Collapsing the call sites fixes the count going forward. The historic rows are **not**
+being hand-repaired: the FB-2 lesson is that a metric repaired by hand is the measurement stopping.
+
+### W3 — `multi_grep` was ungated, and `multi`'s own guard was the defect CS 1.0.62 removed
+
+`multi_grep` was the last `file_read` action returning file content with no gate at all. The brief
+said to mirror `case 'multi'`'s Fix D guard. Reading it first was worth the minute: Fix D asks a
+different question (`isOntologyIndexed(stem)`), answers with a different error code
+(`BLOCKED_UNRANGED_INDEXED_READ`), and hands back a bare file **stem** as the `locate_query` —
+precisely the hint CS 1.0.62 shipped to remove, because 6 files are named `CLAUDE.md` and 2,012
+symbol names are shared across `source_file`s, so following it resolves to a different file and
+leaves the caller still blocked. Mirroring it would have planted a second copy of a dead end.
+
+Both actions now route through one decision. `ReadResponseHelper.ontologyGateEntry` returns the
+blocked entry map or null; `checkOntologyGate` is a thin wrapper over it for the single-path
+actions, and `FileReadService.gateMultiPaths` collects one entry per path for the multi-path ones.
+`multi`'s hash-only exemptions (a supplied `knownHashes` entry, or `compact=true`) are kept and are
+passed for `multi` only — `multi_grep` has no hash-only mode, so there is nothing there to exempt.
+
+**A third thing, small and silent.** `options._blocked` has been written by the multi guard since
+v0.8.54 and read by nobody. A mixed request quietly returned fewer files than it was asked for and
+said nothing about the difference. Both `doMulti` and `doMultiGrep` now report `blocked` in the
+response.
+
+### Specs, and the A/B that proves they can fail
+
+`OntologyGateCoverageSpec` becomes a `@SpringBootTest` and gains two behavioural cases beside its
+four source-text ones:
+
+- **OGC-5** — a counting mock on `ContextServerClient.ontologyGateCheck`: one gated `file_read`
+  dispatch must produce **exactly one** invocation, for `read`, `range` and `get_method`.
+- **OGC-6** — `multi_grep` and `multi`, given the same unlocated indexed path in a mixed request,
+  must return the same `error` and the same `locate_query`, and that query must be the node_id.
+
+`OntologyGateEnforcementSpec` OGE-1..11 and `MissingKnownHashDetectionSpec` MKH-9 were repointed
+from the reader methods to `fileReadService.handleToolCall`. *Assert at the layer that decides* —
+OGE-3 had been proving a gate on a path no caller can reach.
+
+A/B with `src/main` stashed and only the specs in place, on 0.9.29:
+
+| spec | red at 0.9.29 | reason |
+|---|---|---|
+| OGC-5 `[read]` `[range]` `[get_method]` | `TooManyInvocations` | the duplicate gate |
+| OGC-6 | `grepBlocked == null` | `multi_grep` had no gate |
+| MKH-9 | `_missing_knownhash` absent | the advisory never reached production |
+| OGE-6 | `2 invocations` | the override telemetry double-count |
+
+All green on 0.9.30. Suite **368 / 35 suites / 0 failures** (was 364).
+
+Practice 459 says to use `(1.._)*` rather than `1*` for interaction counts in `@CompileDynamic`
+specs. It was not followed here, deliberately: OGC-5 exists to detect a second call, and `(1.._)`
+cannot fail on the defect it was written to catch. The A/B discriminates instead — if the replay
+artefact that practice describes were present, 0.9.30 would be red too.
