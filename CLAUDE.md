@@ -400,12 +400,32 @@ instead of holding a stale id.
 
 ## Cross-server DB isolation
 
-FS's only permitted direct JDBC access to `best_practices.db` (CS's database) is through
-`FilesystemTelemetryService` for:
+**A database is owned by its server alone. Other servers ask; they do not reach in.**
+
+That rule is absolute for schema: FS must never issue DDL against `best_practices.db`. FS 0.9.28
+briefly added `owner_key`/`caller_session` to `tool_call_telemetry` via `ALTER TABLE` from
+`FilesystemTelemetryService.init()`, reasoning that a Desktop restart gives no ordering guarantee
+between the two JVMs and an un-migrated table would lose every row to a debug-level catch. The
+hazard was real and the conclusion was backwards: it is an argument for FS not writing the table at
+all, and it disappeared the moment FS stopped. Reverted in 0.9.29.
+
+`tool_call_telemetry` is **no longer written by FS** (0.9.29). `FilesystemTelemetryService` builds
+the row — including its own `ProcessIdentity.OWNER_KEY`, which CS cannot resolve because the call
+lands in the shared companion rather than this JVM — and hands it to
+`ContextServerClient.recordToolCall(sessionId, row)`, which calls
+`context_lifecycle action=record_tool_call`. The trade is explicit: the old JDBC path worked when CS
+was down, this one does not. `isCsReachable()` short-circuits and the row is dropped, never queued.
+Telemetry is evidence about a call, never part of it.
+
+FS's remaining direct JDBC access to `best_practices.db`, through `FilesystemTelemetryService`:
 - Reading **and upserting its own `session_claims` row** (own `owner_key` only — never another
   process's row; FS 0.9.17. Was `active_session.session_id`, read-only, before that)
-- Writing `tool_call_telemetry` rows
 - Reading/writing `pending_reindex` queue
+
+Both are on the list to move behind CS actions too. Neither is a licence to add a third: the claim
+row is load-bearing for CLAIM-GATE, and `pending_reindex` is explicitly the fallback for when CS
+HTTP is unreachable, so it cannot be routed through CS HTTP without being circular. Those are the
+two questions to answer before either moves — not reasons to keep reaching in.
 
 All other FS→CS communication goes via `ContextServerClient` HTTP calls to port 8082.
 CS's WAL and connection pool are never bypassed. See `FS_CONTEXT_ARCHITECTURE.md §15`.

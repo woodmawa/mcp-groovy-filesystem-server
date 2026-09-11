@@ -226,40 +226,42 @@ class FilesystemTelemetryService {
                 // FIX-12: bound cache to 1000 entries to prevent unbounded growth in long sessions
                 if (!isRepeat && sessionCallCache.size() < 1000) sessionCallCache.put(cacheKey, new Date().toInstant().toString())
 
-                int tokenEst = Math.round(responseChars / 4) as int
+                // FS 0.9.29: CS OWNS tool_call_telemetry, so CS writes it.
+                //
+                // This was a direct JDBC INSERT into best_practices.db from 0.8.39 until now, and
+                // in 0.9.28 it briefly carried an ALTER TABLE alongside it. A database is scoped to
+                // its own server; other servers ask. Reaching in also bypassed CS's WAL settings
+                // and connection pool and gave FS an opinion about CS's schema -- which is the only
+                // reason a migration ordering hazard existed here at all.
+                //
+                // owner_key is OUR ProcessIdentity and travels as data: CS cannot resolve it,
+                // because the call lands in the shared companion rather than this JVM. Same for the
+                // session id. response_token_est is left to CS, which derives it from char_count --
+                // two writers computing the same estimate is how they drift.
+                //
+                // Deliberately NOT retried or queued on failure. isCsReachable() short-circuits
+                // through the existing circuit breaker and the row is dropped. Telemetry is
+                // evidence about a call, never part of it: it must not become a backlog, and it
+                // must never affect the call it describes.
+                Map<String, Object> row = [
+                    tool_name  : toolName,
+                    server_name: 'filesystem-server',
+                    char_count : responseChars,
+                    is_repeat  : isRepeat,
+                    args_hash  : argsHash,
+                    action     : action,
+                    path_hash  : pathHash,
+                    outcome    : outcome ?: 'success',
+                    owner_key  : ProcessIdentity.OWNER_KEY
+                ] as Map<String, Object>
 
-                withConnection { Connection conn ->
-                    PreparedStatement stmt = conn.prepareStatement('''
-                        INSERT INTO tool_call_telemetry
-                            (session_id, tool_name, server_name,
-                             response_char_count, response_token_est,
-                             is_repeat_call, args_hash,
-                             action, path_hash, outcome, owner_key)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?)''')
-                    stmt.setString(1, resolvedId ?: 'unknown')
-                    stmt.setString(2, toolName)
-                    stmt.setString(3, 'filesystem-server')
-                    stmt.setInt(4, responseChars)
-                    stmt.setInt(5, tokenEst)
-                    stmt.setInt(6, isRepeat ? 1 : 0)
-                    stmt.setString(7, argsHash)
-                    stmt.setString(8, action)
-                    stmt.setString(9, pathHash)
-                    stmt.setString(10, outcome ?: 'success')
-                    // FS 0.9.28 W11.2: which JVM wrote this row. The audit trail that lets a row
-                    // from a process that never claimed be told from a chat row whose claim was
-                    // lost to a Desktop respawn -- the two are indistinguishable from session_id
-                    // alone, and that is why the obvious time-ordered sweep is not safe here.
-                    // caller_session is deliberately NOT set by FS: it is declared by non-chat
-                    // callers over HTTP, and this is the stdio write path.
-                    stmt.setString(11, ProcessIdentity.OWNER_KEY)
-                    stmt.executeUpdate()
-                    stmt.close()
-
+                if (contextServerClient) {
+                    contextServerClient.recordToolCall(resolvedId, row)
+                } else {
+                    log.debug('telemetry dropped -- no ContextServerClient wired (standalone mode)')
                 }
             } catch (Exception e) {
-                // Table may not exist yet if context server hasn't run — silent
-                log.debug('Filesystem telemetry write failed (non-fatal): {}', e.message)
+                log.debug('Filesystem telemetry record failed (non-fatal): {}', e.message)
             }
         }
     }
@@ -267,6 +269,16 @@ class FilesystemTelemetryService {
     // -------------------------------------------------------------------------
     // Lifecycle
     // -------------------------------------------------------------------------
+
+    /**
+     * FS 0.9.29: the route by which CS is ASKED to record telemetry, rather than having its table
+     * written. {@code @Lazy} is load-bearing, not decoration -- ContextServerClient already injects
+     * THIS service, so without it Spring sees a circular reference and refuses to start.
+     * required=false keeps specs and standalone mode able to construct this service alone.
+     */
+    @org.springframework.context.annotation.Lazy
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    ContextServerClient contextServerClient
 
     @PostConstruct
     void init() {
@@ -294,15 +306,13 @@ class FilesystemTelemetryService {
             stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_server ON tool_call_telemetry(server_name)')
             // Addendum C: safe migration - add new columns if table exists but columns are absent
             //
-            // FS 0.9.28 W11.2: owner_key and caller_session added here as well as in CS's
-            // SqliteSchemaManager, ON PURPOSE and not redundantly. FS writes into CS's database but
-            // does not own its schema, and both JVMs are respawned together by a Desktop restart
-            // with no ordering guarantee. If FS started first and inserted before CS had migrated,
-            // the INSERT would fail and be swallowed by the debug-level catch in recordToolCall --
-            // every FS telemetry row silently lost, which is the same shape of silence W11.1 exists
-            // to end. Both migrations are idempotent, so whichever process gets there first wins
-            // and the other logs a no-op.
-            ['action', 'path_hash', 'outcome', 'owner_key', 'caller_session'].each { String col ->
+            // FS 0.9.29: owner_key/caller_session were briefly added to this list in 0.9.28 and are
+            // deliberately NOT here. FS does not own this schema. CS does, and a server's database
+            // is scoped to that server alone -- DDL from another process is the clearest possible
+            // breach of that, whatever the ordering argument for it. The ordering hazard that
+            // motivated it does not need solving: it disappears once FS stops writing these rows
+            // directly at all, which is what this list is now the last remnant of.
+            ['action', 'path_hash', 'outcome'].each { String col ->
                 try {
                     dbConn.createStatement().execute("ALTER TABLE tool_call_telemetry ADD COLUMN ${col} TEXT")
                     log.info('telemetry: added column {}', col)

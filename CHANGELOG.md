@@ -1272,3 +1272,61 @@ No sweep ships in this release. This is the measurement leg: the column has to e
 populated before the repair can be designed on evidence rather than on assumption.
 
 Suite: FS **364 tests, 35 suites, 0 failures** — unchanged from 0.9.27.
+
+---
+
+## 0.9.29 — 2026-09-11 — a database is owned by its server alone
+
+Reverts the boundary breach in 0.9.28 and removes the direct write that made it possible.
+Paired with CS 1.0.60, which adds the route that replaces it.
+
+### What 0.9.28 did wrong
+
+`FilesystemTelemetryService.init()` ran `ALTER TABLE tool_call_telemetry ADD COLUMN …` against
+`best_practices.db` — CS's database, CS's table. The justification was a genuine hazard: a Desktop
+restart respawns both JVMs with no ordering guarantee, and FS's telemetry INSERT is wrapped in a
+`log.debug` catch, so an FS that started before CS had migrated would have lost every row in
+silence.
+
+The hazard was real. The conclusion was backwards. It is an argument for FS **not writing the
+table**, and it disappears entirely the moment FS stops — which is what this release does. Writing
+rows was at least sanctioned by `CLAUDE.md §11`; owning schema never was.
+
+### What 0.9.29 does
+
+`tool_call_telemetry` is no longer written by FS. `FilesystemTelemetryService.recordToolCall` keeps
+every piece of in-memory bookkeeping it already owned — session resolution, repeat detection via
+`sessionCallCache`, the token accumulator — builds the row, and hands it to
+`ContextServerClient.recordToolCall(sessionId, row)`, which issues a normal MCP `tools/call` to
+`context_lifecycle action=record_tool_call`. Same shape as `ontologyGateCheck` (0.9.26), same
+circuit breaker, same fail-open posture.
+
+`owner_key` travels **as data**, carrying this process's `ProcessIdentity.OWNER_KEY`. CS cannot
+resolve it and must not try: the call arrives over HTTP and is served by the shared companion, which
+is neither this JVM nor this chat. That is the same distinction that made `owner_key` useless for
+FB-2, and the same reason `ontologyGateCheck` passes `sessionId` explicitly.
+
+`response_token_est` is no longer computed here. CS derives it from `char_count` — two writers
+computing the same estimate is how they drift.
+
+### The trade, stated rather than discovered later
+
+The JDBC path worked when CS was not running; FS would even `CREATE TABLE` for standalone mode. This
+one does not. `isCsReachable()` short-circuits through the existing breaker and **the row is
+dropped, never queued**. Telemetry is evidence about a call, never part of it: it must not become a
+backlog, and it must never affect the call it describes.
+
+### Wiring note
+
+`ContextServerClient` already injects `FilesystemTelemetryService`, so the new field on
+`FilesystemTelemetryService` carries `@Lazy` alongside `@Autowired(required = false)`. That is
+load-bearing, not decoration — Spring refuses circular references at startup without it.
+
+### What is left
+
+`session_claims` and `pending_reindex` are still direct JDBC. Both should move; neither is trivial.
+The claim row is load-bearing for CLAIM-GATE, and `pending_reindex` is explicitly the fallback for
+when CS HTTP is unreachable, so routing it through CS HTTP is circular. `CLAUDE.md §11` now records
+those as the open questions rather than as permissions.
+
+Suite: FS **364 tests, 35 suites, 0 failures**.

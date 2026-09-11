@@ -984,6 +984,67 @@ class ContextServerClient {
     }
 
     /**
+     * FS 0.9.29 -- record one tool call by ASKING CS, instead of writing CS's table.
+     *
+     * <p><b>Why this replaced a working JDBC INSERT.</b> {@code tool_call_telemetry} lives in
+     * {@code best_practices.db}, which CS owns. FS had written those rows directly since 0.8.39,
+     * and FS 0.9.28 went further and ran {@code ALTER TABLE} on that table to add a column. A
+     * database is scoped to its own server: other servers ask. Reaching in also bypassed CS's WAL
+     * settings and connection pool, and meant FS held an opinion about CS's schema -- which is how
+     * a migration ordering hazard appeared that only existed because FS was writing at all.</p>
+     *
+     * <p><b>What is lost, stated rather than discovered.</b> The JDBC path worked when CS was not
+     * running; this one does not. That is the deliberate trade and it is the same one every other
+     * FS-&gt;CS call already makes: {@code isCsReachable()} short-circuits through the existing
+     * circuit breaker and the row is dropped. Telemetry is evidence about a call, never part of
+     * it, so losing a row must never be allowed to affect the call it describes.</p>
+     *
+     * <p>{@code session_id} and {@code owner_key} are passed as DATA. CS deliberately does not
+     * resolve either: this arrives over HTTP and is served by the shared companion, which is
+     * neither this process nor this chat -- the same reason {@code ontologyGateCheck} passes
+     * {@code sessionId} explicitly.</p>
+     *
+     * <p>Called from {@code FilesystemTelemetryService}'s async writer thread, never from the MCP
+     * dispatch path (practice #260: zero blocking I/O on the hot path).</p>
+     *
+     * @param sessionId     this process's claimed session, or null when unbound
+     * @param telemetryRow  tool_name + server_name required; char_count, args_hash, is_repeat,
+     *                      action, path_hash, outcome, owner_key optional
+     * @return true when CS accepted the row; false on any error, timeout or CS-down
+     */
+    boolean recordToolCall(String sessionId, Map<String, Object> telemetryRow) {
+        if (!isCsReachable() || !telemetryRow) return false
+        try {
+            Map<String, Object> arguments = [action: 'record_tool_call', telemetry: telemetryRow]
+            if (sessionId) arguments.put('sessionId', sessionId)
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_lifecycle', arguments: arguments]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod  = 'POST'
+                conn.doOutput       = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                // The response body is not parsed. There is nothing useful to do with a telemetry
+                // failure at this point and parsing it would cost more than the row is worth.
+                return conn.responseCode == 200
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('recordToolCall telemetry failed (dropped) [{}]: {}',
+                      telemetryRow?.get('tool_name'), e.message)
+        }
+        return false
+    }
+
+    /**
      * Increments the ONTOLOGY-GATE blocked-token counter in the CS {@code memory_policy}
      * {@code hard_gates} row via an async {@code context_lifecycle} call. Fire-and-forget.
      * Mirrors the CS-side {@code incrementHardGateBlockedToken('199', tokenKey)} behaviour.
