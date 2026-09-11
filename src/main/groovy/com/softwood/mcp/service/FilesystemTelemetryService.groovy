@@ -234,8 +234,8 @@ class FilesystemTelemetryService {
                             (session_id, tool_name, server_name,
                              response_char_count, response_token_est,
                              is_repeat_call, args_hash,
-                             action, path_hash, outcome)
-                        VALUES (?,?,?,?,?,?,?,?,?,?)''')
+                             action, path_hash, outcome, owner_key)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?)''')
                     stmt.setString(1, resolvedId ?: 'unknown')
                     stmt.setString(2, toolName)
                     stmt.setString(3, 'filesystem-server')
@@ -246,6 +246,13 @@ class FilesystemTelemetryService {
                     stmt.setString(8, action)
                     stmt.setString(9, pathHash)
                     stmt.setString(10, outcome ?: 'success')
+                    // FS 0.9.28 W11.2: which JVM wrote this row. The audit trail that lets a row
+                    // from a process that never claimed be told from a chat row whose claim was
+                    // lost to a Desktop respawn -- the two are indistinguishable from session_id
+                    // alone, and that is why the obvious time-ordered sweep is not safe here.
+                    // caller_session is deliberately NOT set by FS: it is declared by non-chat
+                    // callers over HTTP, and this is the stdio write path.
+                    stmt.setString(11, ProcessIdentity.OWNER_KEY)
                     stmt.executeUpdate()
                     stmt.close()
 
@@ -286,7 +293,16 @@ class FilesystemTelemetryService {
             stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_tool ON tool_call_telemetry(tool_name)')
             stmt.execute('CREATE INDEX IF NOT EXISTS idx_telemetry_server ON tool_call_telemetry(server_name)')
             // Addendum C: safe migration - add new columns if table exists but columns are absent
-            ['action', 'path_hash', 'outcome'].each { String col ->
+            //
+            // FS 0.9.28 W11.2: owner_key and caller_session added here as well as in CS's
+            // SqliteSchemaManager, ON PURPOSE and not redundantly. FS writes into CS's database but
+            // does not own its schema, and both JVMs are respawned together by a Desktop restart
+            // with no ordering guarantee. If FS started first and inserted before CS had migrated,
+            // the INSERT would fail and be swallowed by the debug-level catch in recordToolCall --
+            // every FS telemetry row silently lost, which is the same shape of silence W11.1 exists
+            // to end. Both migrations are idempotent, so whichever process gets there first wins
+            // and the other logs a no-op.
+            ['action', 'path_hash', 'outcome', 'owner_key', 'caller_session'].each { String col ->
                 try {
                     dbConn.createStatement().execute("ALTER TABLE tool_call_telemetry ADD COLUMN ${col} TEXT")
                     log.info('telemetry: added column {}', col)

@@ -1241,3 +1241,34 @@ those would be permanently red for correct behaviour.
 
 Suite: FS **364 tests, 35 suites, 0 failures** — counted from the JUnit XML (was 358/34 at 0.9.26;
 the delta is exactly `FsUnboundLoudnessSpec`).
+
+---
+
+## 0.9.28 — 2026-09-11 — the row carries the key
+
+W11.2, paired with CS 1.0.59. FS's half is small; the reasoning is in CS's entry and in
+`SqliteSchemaManager`'s migration comment.
+
+`tool_call_telemetry` gains `owner_key` and `caller_session`, and FS stamps `owner_key` with its own
+`ProcessIdentity.OWNER_KEY` on every row it writes. It does **not** set `caller_session`: that is
+declared over HTTP by non-chat callers, and this is the stdio write path.
+
+**Why FS migrates a table it does not own.** FS writes into CS's database. Both JVMs are respawned
+together by a Desktop restart with no ordering guarantee, and FS's telemetry INSERT is wrapped in a
+`log.debug` catch — so an FS that started before CS had migrated would have lost **every** telemetry
+row, silently, which is the same shape of silence 0.9.27 exists to end. `owner_key` and
+`caller_session` are therefore added to the existing idempotent column-migration list in
+`FilesystemTelemetryService.init()` alongside `action`, `path_hash` and `outcome`. Both migrations
+are idempotent; whichever process arrives first wins.
+
+**What the column is for.** `owner_key` says which JVM wrote the row. That is what distinguishes a
+call from a process that never claimed and never will — an AW flow node through the shared HTTP
+companion — from a chat's call whose claim was lost to a respawn. From `session_id` alone the two
+are identical, which is why the time-ordered sweep that repairs `session_observations` cannot
+simply be pointed at this table: it would have moved 790 companion rows onto session
+`2026-09-11-08-52` and taken its `tool_call_count` from 709 to about 1,499.
+
+No sweep ships in this release. This is the measurement leg: the column has to exist and be
+populated before the repair can be designed on evidence rather than on assumption.
+
+Suite: FS **364 tests, 35 suites, 0 failures** — unchanged from 0.9.27.
