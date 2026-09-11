@@ -5,8 +5,8 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.9.23` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.23 / CS 1.0.50 / AW 1.30.14 — 2026-09-09
+- **Current version:** `0.9.27` (check `build.gradle` to confirm)
+- **Baseline stack:** FS 0.9.27 / CS 1.0.58 / AW 1.30.17 — 2026-09-11
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -607,3 +607,50 @@ bare name: `locate query=doc:mcp-groovy-context-server/CLAUDE.md`. `locate` matc
 exactly before it tries any `LIKE`, so it is unambiguous where a symbol name is not. CS 1.0.58 fixed
 the `Foo` vs `FooSpec` case (exact name now outranks a substring); files that **share** a name
 across directories still need the `node_id`.
+
+
+---
+
+## FS 0.9.27 (2026-09-11) — a lost claim is now loud
+
+**Baseline:** FS 0.9.27 · CS 1.0.58 · AW 1.30.17 (2026-09-11)
+
+A Claude Desktop restart — including an **auto-update you never saw** — respawns every MCP JVM and
+drops this process's session claim. CS has always complained about that; FS did not, and quietly
+filed every subsequent call into the `session_id='unknown'` holding pen.
+
+**What you will see now.** While this FS process holds no claim, every tool response carries a
+second `content` element:
+
+```json
+{"unbound": true,
+ "unbound_warning": "This FS process holds no session claim, so this call is filed as unattributed telemetry and does not count toward read_count or ontology_pct. Claim on THIS connection to bind it: server_lifecycle action=claim_session sessionId=<id>",
+ "owner_key": "fs-<pid>-<jvmStart>-<rand>"}
+```
+
+**Do exactly what it says, immediately**: `server_lifecycle action=claim_session sessionId=<id>
+groupId=<group>`. The warning stops on the next call. Everything filed while it was showing stays
+in the pen until a sweep repairs it, and `read_count` / `ontology_pct` for the session do not count
+those calls.
+
+**Treat `unbound: true` as the signal, not the restart notification.** An auto-update gives you no
+other warning; this is the only one.
+
+### For anyone changing this
+
+- `McpController.unboundWarningMap(ownerKey)` is the single definition of the three keys. Specs
+  derive their expected key set from it (CT-UBW-4) — add a key there and the spec follows.
+- `McpController.withUnboundWarning(response, ownerKey)` returns a **copy**. Do not make it mutate:
+  the response is measured for telemetry and the backstop *before* this runs, and not mutating is
+  what keeps the warning out of `tool_call_telemetry.response_char_count`.
+- It appends a content element rather than injecting a key into `content[0].text`, so the handler's
+  JSON payload is never re-parsed and **no response trim can eat the warning**. CS computed its
+  unbound warning correctly in 1.0.25 and never delivered it, because `KEEP_KEYS` dropped it.
+- The response warning fires on **every** call while unbound. The log line fires **once per unbound
+  streak** (`unboundWarned`, reset when a claim is seen) — a flow-node process can make thousands
+  of calls it was never meant to claim for.
+- `FsUnboundLoudnessSpec` CT-UBW-6 asserts through `handleRequest`, not the helper. A/B'd: remove
+  the dispatch wiring and CT-UBW-1..5 stay green while only CT-UBW-6 goes red. Keep it that way —
+  a guard proved only in the test is the defect this platform keeps re-finding.
+
+Contract: `fs-telemetry-not-stranded-in-unknown` (code, warn), registered red at 356.

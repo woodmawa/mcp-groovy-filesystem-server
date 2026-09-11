@@ -1161,3 +1161,83 @@ with every assertion run over **code lines only** — this release's own comment
 satisfied by that prose, which is exactly how CS 1.0.55 red-built earlier the same day.
 
 Suite: FS **358 tests, 34 suites, 0 failures** — counted from the JUnit XML.
+
+---
+
+## 0.9.27 — 2026-09-11 — the warning that was not raised
+
+W11.1 of `BUILD-BRIEF-2026-09-11-the-sweep-that-would-have-doubled-the-count.md`.
+
+CS shouts when a process holds no session claim: an observation write comes back carrying
+`unbound: true`, `unbound_warning` and `owner_key` (`ContextWriteActionRouter.markIfUnbound`).
+**FS said nothing**, and quietly filed every subsequent call into the `session_id='unknown'`
+holding pen. The asymmetry is the defect — a lost FS claim was invisible from inside the chat.
+
+### What it cost, measured
+
+A Claude Desktop auto-update respawned all three JVMs mid-session on 2026-09-11. CS was re-claimed
+within the minute because it complained. FS was not. Session `2026-09-11-08-52` then filed
+**13 `file_read`/`file_search` calls to the pen** — every read it made after the restart — so
+`read_count` and `ontology_pct` both recorded **0** for a session that had located before every
+indexed read it made.
+
+Worth correcting the record: the five FS rows that *were* attributed to that session are all
+pre-restart and contain **no read action at all** (`claim_session`, `file_write:write`,
+`file_write:multi_replace`, `execute:powershell` ×2). So "every FS row went to unknown" is not what
+happened, and a startup-time claim check would have passed. The warning has to fire **mid-session,
+on a claim that was previously good**.
+
+### What 0.9.27 does
+
+`McpController.handleToolsCall` already resolved the session on every call and coalesced `null`
+straight to `'unknown'`, throwing away the only signal that the row was about to be unattributed.
+That `null` is now kept, and when it is seen the response carries the warning.
+
+`unboundWarningMap(ownerKey)` returns CS's three keys with FS wording and the FS claim call.
+`withUnboundWarning(response, ownerKey)` returns a **copy** of the response with that map appended
+as a **second `content` element**.
+
+Three deliberate properties, each the reason it is not done the way CS does it:
+
+1. The handler's payload — a JSON string in `content[0].text` — is not parsed, not re-serialised
+   and not touched. Injecting a key into it at the dispatch boundary would mean round-tripping
+   every handler's output through a parser to add a warning.
+2. It is appended **outside the handler**, so no response trim can reach it. CS computed its
+   unbound warning correctly in 1.0.25 and never delivered it, because `KEEP_KEYS` dropped it —
+   the sixth time that list ate the evidence a fix existed to produce. This is deliberately not
+   the seventh.
+3. It is appended **after** `estimateResponseSize` and `recordToolCall`, and `withUnboundWarning`
+   does not mutate its input, so the warning never inflates
+   `tool_call_telemetry.response_char_count` and never trips the global response backstop. The
+   loudness costs nothing in the metric it would otherwise pollute.
+
+The warning is attached to whatever is actually returned, **backstop error included**: being
+unbound is orthogonal to the call having failed, and a session whose response was just refused is
+precisely the one that needs telling why its telemetry will not count either.
+
+The **response** warning fires on every call while unbound, deliberately, and extinguishes itself
+on the next `claim_session`. The **log** line does not: one WARN per unbound streak, reset when a
+claim is seen, because a flow-node process can make thousands of calls it was never meant to claim
+for.
+
+### Specs — and the A/B that matters
+
+`FsUnboundLoudnessSpec` CT-UBW-1..6. CT-UBW-4 derives the expected key set from
+`unboundWarningMap`'s own `keySet()` rather than transcribing it, so a key added later fails the
+spec instead of vanishing — CS's CT-UBW-3 trick, and the reason that list stopped rotting.
+
+CT-UBW-6 asserts end to end through `handleRequest`, one layer out from the helper. **A/B'd in both
+directions before shipping:** with the dispatch wiring removed and the helper left in place,
+CT-UBW-1..5 stay green and **only CT-UBW-6 goes red**. That is the point of it — a guard that runs
+only in the test is this platform's signature defect, and this release is the one that proves the
+guard is reached in production, not merely that it exists.
+
+### Contract
+
+`fs-telemetry-not-stranded-in-unknown` (code, warn) registered red at **356**. It fires only when
+an FS row is *still* `unknown` after a later session has started — not when one is created
+unknown, because flow nodes legitimately write from unclaimed processes and a contract counting
+those would be permanently red for correct behaviour.
+
+Suite: FS **364 tests, 35 suites, 0 failures** — counted from the JUnit XML (was 358/34 at 0.9.26;
+the delta is exactly `FsUnboundLoudnessSpec`).

@@ -5,6 +5,7 @@ import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.service.FilesystemTelemetryService
 import com.softwood.mcp.service.ToolHandler
 import com.softwood.mcp.support.Sanitizer
+import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.web.bind.annotation.PostMapping
@@ -45,6 +46,73 @@ class McpController {
     // FIX-C: v0.7.43 global backstop - hard ceiling on any single tool response
     @org.springframework.beans.factory.annotation.Value('${mcp.filesystem.global-response-cap-chars:64000}')
     int globalResponseCapChars
+
+    /**
+     * FS 0.9.27 W11.1 -- one WARN per unbound streak, not one per call.
+     * The RESPONSE warning fires on every call while unbound, deliberately; the LOG line does not,
+     * because a flow-node process can make thousands of calls it was never meant to claim for.
+     * Reset the moment a claim is seen, so a claim lost twice is logged twice.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean unboundWarned =
+        new java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * FS 0.9.27 W11.1 -- the same three keys CS attaches in
+     * {@code ContextWriteActionRouter.markIfUnbound}, with FS wording and the FS claim call.
+     *
+     * <p>Kept as its own method so specs can derive the expected key set from it rather than
+     * transcribe one (CT-UBW-4). A key added here then fails the spec instead of vanishing.</p>
+     */
+    static Map<String, Object> unboundWarningMap(String ownerKey) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>()
+        out.put('unbound', true)
+        out.put('unbound_warning',
+            'This FS process holds no session claim, so this call is filed as unattributed ' +
+            'telemetry and does not count toward read_count or ontology_pct. Claim on THIS ' +
+            'connection to bind it: server_lifecycle action=claim_session sessionId=<id>')
+        out.put('owner_key', ownerKey)
+        return out
+    }
+
+    /**
+     * Returns a COPY of {@code response} with the unbound warning appended as a second content
+     * element. The original is never mutated.
+     *
+     * <p>Three deliberate properties, each of which the obvious version gets wrong:</p>
+     * <ol>
+     *   <li>The handler's own payload -- a JSON string in {@code content[0].text} -- is not parsed,
+     *       not re-serialised and not touched. Injecting a key into it at the dispatch boundary
+     *       would mean round-tripping every handler's output through a parser to add a warning.</li>
+     *   <li>The warning is added OUTSIDE the handler, so no response trim can eat it. CS computed
+     *       its unbound warning correctly in 1.0.25 and never delivered it, because {@code KEEP_KEYS}
+     *       dropped it -- the sixth time that list ate the evidence a fix existed to produce.</li>
+     *   <li>It does not mutate, so a caller that measured the response BEFORE calling this still
+     *       holds a true measurement. That is what keeps the warning out of
+     *       {@code tool_call_telemetry.response_char_count} and out of the backstop.</li>
+     * </ol>
+     */
+    static McpResponse withUnboundWarning(McpResponse response, String ownerKey) {
+        if (response == null) return null
+        Map<String, Object> result = response.result
+        if (result == null) return response
+        Object rawContent = result.get('content')
+        if (!(rawContent instanceof List)) return response
+
+        List<Object> content = new ArrayList<Object>((List<Object>) rawContent)
+        Map<String, Object> note = new LinkedHashMap<String, Object>()
+        note.put('type', 'text')
+        note.put('text', JsonOutput.toJson(unboundWarningMap(ownerKey)))
+        content.add(note)
+
+        Map<String, Object> copied = new LinkedHashMap<String, Object>(result)
+        copied.put('content', content)
+
+        McpResponse out = new McpResponse()
+        out.id = response.id
+        out.result = copied
+        out.error = response.error
+        return out
+    }
 
 
     McpController(List<ToolHandler> toolHandlers) {
@@ -155,6 +223,7 @@ class McpController {
 
         // v0.7.19: telemetry - fire-and-forget, never blocks response
         int charCount = 0
+        boolean unbound = false
         try {
             if (telemetryService != null) {
                 charCount = estimateResponseSize(response)
@@ -164,7 +233,11 @@ class McpController {
                 String outcome  = extractOutcome(response)
                 // D5 fix (v0.8.65): resolve real session ID via JDBC (transport-agnostic).
                 // Prior 'unknown' hardcode caused knownhash_pct/read_count to read 0 for FS calls.
-                String sessionId = telemetryService.readActiveSessionId() ?: 'unknown'
+                // FS 0.9.27 W11.1: null here is the ONLY signal that this call is about to be filed
+                // as unattributed. It was being silently coalesced to 'unknown' and thrown away.
+                String resolved  = telemetryService.readActiveSessionId()
+                unbound = (resolved == null)
+                String sessionId = resolved ?: 'unknown'
                 telemetryService.recordToolCall(sessionId, toolName, charCount, arguments,
                     action, pathHash, outcome)
             }
@@ -172,17 +245,31 @@ class McpController {
             log.debug('Telemetry hook failed (non-fatal): {}', e.message)
         }
 
+        if (unbound) {
+            if (unboundWarned.compareAndSet(false, true)) {
+                log.warn('FS holds no session claim -- calls are filing as unattributed telemetry ' +
+                         '(owner_key={}). Issue server_lifecycle action=claim_session.',
+                         com.softwood.mcp.ProcessIdentity.OWNER_KEY)
+            }
+        } else {
+            unboundWarned.set(false)
+        }
+
         // FIX-C: v0.7.43 global response backstop - no response may exceed cap regardless of handler
+        McpResponse out = response
         if (globalResponseCapChars > 0 && charCount > globalResponseCapChars) {
             int tokenEst = Math.round(charCount / 4.0f) as int
             log.warn('BACKSTOP triggered: {} response {}chars (~{}tok) exceeds global cap {}chars',
                 toolName, charCount, tokenEst, globalResponseCapChars)
-            return McpResponse.toolError(request.id,
+            out = McpResponse.toolError(request.id,
                 "Response too large: ${toolName} produced ${charCount} chars (~${tokenEst} tokens). " +
                 "Use targeted actions: structure/get_method/range/grep instead of full reads.")
         }
 
-        return response
+        // FS 0.9.27 W11.1: applied to whatever is actually being returned, backstop error included.
+        // Being unbound is orthogonal to the call having failed, and a session whose response was
+        // just refused is precisely the one that needs telling why its telemetry will not count.
+        return unbound ? withUnboundWarning(out, com.softwood.mcp.ProcessIdentity.OWNER_KEY) : out
     }
 
     // FIX-7: zero-copy size estimate - read text field directly instead of serialising whole result Map
