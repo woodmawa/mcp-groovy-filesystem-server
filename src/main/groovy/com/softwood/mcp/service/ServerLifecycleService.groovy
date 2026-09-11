@@ -655,12 +655,28 @@ SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS proc
             cmd.add('-Dspring.profiles.active=http')   // CRITICAL: must be http not stdio — companion runs as HTTP server
             cmd.add('-DMCP_MODE=http')                 // belt-and-braces: application.yml reads MCP_MODE env var too
             cmd.add(('-DMCP_HTTP_PORT=' + port) as String)
+
+            // FS 0.9.31 -- W17: jvmArgs go BEFORE -jar, because that is the only place the JVM
+            // reads them.
+            //
+            // They used to be appended after the jar path. Everything after `-jar <jar>` is a
+            // PROGRAM argument, so every -D in the jvmArgs array of mcp-http-servers.json has been
+            // handed to main(String[]) and dropped on the floor for as long as this method has
+            // existed. Not one of them has ever set a system property on a companion: not
+            // mcp.filesystem.allowed-directories, not mcp.usage.db-path, not mcp.shared.db-path.
+            // Spring Boot does bind program arguments, but only in --key=value form, so the -D
+            // spelling used throughout that file binds nothing either.
+            //
+            // Found on 2026-09-11 while arming aw.shaper.strictGlobals on the AW companion for W4
+            // step two and noticing the flag sitting after the jar in the process command line. A
+            // configuration key named jvmArgs that does not set JVM args is the same shape as the
+            // rest of this arc: it reads as configured, it reports nothing, and nobody looks.
+            List extraArgs = server.jvmArgs as List ?: []
+            if (extraArgs) cmd.addAll(extraArgs as List<String>)
+
             cmd.add('-jar')
             cmd.add(jarPath)
 
-            // Server-specific extra args
-            List extraArgs = server.jvmArgs as List ?: []
-            if (extraArgs) cmd.addAll(extraArgs as List<String>)
 
             ProcessBuilder pb = new ProcessBuilder(cmd)
             pb.redirectErrorStream(false)

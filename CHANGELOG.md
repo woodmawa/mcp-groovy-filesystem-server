@@ -1419,3 +1419,49 @@ Practice 459 says to use `(1.._)*` rather than `1*` for interaction counts in `@
 specs. It was not followed here, deliberately: OGC-5 exists to detect a second call, and `(1.._)`
 cannot fail on the defect it was written to catch. The A/B discriminates instead — if the replay
 artefact that practice describes were present, 0.9.30 would be red too.
+
+
+## 0.9.31 — 2026-09-11 — a config key named jvmArgs that did not set JVM args
+
+W17. Found while arming `aw.shaper.strictGlobals` on the AW companion for W4 step two, by reading
+the live process command line instead of trusting the config that produced it.
+
+`ServerLifecycleService.startServer` built the companion command as `java … -jar <jar>` and **then**
+appended the server's `jvmArgs`. Everything after `-jar <jar>` is a PROGRAM argument. So every
+`-D` in the `jvmArgs` array of `mcp-http-servers.json` has been handed to `main(String[])` and
+dropped, for as long as that method has existed:
+
+| server | jvmArg | effect on the companion |
+|---|---|---|
+| filesystem | `-Dmcp.filesystem.allowed-directories=…` | none |
+| filesystem | `-Dmcp.usage.db-path=…` | none |
+| agentic-workflow | `-Dmcp.shared.db-path=…` | none |
+
+Spring Boot does bind program arguments, but only in `--key=value` form, so the `-D` spelling used
+throughout that file binds nothing by that route either. The companions have been running on
+defaults while the config read as applied — and the stdio processes, whose args come from the
+Desktop extension manifest and are correctly placed, have not, which is why nothing ever looked
+odd in one place at a time.
+
+**Fix:** `jvmArgs` are added before `-jar`, and the jar path is now the last element on the line.
+
+### Specs
+
+`CompanionJvmArgPlacementSpec` CJA-1 and CJA-2, asserted over comment-stripped source because the
+command is assembled inside `startServer` and there is no seam that returns the argument list.
+Adding one is the better answer and is not done here; this is the cheaper one that ships today, and
+it is the technique `OntologyGateCoverageSpec` already uses for the dispatch gate. Whole-line
+comments are stripped first — this release's own comment block discusses `-jar` and `jvmArgs` at
+length, and a raw-source check would be satisfied by that prose.
+
+CJA-2 is the regression guard: nothing may be added to `cmd` between the jar path and the
+`ProcessBuilder`, because an append in exactly that gap is what the defect was.
+
+**A/B, run today:** with `src/main` stashed, both cases go red — CJA-1 at `argsAt 23052 < jarAt
+22921` false, CJA-2 on the append it finds in the gap. Green after.
+
+### The shape, again
+
+A setting that does nothing, in a file that reads as configuration, with no way to tell from either
+end. The config says the flag is set; the process says the flag is present; only the argument
+**order** says otherwise, and nothing was looking at the order.
