@@ -152,4 +152,82 @@ class WriteEscapeSpec extends Specification {
         then:
         onDisk == 'K' + BS + 'd' + 'L'
     }
+
+    // =========================================================================
+    // WE-6..WE-9 -- FS 0.9.34, W22: the pass must SAY it fired.
+    //
+    // WE-1..WE-5 assert what lands on disk. None of them asserts what the caller is TOLD, and
+    // that gap is the defect. The javadoc above this spec already ends with "a hash of what was
+    // written confirms nothing about what was asked for" -- 0.9.14 then fixed the escape hatch
+    // and left the response saying {success:true, content_hash} with no mention that the bytes
+    // had been transformed at all. Reproduced 2026-09-12: a Groovy spec was written with a
+    // newline escape inside a single-quoted literal, the write reported success, and the defect
+    // surfaced minutes later as a compile error in a different tool.
+    //
+    // WE-7 is the load-bearing one: the report must ride on the COMPACT shape, because compact
+    // is the DEFAULT for write. Reporting only in the verbose shape would leave the common path
+    // silent, which is the same defect one layer along.
+    // =========================================================================
+
+    private Map writeResponse(String name, String content, Map extraOptions = [:]) {
+        File f = tempDir.resolve(name).toFile()
+        Map args = [action: 'write', path: f.absolutePath, content: content]
+        if (extraOptions) args.options = extraOptions
+        McpResponse r = fileWriteService.handleToolCall('file_write', args, 'we-spec')
+        assert r.result != null : "write failed: ${r.error?.message}"
+        return new groovy.json.JsonSlurper().parseText(
+            (r.result.content[0] as Map).text as String) as Map
+    }
+
+    def 'WE-6: the response reports the substitutions, counted per sequence'() {
+        when: 'two newline escapes, one tab, one carriage return'
+        Map resp = writeResponse('we6.txt',
+            'a' + BS + 'n' + 'b' + BS + 'n' + 'c' + BS + 't' + 'd' + BS + 'r' + 'e',
+            [verbose: true])
+
+        then: 'the caller is told, rather than finding out at compile time'
+        resp.unescaped != null
+        (resp.unescaped as Map).n     == 2
+        (resp.unescaped as Map).t     == 1
+        (resp.unescaped as Map).r     == 1
+        (resp.unescaped as Map).total == 4
+
+        and: 'and told what to do about it if the escapes were meant to survive'
+        ((resp.unescaped as Map).note as String).contains('raw=true')
+    }
+
+    def 'WE-7: the report rides on the COMPACT response, which is the default for write'() {
+        when: 'no verbose flag -- the shape almost every caller actually gets'
+        Map resp = writeResponse('we7.txt', 'x' + BS + 'n' + 'y')
+
+        then:
+        resp.content_hash != null
+        resp.unescaped != null
+        (resp.unescaped as Map).total == 1
+    }
+
+    def 'WE-8: a write that changed nothing says nothing -- no key at all'() {
+        when: 'content with no escape sequences in it'
+        Map resp = writeResponse('we8.txt', 'plain content, no escapes here')
+
+        then: 'the field is absent rather than a zero, so a quiet write stays quiet'
+        resp.containsKey('unescaped') == false
+    }
+
+    def 'WE-9: raw=true reports nothing, because nothing was done'() {
+        when:
+        Map resp = writeResponse('we9.txt', 'a' + BS + 'n' + 'b', [raw: true])
+
+        then:
+        resp.containsKey('unescaped') == false
+    }
+
+    def 'WE-10: the halves of a doubled backslash are not counted as substitutions'() {
+        when: 'a doubled backslash is PRESERVED, so it must not inflate the count'
+        Map resp = writeResponse('we10.txt', 'p' + BS + BS + 'n' + 'q' + BS + 'n' + 'r', [verbose: true])
+
+        then: 'exactly one real substitution, not two -- counted on the protected body'
+        (resp.unescaped as Map).total == 1
+        (resp.unescaped as Map).n     == 1
+    }
 }

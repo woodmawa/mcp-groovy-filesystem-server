@@ -39,6 +39,7 @@ class FileContentWriter extends AbstractFileService {
         // writes produce a single line with embedded \n literals that compilers reject.
         // Opt-out: options.raw=true preserves content verbatim (for JSON, binary, etc.)
         boolean raw = options.get('raw') ? Boolean.valueOf(options.get('raw').toString()) : false
+        int unescapedN = 0, unescapedT = 0, unescapedR = 0
         if (!raw) {
             // Protect a doubled backslash behind a sentinel, unescape, then restore it to a
             // SINGLE backslash. FS 0.9.14: the restore put back a DOUBLED one, so escaping was
@@ -50,13 +51,30 @@ class FileContentWriter extends AbstractFileService {
             // a hash of what was written confirms nothing about what was asked for.
             // Observation 10102; cost three failed patch attempts before being probed.
             // options.raw=true skips this block entirely and is now named in the tool description.
-            body = body
-                .replace('\\\\', '\u0001BSLASH\u0001')
+            //
+            // FS 0.9.34 -- W22. Read the paragraph above again. It ends by saying a hash of what
+            // was written confirms nothing about what was asked for -- and then 0.9.14 fixed the
+            // escape hatch and left the REPORTING exactly as it was: {success:true, content_hash}
+            // and not one word that the caller's bytes had been transformed. So the caller still
+            // could not tell from the response, and found out at compile time, in a different
+            // tool, minutes later. Reproduced 2026-09-12: a Groovy spec written with a newline
+            // escape inside a single-quoted literal, write reported success, defect surfaced as a
+            // compile error. The fix that was missing was never the unescaping -- which is correct
+            // and documented -- but saying that it happened.
+            // Counted on the SENTINEL-PROTECTED body, because those occurrences are exactly the
+            // ones about to be replaced. Counting the raw input would also count the halves of a
+            // doubled backslash, which is precisely what this block exists to preserve.
+            String protectedBody = body.replace('\\\\', '\u0001BSLASH\u0001')
+            unescapedN = (protectedBody.length() - protectedBody.replace('\\n', '').length()).intdiv(2)
+            unescapedT = (protectedBody.length() - protectedBody.replace('\\t', '').length()).intdiv(2)
+            unescapedR = (protectedBody.length() - protectedBody.replace('\\r', '').length()).intdiv(2)
+            body = protectedBody
                 .replace('\\n', '\n')
                 .replace('\\t', '\t')
                 .replace('\\r', '\r')
                 .replace('\u0001BSLASH\u0001', '\\')
         }
+        int unescapedTotal = unescapedN + unescapedT + unescapedR
 
         Path target = Paths.get(normalized)
         // createDirectories is also called inside WriteUtils.atomicWrite for reliability on Windows.
@@ -81,14 +99,28 @@ class FileContentWriter extends AbstractFileService {
             WriteUtils.shouldNormaliseLf(target) ? 'LF' : 'preserved')
 
         String hash = WriteUtils.fileHash(target)
+        // FS 0.9.34 W22: the unescape report rides on BOTH shapes. Compact is the default for
+        // write, so reporting only in the verbose shape would have left the common path silent --
+        // which is the whole defect, one layer along.
+        Map<String, Object> unescapedReport = unescapedTotal > 0 ? ([
+            total: unescapedTotal, n: unescapedN, t: unescapedT, r: unescapedR,
+            note : 'Escape sequences in content were converted to real control characters. ' +
+                   'If any were meant to survive as literal backslash sequences -- source code, ' +
+                   'a regex, a Windows path -- re-write with options.raw=true.'
+        ] as Map<String, Object>) : null
+
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, content_hash: hash, file_content_hash: hash])
+            Map<String, Object> compact = [success: true, content_hash: hash, file_content_hash: hash]
+            if (unescapedReport) compact.unescaped = unescapedReport
+            return textResponse(requestId, compact)
         }
-        return textResponse(requestId, [
+        Map<String, Object> verbose = [
             action: 'write', path: normalized,
             size: body.length(), success: true,
             content_hash: hash, file_content_hash: hash
-        ])
+        ]
+        if (unescapedReport) verbose.unescaped = unescapedReport
+        return textResponse(requestId, verbose)
     }
 
     McpResponse doAppend(String path, String content, Map<String, Object> options, Object requestId) {
