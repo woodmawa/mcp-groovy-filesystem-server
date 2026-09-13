@@ -1465,3 +1465,107 @@ CJA-2 is the regression guard: nothing may be added to `cmd` between the jar pat
 A setting that does nothing, in a file that reads as configuration, with no way to tell from either
 end. The config says the flag is set; the process says the flag is present; only the argument
 **order** says otherwise, and nothing was looking at the order.
+
+---
+
+## 0.9.32 — 2026-09-11 — a database is owned by its server alone (R2, the FS half)
+
+`pending_reindex` had **three creators and two shapes**. FS's `CREATE TABLE` omitted the `source`
+column; CS's queue handler carried a `CREATE` plus an `ALTER` plus a `CREATE UNIQUE INDEX`, each
+wrapped in its own swallow, for no reason other than to survive losing the startup race to whichever
+process got there first. `SqliteSchemaManager` in CS now owns the table outright and the
+three-legged "idempotent migration" is gone with the race that required it.
+
+**FS keeps its INSERT and that is deliberate.** It is the CS-HTTP-unreachable fallback; routing it
+through CS would make it a no-op in the only situation it ever runs.
+
+**FS stopped creating `tool_call_telemetry`.** It had not written a row into that table since 0.9.29,
+when the telemetry write moved to `context_lifecycle action=record_tool_call`. Its own comment had
+set the removal condition three releases earlier and nothing was watching for the condition being
+met — which is the same shape as everything else in this arc.
+
+`busy_timeout` added to FS's connections as **hardening, not as a fix**: 119 FS log files carry zero
+`SQLITE_BUSY` between them, so there is no incident behind this. Recorded as hardening so that a
+later reader does not infer a defect that never happened.
+
+Specs: `FSO-1`, `FSO-2`, `FSO-4` seen red on 0.9.31; `FSO-3` green both sides by design.
+
+---
+
+## 0.9.33 — 2026-09-11 — a tool description that mandated a metric nobody could produce (W14)
+
+The KNOWNHASH OBLIGATION block in the `file_read` description ran to 2,512 characters and demanded a
+discipline whose metric, `knownhash_pct`, is NULL in 79% of sessions — a rule stated at length,
+against a measurement that mostly does not exist. Cut to **1,593 characters**: a sentence saying what
+`knownHash` does and how to obtain one.
+
+**Updated in BOTH places the description lives**, which is the part worth remembering: `DEFAULT_DESC`
+in the code, and the `help_sections` row CS serves it from. Changing one and not the other leaves the
+running server serving the old text while the source reads as fixed.
+
+**Deliberately kept:** the `action=range` caveat — it is real, a `knownHash` there returns
+`unchanged:true` instead of content — and `writeMissingKnownHashObservationAsync`, which is the
+narrow, reachable version of the same claim.
+
+Verified live: FS logged `FileReadService tool description reloaded from CS` at 22:19:50 and the
+served row is the new text.
+
+Specs: `KH-1` and `KH-2` seen red on 0.9.32; `KH-3` and `KH-4` green both sides by design.
+
+---
+
+## 0.9.34 — 2026-09-12 — the unescape pass that reported nothing (W22)
+
+`file_write action=write` applies an unescape pass to `content`: the two-character sequences
+backslash-n, backslash-t and backslash-r become real control characters, because Claude's serialiser
+sends them that way. **The unescaping was never the defect.** Probed byte by byte, doubling works
+exactly as documented and practice 2363 already recorded the behaviour.
+
+**The defect was the silence.** `FileContentWriter`'s own comment already ended *"a hash of what was
+written confirms nothing about what was asked for"* (obs 10102). 0.9.14 fixed the escape hatch —
+`options.raw=true` — and left the reporting untouched, so the unfinished half of that fix sat there
+for twenty releases.
+
+### What 0.9.34 does
+
+The write response now carries an `unescaped` field with per-sequence counts, a total, and a note
+naming `options.raw=true`. It is present **only when something was actually changed**, so a write
+that needed no substitution says nothing rather than saying zero.
+
+Two details are load-bearing:
+
+- **It rides on the `compact` response**, which is the default for write. Reporting only in `verbose`
+  would have left the common path exactly as silent as before — the same defect wearing a flag.
+- **It reports substitutions performed, not resulting control characters.** These are not the same
+  number: `WriteUtils.shouldNormaliseLf` rewrites CR to LF for text targets *after* unescaping, so a
+  content string carrying two backslash-n, one backslash-t and one backslash-r ends up on disk with
+  four LF and no CR. "Here is what I did to your content" is the right semantic for this field, but
+  it will not match a count of control characters in the result, and anyone reconciling the two
+  should know which question the field answers.
+
+**Verified live on the wire, 2026-09-12 18:51**, and the count was checked against the bytes rather
+than trusted: a write carrying two backslash-n, one backslash-t, one backslash-r and one deliberately
+doubled backslash returned `total: 4, n: 2, t: 1, r: 1`. `n: 2` looked one low for what was sent; it
+is correct, because the doubled backslash arrived doubled, was protected, and survives on disk as a
+literal two-character sequence.
+
+**Known, unfixed, documented rather than quietly left:** the stale `0.9.33` jar remains in `server/`
+although practice 187 says `installMcpbLocal` removes it. Harmless — the manifest names 0.9.34
+explicitly — but documented behaviour and actual behaviour disagree, and that gap is worth a line.
+
+Specs: `WE-1` through `WE-5`, seen red (no field written at all). `WE-7` is the property that the
+field rides on the compact response.
+
+---
+
+## Why 0.9.32 through 0.9.34 were written up on 2026-09-13, a day to two days late
+
+They were not. The entries above are backfill, and the reason is the finding: **there was no
+freshness contract watching this repository.** CS had `docs-markdown-fresh`, AW had
+`docs-markdown-fresh-aw`, and FS had nothing — so `CLAUDE.md` sat at a `0.9.27` baseline through
+seven releases and every light on the platform stayed green. Contract `docs-markdown-fresh-fs` was
+registered on 2026-09-13 to close that, reading the `**Baseline stack:** FS x.y.z` line in this
+repository's markdown against the live `server_versions` row.
+
+A missing light is not a green one. It is the same class of defect as a check whose failing branch is
+unreachable, which this platform has now found five times.
