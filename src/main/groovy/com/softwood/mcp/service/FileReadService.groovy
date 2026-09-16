@@ -298,18 +298,39 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                         }
                         int csl = (options.get('startLine') as Integer) ?: 1
                         int cml = (options.get('maxLines') as Integer) ?: 100
-                        if (fileHash) {
-                            String readAt = contextServerClient.checkRangeCache(path, csl, csl + cml - 1, fileHash)
-                            if (readAt != null) {
-                                String hitJson = groovy.json.JsonOutput.toJson([
-                                    cached          : true,
-                                    already_read_at : readAt,
-                                    hint            : 'Content already in context from this session. Do not re-read.',
-                                    is_repeat_call  : true
-                                ])
-                                return McpResponse.success(requestId, [
-                                    content: [[type: 'text', text: hitJson]]
-                                ] as Map<String, Object>)
+                        boolean force = Boolean.parseBoolean(String.valueOf(options.get('force') ?: 'false'))
+                        if (fileHash && !force) {
+                            // FS 0.9.35 G4b: de-duplicate by LINES, not by exact window. Exact-pair
+                            // matching served 4 of 867 range reads from cache; paging asks for
+                            // overlapping windows. Fully covered -> unchanged; partly -> only the
+                            // unserved span, with what was already served named.
+                            List<List<Integer>> served = contextServerClient.rangeCoverage(path, fileHash)
+                            if (!served.isEmpty()) {
+                                List<Integer> todo = com.softwood.mcp.service.read.RangeCoverage.uncovered(csl, csl + cml - 1, served)
+                                if (todo == null) {
+                                    return cachedResponse(requestId, fileHash,
+                                        'Lines ' + csl + '-' + (csl + cml - 1) + ' already in context from this session. options.force=true to re-read.',
+                                        com.softwood.mcp.service.read.RangeCoverage.describe(served))
+                                }
+                                if (todo[0] != csl || todo[1] != csl + cml - 1) {
+                                    List<String> alreadyServed = com.softwood.mcp.service.read.RangeCoverage.describe(served)
+                                    Map<String, Object> narrowed = new LinkedHashMap<String, Object>(options)
+                                    narrowed.put('startLine', todo[0])
+                                    narrowed.put('maxLines', todo[1] - todo[0] + 1)
+                                    McpResponse nr = contentReader.doRange(path, narrowed, requestId)
+                                    if (nr.error == null) {
+                                        fireRegistryUpsert(path, nr)
+                                        String nh = fileHash
+                                        contextServerClient.recordRangeCacheAsync(path, todo[0], todo[1], nh)
+                                        Map<String, Object> np = parseResponsePayload(nr)
+                                        if (np != null) {
+                                            np.put('already_served', alreadyServed)
+                                            np.put('requested', csl + '-' + (csl + cml - 1))
+                                            return textResponse(requestId, np)
+                                        }
+                                    }
+                                    return nr
+                                }
                             }
                         }
                     }
@@ -317,18 +338,38 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                     if (r.error == null) {
                         fireRegistryUpsert(path, r)
                         if (contextServerClient != null) {
-                            String h = extractFileHash(r)
-                            int rsl = (options.get('startLine') as Integer) ?: 1
-                            int rml = (options.get('maxLines') as Integer) ?: 100
-                            // NOTE: recordRangeCacheAsync fires unconditionally here -- even when
-                            // doRange returned unchanged:true (knownHash matched). This ensures the
-                            // range cache entry is always refreshed, so subsequent reads still hit.
-                            if (h) contextServerClient.recordRangeCacheAsync(path, rsl, rsl + rml - 1, h)
+                            // Record under the SAME hash source the check reads, or they never meet.
+                            String h = structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(r)
+                            Map<String, Object> rp = parseResponsePayload(r)
+                            int rsl = (rp?.get('startLine') as Integer) ?: ((options.get('startLine') as Integer) ?: 1)
+                            int rel = (rp?.get('endLine') as Integer) ?: (rsl + ((options.get('maxLines') as Integer) ?: 100) - 1)
+                            // FS 0.9.35: record the lines ACTUALLY returned (a window past EOF is
+                            // shorter than asked), so coverage never claims lines nobody saw.
+                            if (h && rel >= rsl) contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
                         }
                     }
                     return r
                 }
-                case 'grep'         : return contentReader.doGrep(path, options, requestId)
+                case 'grep'         : {
+                    // FS 0.9.35 G4c: the same grep on unchanged content is not re-sent.
+                    String gh = null
+                    String gkey = 'grep:' + options.get('pattern') + '|ctx=' + (options.get('contextLines') ?: 0) +
+                                  '|max=' + (options.get('maxMatches') ?: '')
+                    boolean gforce = Boolean.parseBoolean(String.valueOf(options.get('force') ?: 'false'))
+                    if (contextServerClient != null && options.get('pattern')) {
+                        gh = structureCache?.getHash(pathService.normalizePath(path))
+                        if (gh && !gforce && contextServerClient.servedKeySeen(path, gkey, gh)) {
+                            return cachedResponse(requestId, gh,
+                                'This grep on this file content was already returned this session. options.force=true to repeat.', null)
+                        }
+                    }
+                    McpResponse gr = contentReader.doGrep(path, options, requestId)
+                    if (gr.error == null && contextServerClient != null && options.get('pattern')) {
+                        String h2 = gh ?: structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(gr)
+                        if (h2) contextServerClient.recordServedKeyAsync(path, gkey, h2)
+                    }
+                    return gr
+                }
                 case 'multi_grep'   : {
                     // FS 0.9.30 -- W3: multi_grep was the last file_read action that returned file
                     // content with no gate at all. The dispatch guard cannot cover it -- there is no
@@ -422,33 +463,17 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                     // FIX-KH-RANGE-AUTO (FS 0.8.81): auto-lookup range cache before calling doGetMethod.
                     // First read records startLine/endLine in range cache. On repeat call, if
                     // StructureCache has the file hash, we can auto-hit without caller passing knownHash.
-                    if (contextServerClient != null) {
+                    // FS 0.9.35 G4a: keyed by the METHOD. The (0,0) sentinel this replaces was
+                    // refused by CS (/rangeCache requires startLine >= 1), so it never hit; and one
+                    // sentinel per file would have answered for every method in it.
+                    String gmKey = 'method:' + (options.get('className') ?: '') + '#' + options.get('method')
+                    boolean gmForce = Boolean.parseBoolean(String.valueOf(options.get('force') ?: 'false'))
+                    if (contextServerClient != null && options.get('method') && !gmForce) {
                         String fileHash = options.get('knownHash') as String
                         if (!fileHash) fileHash = structureCache?.getHash(pathService.normalizePath(path))
-                        if (fileHash) {
-                            // Resolve the prior range entry for this method from the range cache.
-                            // We don't know startLine/endLine yet (that's what doGetMethod would give us),
-                            // so we call checkRangeCache with the whole-file sentinel (0, 0) which CS
-                            // uses to record get_method results. If no sentinel, fall through to full read.
-                            // NOTE: actual line ranges are stored by the record call below -- so a hit
-                            // here means Claude has already seen this method body this session.
-                            Map<String, Object> payload = null
-                            // Try to recover cached line range from the response helper's last record
-                            // by consulting CS with knownHash=fileHash. We use a range probe with
-                            // startLine=0 to detect any get_method sentinel entry for this file.
-                            // If CS returns a hit for (path, 0, 0, fileHash) we return cached.
-                            String readAt = contextServerClient.checkRangeCache(path, 0, 0, fileHash)
-                            if (readAt != null) {
-                                String hitJson = groovy.json.JsonOutput.toJson([
-                                    cached          : true,
-                                    already_read_at : readAt,
-                                    hint            : 'Method content already in context from this session. Do not re-read.',
-                                    is_repeat_call  : true
-                                ])
-                                return McpResponse.success(requestId, [
-                                    content: [[type: 'text', text: hitJson]]
-                                ] as Map<String, Object>)
-                            }
+                        if (fileHash && contextServerClient.servedKeySeen(path, gmKey, fileHash)) {
+                            return cachedResponse(requestId, fileHash,
+                                'Method ' + options.get('method') + ' already in context from this session. options.force=true to re-read.', null)
                         }
                     }
                     // FS 0.9.30 -- W2: the missing-knownHash advisory moves to the layer that RUNS.
@@ -460,17 +485,15 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                     String gmPreCachedHash = responseHelper?.peekStructureCache(pathService.normalizePath(path))
                     McpResponse r = structureReader.doGetMethod(path, options, requestId)
                     if (r.error == null && contextServerClient != null) {
-                        String h = extractFileHash(r)
+                        String h = structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(r)
                         if (h) {
                             // Fix C (v0.8.56): record with actual line range from response
                             // so a subsequent range read of same lines returns cached:true.
                             Map<String, Object> payload = parseResponsePayload(r)
                             int rsl = payload?.get('startLine') as Integer ?: 0
                             int rel = payload?.get('endLine')   as Integer ?: 0
-                            contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
-                            // FIX-KH-RANGE-AUTO: also record a sentinel (0,0) entry for get_method
-                            // so the auto-lookup above can detect repeat calls without knowing line numbers.
-                            contextServerClient.recordRangeCacheAsync(path, 0, 0, h)
+                            if (rsl >= 1 && rel >= rsl) contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
+                            if (options.get('method')) contextServerClient.recordServedKeyAsync(path, gmKey, h)
                         }
                     }
                     if (r != null && r.error == null && responseHelper != null) {
@@ -566,6 +589,22 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                 contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
             }
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * FS 0.9.35 G4: one shape for every "you already have this" answer. Carries unchanged:true so
+     * telemetry classifies it as a cache answer (it recorded 'success' for the old cached:true
+     * shape, which is why no range hit ever showed in the ledger).
+     */
+    private McpResponse cachedResponse(Object requestId, String fileHash, String hint, List<String> alreadyServed) {
+        Map<String, Object> hit = new LinkedHashMap<String, Object>()
+        hit.put('unchanged', true)
+        hit.put('cached', true)
+        hit.put('is_repeat_call', true)
+        hit.put('file_content_hash', fileHash)
+        if (alreadyServed) hit.put('already_served', alreadyServed)
+        hit.put('hint', hint)
+        return textResponse(requestId, hit)
     }
 
     private static String extractFileHash(McpResponse resp) {

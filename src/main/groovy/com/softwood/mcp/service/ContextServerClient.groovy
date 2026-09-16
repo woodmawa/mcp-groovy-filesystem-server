@@ -595,6 +595,71 @@ class ContextServerClient {
         return null
     }
 
+    // -----------------------------------------------------------------------
+    // FS 0.9.35 WP-G G4: interval coverage and served keys (CS 1.0.75 /rangeCache)
+    // Synchronous calls share checkRangeCache's 500 ms budget and fail open.
+    // -----------------------------------------------------------------------
+
+    /** Served line intervals for this session, file and content hash; empty on any miss. */
+    List<List<Integer>> rangeCoverage(String filePath, String fileHash) {
+        Map resp = postRangeCacheSync([action: 'coverage', sourceFile: filePath, fileHash: fileHash] as Map<String, Object>)
+        List raw = (resp?.get('intervals') instanceof List) ? (List) resp.get('intervals') : []
+        return raw.findAll { it instanceof List && ((List) it).size() == 2 }.collect { Object iv ->
+            [((List) iv)[0] as Integer, ((List) iv)[1] as Integer] as List<Integer>
+        } as List<List<Integer>>
+    }
+
+    /** True when this session was already sent the unit {@code servedKey} of this file content. */
+    boolean servedKeySeen(String filePath, String servedKey, String fileHash) {
+        Map resp = postRangeCacheSync([action: 'seen_check', sourceFile: filePath, servedKey: servedKey,
+                                       fileHash: fileHash] as Map<String, Object>)
+        return resp?.get('seen') == true
+    }
+
+    void recordServedKeyAsync(String filePath, String servedKey, String fileHash) {
+        if (!isCsReachable() || !fileHash) return
+        String sid = resolveSessionId()
+        if (!sid) return
+        asyncWriter.submit({
+            postRangeCache([action: 'seen_record', sessionId: sid, sourceFile: filePath,
+                            servedKey: servedKey, fileHash: fileHash] as Map<String, Object>, 2000)
+        } as Runnable)
+    }
+
+    private Map postRangeCacheSync(Map<String, Object> body) {
+        if (!isCsReachable() || !body.get('fileHash')) return null
+        String sid = resolveSessionId()
+        if (!sid) return null
+        body.put('sessionId', sid)
+        return postRangeCache(body, 500)
+    }
+
+    private Map postRangeCache(Map<String, Object> body, int timeoutMs) {
+        try {
+            String json = groovy.json.JsonOutput.toJson(body)
+            URL url = new URL("${contextServerUrl}/rangeCache")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = timeoutMs
+                conn.readTimeout    = timeoutMs
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    return (Map) new groovy.json.JsonSlurper().parseText(conn.inputStream.getText('UTF-8'))
+                }
+            } finally {
+                conn.disconnect()
+            }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('rangeCache {} failed (non-fatal): {}', body.get('action'), e.message)
+        }
+        return null
+    }
+
     void recordRangeCacheAsync(String filePath, int startLine, int endLine, String contentHash) {
         if (!isCsReachable() || !contentHash) return
         String sid = resolveSessionId()

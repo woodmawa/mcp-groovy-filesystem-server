@@ -315,7 +315,7 @@ class McpController {
             }
             List content = response?.result?.content as List
             String text = ((content?.first() as Map)?.get('text') as String) ?: ''
-            if (text.contains('"unchanged":true')) return 'unchanged'
+            if (text.contains('"unchanged":true') || text.contains('"cached":true')) return 'unchanged'
             if (text.contains('_truncated')) return 'truncated'
         } catch (Exception ignored) {}
         return 'success'

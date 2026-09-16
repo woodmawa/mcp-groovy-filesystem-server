@@ -95,6 +95,11 @@ class RangeAutoKhSpec extends Specification {
             storeFileHashAsync(_, _)          >> {}
             recordRangeCacheAsync(_, _, _, _) >> { p, s, e, h -> rangeStore["$p:$s:$e"] = 'cached-at' }
             checkRangeCache(_, _, _, _)       >> { p, s, e, h -> rangeStore["$p:$s:$e"] }
+            // FS 0.9.35 G4: interval coverage and keyed units, backed by the same store
+            rangeCoverage(_, _)               >> { p, h -> rangeStore.keySet().findAll { it.startsWith("$p:") && !it.contains('#') }
+                                                     .collect { String k -> k.tokenize(':')[-2..-1]*.toInteger() } }
+            servedKeySeen(_, _, _)            >> { p, k, h -> rangeStore.containsKey("$p#$k" as String) }
+            recordServedKeyAsync(_, _, _)     >> { p, k, h -> rangeStore["$p#$k" as String] = 'seen' }
             lookupFileHash(_)                 >> null
         }
         helper.contextServerClient = cs
@@ -169,6 +174,8 @@ class RangeAutoKhSpec extends Specification {
             recordRangeCacheAsync(_, _, _, _)        >> {}
             checkRangeCache(_, 1, 5, 'explicitHash') >> 'cached-at'
             checkRangeCache(_, _, _, _)              >> null
+            rangeCoverage(_, 'explicitHash')         >> [[1, 5]]
+            rangeCoverage(_, _)                      >> []
             lookupFileHash(_)                        >> null
         }
         helper.contextServerClient = cs
@@ -206,7 +213,9 @@ class RangeAutoKhSpec extends Specification {
     // get_method records both real line range AND (0,0) sentinel on first call.
     // Second call hits the (0,0) sentinel → cached=true without caller passing hash.
     // -----------------------------------------------------------------------
-    def 'CT-FS-GM-AUTO-1: get_method auto-hits (0,0) sentinel on second call'() {
+    // FS 0.9.35: the (0,0) sentinel this case once asserted was refused by the live CS endpoint and
+    // never hit in production; the repeat is now keyed by method (see ReadDedupSpec CT-RD-5).
+    def 'CT-FS-GM-AUTO-1: get_method auto-hits on the second call for the same method'() {
         given:
         def f = writeFile('Sample.groovy', '''\
 class Sample {

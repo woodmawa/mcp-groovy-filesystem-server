@@ -1569,3 +1569,12 @@ repository's markdown against the live `server_versions` row.
 
 A missing light is not a green one. It is the same class of defect as a check whose failing branch is
 unreachable, which this platform has now found five times.
+
+## [0.9.35]
+WP-G known-hash reads (paired with CS 1.0.75). `file_read action=range` now asks CS for the intervals already
+served for the file's current hash: fully covered -> `{unchanged, cached, already_served}` with no content;
+partly covered -> only the unserved window is read, with `already_served` and `requested` in the payload.
+`grep` (pattern+context+max) and `get_method` (class#method) record a served key and return `unchanged`
+on a repeat against the same hash. The dead get_method (0,0) sentinel is removed. `force=true` bypasses all
+of it. Cached responses now record telemetry outcome `unchanged` (previously `success`). New `RangeCoverage`
+helper; specs CT-RD-1..8.
