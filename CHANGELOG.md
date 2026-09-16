@@ -1578,3 +1578,6 @@ partly covered -> only the unserved window is read, with `already_served` and `r
 on a repeat against the same hash. The dead get_method (0,0) sentinel is removed. `force=true` bypasses all
 of it. Cached responses now record telemetry outcome `unchanged` (previously `success`). New `RangeCoverage`
 helper; specs CT-RD-1..8.
+## [0.9.36]
+
+**WP-G G5: the local-model digest can be found where Claude will look for it.** The `file_read` tool description, which is always in Claude's context, now describes the AW `file-digest` flow: how to start it, what it returns (`outline_exact`, a lossy `digest_lossy` with line citations, and `verify_with` range calls), and how to page through a long file with `startLine`. The more-than-N-lines refusal now lists it as option 5, with the file's own path filled in. There is no behaviour change to any read action. Paired with AW 1.30.26.

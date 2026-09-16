@@ -99,7 +99,13 @@ CRITICAL: Do NOT pass options.knownHash to action=range.
 Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|get_method|list ONLY -- NOT range), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
 action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
 action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches.
-All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.'''
+All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.
+
+LARGE FILE, NEED ORIENTATION? Do not read it whole. Ask the local model instead (AW, WP-G G5):
+  flow_management action=start mode=flow templateName=file-digest params={path:'<abs path>', question:'<what you need>'}
+then action=artifact runId=<id> stage=emit. You get outline_exact (pattern-matched, trustworthy), a digest_lossy citing
+line ranges, and verify_with range calls. The digest is a map, not the file: confirm with range before relying on it.
+For a long file, pass startLine=<next_startLine> to digest the next window.'''
 
     /**
      * WP-1 (0.9.21): the tool description is not worth a single second of startup.

@@ -131,6 +131,10 @@ class FileContentReader extends AbstractFileService {
                      "  2. get_method(path, method) - read one method body\n" +
                      "  3. range(path, startLine, maxLines) - read specific lines\n" +
                      "  4. grep(path, pattern) - find specific content\n" +
+                     // FS 0.9.36 (WP-G G5): the orientation read, done by the local model instead of Claude.
+                     "  5. to orient without reading it: flow_management action=start templateName=file-digest " +
+                     "params={path: '" + normalized.replace('\\', '/') + "', question: '<what you need>'} -- " +
+                     "an exact outline plus a LOSSY local-model digest citing line ranges; confirm with range\n" +
                      "Pass options.force=true only if you genuinely need the full file." as String))
             }
         }
