@@ -6,7 +6,7 @@
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
 - **Current version:** `0.9.39` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.39 / CS 1.0.84 / AW 1.30.27 - 2026-09-17 (PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+- **Baseline stack:** FS 0.9.41 / CS 1.0.85 / AW 1.30.27 - 2026-09-17 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
