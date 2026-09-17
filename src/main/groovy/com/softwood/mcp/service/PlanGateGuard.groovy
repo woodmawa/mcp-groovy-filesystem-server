@@ -57,9 +57,12 @@ class PlanGateGuard {
     final AtomicInteger unavailable = new AtomicInteger()
 
     /** @return a refusal message, or null to proceed. */
-    String checkWrite(String action, String path) {
+    String checkWrite(String action, String path, String planAck = null) {
         if (!enforced || !path || NON_MUTATING_WRITE_ACTIONS.contains(action)) return null
-        return ask([tool: 'file_write', path: path] as Map<String, Object>)
+        Map<String, Object> args = [tool: 'file_write', path: path] as Map<String, Object>
+        // FS 0.9.44 WP-2a: the judgement DT gives at the retry, passed straight through to CS.
+        if (planAck) args.put('planAck', planAck)
+        return ask(args)
     }
 
     /**
@@ -71,7 +74,7 @@ class PlanGateGuard {
      *
      * @return a refusal message, or null to proceed.
      */
-    String checkExecute(String script, String workingDir, String intent = null) {
+    String checkExecute(String script, String workingDir, String intent = null, String planAck = null) {
         if (!enforced || !script || !BUILD_OR_GIT.matcher(script).find()) return null
         List<GatedCommand> found = findGatedCommands(script, workingDir)
         Set<String> seen = new LinkedHashSet<String>()
@@ -81,6 +84,7 @@ class PlanGateGuard {
             Map<String, Object> args = [tool: 'execute', workingDir: g.dir, kind: g.kind, command: g.command,
                                         script: script.take(200)] as Map<String, Object>
             if (intent) args.put('intent', intent)
+            if (planAck) args.put('planAck', planAck)
             String r = ask(args)
             if (r) refusals << r
         }

@@ -180,6 +180,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
                                   expectedHash: [type: 'string',  description: 'MANDATORY for replace|patch|multi_replace: 12-char SHA-256 prefix from prior read/write. Absent = hard error. Always read the file first and pass the returned file_content_hash.'],
+                planAck     : [type: 'string',  description: 'FS 0.9.44: your verdict on the practices PLAN-GATE just showed, as "<id>:y|n,..." -- y = applies to what I am doing, n = does not (recorded not_applicable, no weight change). Pass it on the retry; a retry carrying an ack is never refused. Without one the retry is refused once more, then allowed and recorded unjudged.'],
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
                                   sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write, chunk_status)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
@@ -250,7 +251,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
             }
 
             // FS 0.9.37 C1: PLAN-GATE on the first write per component this session.
-            String planRefusal = planGateGuard?.checkWrite(action, path)
+            String planRefusal = planGateGuard?.checkWrite(action, path, options?.planAck as String)
             if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
 
             McpResponse response
