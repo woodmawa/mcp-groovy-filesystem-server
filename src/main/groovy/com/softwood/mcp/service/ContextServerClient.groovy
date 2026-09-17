@@ -1219,7 +1219,10 @@ class ContextServerClient {
                             action            : 'add',
                             component         : 'FileContentReader',
                             tool_called       : "file_read:${act}",
-                            signal_type       : 'correction',
+                            // FS 0.9.42 WP-1a: a refusal is the gate working, not a correction.
+                            signal_type       : 'gate',
+                            source            : 'system',
+                            fault             : 'caller',
                             description       : "ONTOLOGY-GATE blocked: '${stem}' is indexed but locate was not called this session. " +
                                                "Use context_read scope=ontology action=locate query=${stem} before file_read.",
                             correction_applied: 'Block returned BLOCKED_ONTOLOGY_GATE. Call locate first or pass allowNoLocate=true to override.',
@@ -1273,7 +1276,9 @@ class ContextServerClient {
                             action            : 'add',
                             component         : 'FileContentReader',
                             tool_called       : "file_read:${act}",
-                            signal_type       : 'correction',
+                            signal_type       : 'gate',
+                            source            : 'system',
+                            fault             : 'caller',
                             description       : "KNOWNHASH MISSING: file_read action=${act} on '${stem}' was issued without options.knownHash " +
                                                'despite the file being in the session StructureCache. ' +
                                                'Pass file_content_hash from the prior read response as options.knownHash to get {unchanged:true} and save tokens.',

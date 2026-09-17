@@ -1623,3 +1623,9 @@ Follow-ups found in the live proof of 0.9.40 (with CS 1.0.85). 0.9.40 was verifi
 - The grep and get_method hints now use the same force wording as the others.
 
 Specs: `ServedReadDedupSpec` SRD-10, `TelemetryOutcomeSpec` CT-K2-3. `MissingKnownHashDetectionSpec` now switches the advisory on in its own setup.
+
+## [0.9.42]
+WP-1a of `BUILD-BRIEF-2026-09-17-close-the-loop-at-the-gate`, paired with CS 1.0.88.
+- **The ontology-gate and missing-knownHash notices are no longer written as corrections.** They are written as `signal_type='gate'`, `source='system'` and `fault='caller'`. A correct refusal is the gate working. Filed as a correction, it fed the learning loop FS's own refusals as if DT had authored them (135 of 380 corrections in the 7 days to 2026-09-17). CS 1.0.88 applies the same normalisation on its side, so an older FS jar is covered too.
+
+Verification is live, not by spec. The writer builds an HTTP body inline, and CS `MachineNoticeSpec` pins the stored row.
