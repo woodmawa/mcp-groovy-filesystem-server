@@ -25,6 +25,26 @@ import java.util.stream.Stream
 @CompileStatic
 class FileSearchService extends AbstractFileService implements ToolHandler {
 
+    /** FS 0.9.43 N11: a content hit names file AND line, which is what locate returns. Record it. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    com.softwood.mcp.service.read.LocateEvidenceRegistry locateEvidenceRegistry
+
+    /** FS 0.9.43 N11: used only to attribute the evidence to this chat's session. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    com.softwood.mcp.service.FilesystemTelemetryService searchTelemetryService
+
+    /** Records the paths a content search pinpointed, so ONTOLOGY-GATE treats them as located. */
+    private void recordLocateEvidence(List<Map<String, Object>> hitRows) {
+        if (locateEvidenceRegistry == null || !hitRows) return
+        try {
+            String sid = searchTelemetryService?.readActiveSessionId()
+            locateEvidenceRegistry.recordHits(sid,
+                hitRows.collect { Map<String, Object> r -> r.get('file') as String })
+        } catch (Exception e) {
+            log.debug('recordLocateEvidence failed (non-fatal): {}', e.message)
+        }
+    }
+
     @Value('${mcp.filesystem.default-file-pattern:.*\\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$}')
     String defaultFilePattern
 
@@ -133,6 +153,7 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
         }
 
         log.debug("file_search content: {} files matched across {} scanned", results.size(), filesScanned[0])
+        recordLocateEvidence(results)
         return textResponse(requestId, [
             action      : 'content',
             path        : path,

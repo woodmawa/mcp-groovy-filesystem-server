@@ -165,11 +165,19 @@ class OntologyGateCoverageSpec extends Specification {
         String guard = dispatch.substring(guardAt, from)
 
         expect: 'every action that hands back file content stays gated'
-        ['grep', 'head', 'tail', 'structure', 'summary', 'read', 'range', 'get_method'].each {
+        // FS 0.9.43 N11: 'grep' LEFT this list deliberately. It is the navigation primitive the
+        // gate should be sending people to -- it returns matching lines with their numbers, which
+        // is what locate returns -- and gating it made finding a symbol cost a locate first. The
+        // rest of the list is unchanged, and LocateEvidenceSpec LE-6 pins grep's exemption from
+        // the other side so this is not merely an assertion deleted.
+        ['head', 'tail', 'structure', 'summary', 'read', 'range', 'get_method'].each {
             String contentAction ->
                 assert !guard.contains("'${contentAction}'"),
                     "'${contentAction}' returns file content and must not be exempt from the gate"
         }
+
+        and: 'grep is exempt, and its hits are recorded as locate evidence instead'
+        guard.contains("'grep'")
 
         and: 'and the exemptions are named rather than left to fall through'
         guard.contains("'exists'")

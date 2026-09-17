@@ -407,6 +407,10 @@ class ReadResponseHelper extends AbstractFileService {
      * @param action      the file_read action name ("read", "range", "get_method")
      * @return {@code null} to proceed, or a blocking {@link McpResponse} to return immediately
      */
+    /** FS 0.9.43 N11: search hits that stand in for a locate. required=false for bare specs. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    LocateEvidenceRegistry locateEvidenceRegistry
+
     McpResponse checkOntologyGate(String normalized, Map<String, Object> options,
                                    Object requestId, String action) {
         Map<String, Object> entry = ontologyGateEntry(normalized, options, action)
@@ -466,6 +470,15 @@ class ReadResponseHelper extends AbstractFileService {
         // not stop work, and it says so in the reason field rather than silently.
         if (gate == null) return null
         if (gate.get('allow') != false) return null
+
+        // FS 0.9.43 N11: a search that already named this file AND its line is locate evidence.
+        // The gate asks "do you know where in this file to read?" -- a file_search or grep hit
+        // answers it. Refusing anyway sent the caller to locate for a fact they had in hand, twice
+        // in one live session on 2026-09-17.
+        if (locateEvidenceRegistry?.isSatisfied(claimedSession, normalized)) {
+            log.debug('ontology-gate satisfied by a prior search hit [{}]', normalized)
+            return null
+        }
 
         String fname = new File(normalized).name
         int dotAt = fname.lastIndexOf((int) 46)

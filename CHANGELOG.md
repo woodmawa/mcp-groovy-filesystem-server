@@ -1629,3 +1629,9 @@ WP-1a of `BUILD-BRIEF-2026-09-17-close-the-loop-at-the-gate`, paired with CS 1.0
 - **The ontology-gate and missing-knownHash notices are no longer written as corrections.** They are written as `signal_type='gate'`, `source='system'` and `fault='caller'`. A correct refusal is the gate working. Filed as a correction, it fed the learning loop FS's own refusals as if DT had authored them (135 of 380 corrections in the 7 days to 2026-09-17). CS 1.0.88 applies the same normalisation on its side, so an older FS jar is covered too.
 
 Verification is live, not by spec. The writer builds an HTTP body inline, and CS `MachineNoticeSpec` pins the stored row.
+
+## [0.9.43]
+WP-5d N11 of `BUILD-BRIEF-2026-09-17-close-the-loop-at-the-gate`, paired with CS 1.0.89.
+- **A search hit is locate evidence.** ONTOLOGY-GATE asks whether you know where in a file to read. A `file_search` content hit answers that — it returns the file AND the line, which is what `locate` returns — and the gate refused anyway. Live on 2026-09-17 one session searched, got file and line, and was still refused the read of that exact file twice, both refusals filed against the caller. New `LocateEvidenceRegistry` (in-memory, per session, 45-minute TTL, bounded at 2000) records the paths a content search pinpointed; `ReadResponseHelper.ontologyGateEntry` treats them as located.
+- **grep is exempt from the gate.** It is the navigation primitive the gate should be sending people to, and gating it made finding a symbol cost a locate first. The other content actions (read, range, get_method, head, tail, structure) are unchanged.
+- **Spec:** `LocateEvidenceSpec` LE-1..LE-6. LE-1 and LE-3 are the controls — an unsearched indexed file still blocks, and evidence for one path does not unlock another. LE-6 asserts the exempt set from source and fails if its anchor is not found.

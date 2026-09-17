@@ -260,9 +260,13 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
             // because dispatch has no single `path` to ask about, which is a different thing from
             // being exempt; until 0.9.30 multi_grep really was exempt, and that was the last hole.
             if (responseHelper != null && path &&
+                // FS 0.9.43 N11: 'grep' joins the exempt set. It is the navigation primitive the
+                // gate should be sending people TO -- it returns matching lines with their numbers,
+                // which is what locate returns -- and gating it made the cheapest way to find a
+                // symbol cost a locate first. Its hits are recorded as locate evidence below.
                 !(action in ['exists', 'stat', 'info', 'checksum', 'normalize', 'project_root',
                              'allowed_dirs', 'list', 'help', 'chunk_read', 'finalise_read',
-                             'multi', 'multi_grep'])) {
+                             'grep', 'multi', 'multi_grep'])) {
                 String gateNorm = pathService.normalizePath(path)
                 McpResponse gateBlock =
                     responseHelper.checkOntologyGate(gateNorm, options, requestId, action)
