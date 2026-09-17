@@ -37,6 +37,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     @Autowired
     ExecuteJobRegistry jobRegistry
 
+    @Autowired(required = false)
+    PlanGateGuard planGateGuard
+
     @Value('${mcp.script.max-execution-time-seconds:60}')
     int maxExecutionTimeSeconds
 
@@ -130,6 +133,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
             // Security validation -- pass executor type for per-executor pattern rules
             securityService.validateScript(script, workingDir, action)
+
+            // FS 0.9.37 C1: PLAN-GATE on the first build/git call per repo this session.
+            String planRefusal = planGateGuard?.checkExecute(script, workingDir)
+            if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
 
             // Extract env overrides from options (was previously silently ignored)
             Map<String, String> envOverrides = options.env ? (options.env as Map<String, String>) : null

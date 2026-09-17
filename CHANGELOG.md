@@ -1581,3 +1581,6 @@ helper; specs CT-RD-1..8.
 ## [0.9.36]
 
 **WP-G G5: the local-model digest can be found where Claude will look for it.** The `file_read` tool description, which is always in Claude's context, now describes the AW `file-digest` flow: how to start it, what it returns (`outline_exact`, a lossy `digest_lossy` with line citations, and `verify_with` range calls), and how to page through a long file with `startLine`. The more-than-N-lines refusal now lists it as option 5, with the file's own path filled in. There is no behaviour change to any read action. Paired with AW 1.30.26.
+
+## [0.9.37]
+C1 PLAN-GATE (with CS 1.0.82). New `PlanGateGuard`: before any writing `file_write` action, and before `execute` scripts that run gradlew or git, FS asks CS (`context_read scope=knowledge action=plan_gate_check`, via `ContextServerClient.planGateCheck`) with its claimed session. A refusal becomes a tool error that lists the practices and says a retry passes. CS decides and keeps the record, so a (session, component) pair is refused at most once. Every uncertain path passes (no CS, no claimed session, timeout, error) and is counted in `unavailable`. Switch: `mcp.filesystem.plan-gate.enforced` (default true). Spec: `PlanGateGuardSpec` PGG-1..8.

@@ -45,6 +45,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     @Autowired FileTransformService fileTransformService
     @Autowired StructureCache     structureCache
     @Autowired(required = false) ContextServerClient contextServerClient
+    @Autowired(required = false) PlanGateGuard planGateGuard
     @Autowired com.softwood.mcp.service.office.OfficeDocumentHandler officeHandler
 
     private static final Set<String> MUTATING_ACTIONS =
@@ -247,6 +248,10 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                 return McpResponse.toolError(requestId, "file_write '${action}' requires a 'path' parameter (received null). " +
                     "Ensure 'path' is at the top level of the arguments object, not nested inside options.")
             }
+
+            // FS 0.9.37 C1: PLAN-GATE on the first write per component this session.
+            String planRefusal = planGateGuard?.checkWrite(action, path)
+            if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
 
             McpResponse response
             switch (action) {

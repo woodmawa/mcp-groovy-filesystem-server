@@ -1049,6 +1049,47 @@ class ContextServerClient {
     }
 
     /**
+     * FS 0.9.37 C1 -- PLAN-GATE, asked of CS (which owns the corpus). Same transport and the same
+     * explicit-session rule as {@link #ontologyGateCheck}. A slightly longer read timeout: the
+     * selector is a corpus query, not an index lookup.
+     *
+     * @return CS's answer, or {@code null} on any error/timeout/CS-down (the caller passes through)
+     */
+    Map<String, Object> planGateCheck(Map<String, Object> gateArgs, String sessionId) {
+        if (!isCsReachable() || !sessionId) return null
+        try {
+            Map<String, Object> args = [scope: 'knowledge', action: 'plan_gate_check', sessionId: sessionId] as Map<String, Object>
+            args.putAll(gateArgs ?: [:])
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_read', arguments: args]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            try {
+                conn.requestMethod  = 'POST'
+                conn.doOutput       = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 1500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    String resp = conn.inputStream.getText('UTF-8')
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) return (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('planGateCheck failed (fail-open): {}', e.message)
+        }
+        return null
+    }
+    /**
      * FS 0.9.29 -- record one tool call by ASKING CS, instead of writing CS's table.
      *
      * <p><b>Why this replaced a working JDBC INSERT.</b> {@code tool_call_telemetry} lives in
