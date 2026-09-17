@@ -5,8 +5,8 @@
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
-- **Current version:** `0.9.38` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.36 / CS 1.0.77 / AW 1.30.26 - 2026-09-16 (WP-G: file-digest advertised in file_read and the >200-line refusal; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+- **Current version:** `0.9.39` (check `build.gradle` to confirm)
+- **Baseline stack:** FS 0.9.39 / CS 1.0.84 / AW 1.30.27 - 2026-09-17 (PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
@@ -25,8 +25,37 @@
 
 ---
 
-## Package layout
+## PLAN-GATE (FS 0.9.37-0.9.39, with CS 1.0.82-1.0.84)
 
+`PlanGateGuard` asks CS (`plan_gate_check`) once per (claimed session, component) before:
+- any **writing** `file_write` action, and
+- any `execute` script whose **statements** run `git` or `gradlew`.
+
+A refusal is a tool error listing the practices to follow. **Repeat the same call unchanged and it
+passes** - CS keeps the record. Every uncertain path (no CS, no claim, timeout, error) passes.
+
+- **Commands, not text (0.9.38).** Only `git`/`gradlew` in command position count. Strings, `#`
+  comments, here-strings and heredocs are ignored; `cmd /c`, `powershell -Command` and `bash -c`
+  bodies are rescanned.
+- **Not gated:** read-only git (status, log, diff, show, rev-parse...), listing forms (0.9.39: `tag`
+  bare/`-l`, `branch` bare/`--list`, `remote` bare/`-v`/show/get-url, `stash list|show`,
+  `config --get|--list`, `worktree list`), and task-less gradle runs (`--stop`, tasks, help).
+- **The real directory.** The repo is where the command actually runs: `cd`, `Set-Location`,
+  `pushd`, `git -C`, `gradlew -p`, a pathed `gradlew`. An argument holding a shell variable (`$r`,
+  `%REPO%`) keeps the current directory (0.9.39).
+- **One retry clears a script.** All distinct repos in a script are asked about in one pass.
+- **`options.intent`** on `execute` (one sentence on what the build/git call is for) feeds CS's
+  practice selection. File components are repo-qualified (`repo/Stem`) on the CS side.
+- Switch: `mcp.filesystem.plan-gate.enforced` (default true). Specs: `PlanGateGuardSpec` PGG-1..14.
+
+**Running version (0.9.38).** At `claim_session` this process writes its manifest version to
+`session_claims.server_version` and to `server_versions.version`/`started_at` (an older-started JVM
+cannot regress it). `installMcpbLocal` writes only `installed_version`/`installed_at`. So
+`version` = what is running, `installed_version` = what is on disk. See FS-RESTART-SEQUENCE.md 9c.
+
+---
+
+## Package layout
 ```
 src/main/groovy/com/softwood/mcp/
   controller/     McpController (dispatch + FIX-C backstop)
@@ -559,7 +588,7 @@ write does not look like that.
 
 ## FS 0.9.26 (2026-09-10) — ONTOLOGY-GATE actually blocks now
 
-**Baseline:** FS 0.9.34 · CS 1.0.72 · AW 1.30.25 (2026-09-13)
+**Baseline when written:** FS 0.9.34 · CS 1.0.72 · AW 1.30.25 (2026-09-13; the current baseline is under Project identity)
 
 **Call `context_read scope=ontology action=locate` before any `file_read` on an indexed file.** This
 stopped being advice in 0.9.26.
@@ -633,7 +662,7 @@ across directories still need the `node_id`.
 
 ## FS 0.9.27 (2026-09-11) — a lost claim is now loud
 
-**Baseline:** FS 0.9.34 · CS 1.0.72 · AW 1.30.25 (2026-09-13)
+**Baseline when written:** FS 0.9.34 · CS 1.0.72 · AW 1.30.25 (2026-09-13; the current baseline is under Project identity)
 
 > Third cross-server stamp in this file, found on 2026-09-13 reading two lines above it and stale by
 > seven FS releases, thirteen CS and eight AW. `docs-markdown-fresh-fs` was green throughout, because

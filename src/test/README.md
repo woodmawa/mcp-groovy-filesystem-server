@@ -2,7 +2,7 @@
 
 ## Overview
 
-Comprehensive test suite for McpGroovyFileSystemServer using Spock Framework with **64 tests** covering all functionality including new security features.
+Comprehensive test suite for McpGroovyFileSystemServer using Spock Framework with **408 tests** (FS 0.9.39, 2026-09-17). The per-spec breakdown below dates from v0.0.1 and lists only the original specs.
 
 ## Test Structure
 

@@ -114,7 +114,7 @@ file_write action=server_transform ... content="..."  ← WRONG PARAM
 ### `execute` — builds and shell commands
 
 ```
-# CORRECT — always action=cmd for gradle and git on Windows
+# execute action=cmd runs gradlew / git on Windows (see PLAN-GATE note below)
 groovy-filesystem:execute action=cmd
   script="gradlew.bat bootJar"
   options={workingDir:"C:/Users/willw/IdeaProjects/<server>", timeout:120,
@@ -129,12 +129,14 @@ groovy-filesystem:execute action=cmd
 # Result: only matching lines returned in stdout. Use instead of piping to findstr.
 
 # Git operations via execute action=cmd
+# PLAN-GATE (FS 0.9.37+): the first git/gradlew execute per (session, repo) is refused once with practices;
+# repeat the call unchanged and it passes. Pass options.intent="<one sentence>" to steer the practices.
 groovy-filesystem:execute action=cmd
   script="git add -A && git commit -m \"message\" && git tag v1.2.3 && git push --tags"
   options={workingDir:"C:/path/to/repo"}
 
-# WRONG — groovy-filesystem:tools no longer exists as a separate MCP tool
-# groovy-filesystem:tools action=git subcommand=commit  ← DOES NOT EXIST
+# PREFERRED for builds: tools action=gradle (see CLAUDE.md "Gradle builds"); execute+gradlew is the older path
+# groovy-filesystem:tools action=gradle subcommand=compileGroovy options={workingDir:"<dir>"}
 ```
 
 ---

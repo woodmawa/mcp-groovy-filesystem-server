@@ -99,6 +99,7 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 
 ### Rules
 - Always pass `expectedHash` on every mutating action
+- **PLAN-GATE (FS 0.9.37):** the first writing action per (session, file component) is refused once with a list of practices; repeat the same call unchanged and it passes
 - `path` must be at TOP LEVEL of arguments, not inside options
 - Never use sequential replace calls without re-reading between them → use multi_replace
 - After any patch, re-read before next patch (line numbers shift)
@@ -159,7 +160,23 @@ Key options:
 - `options.timeout` — seconds (default 60)
 - `options.maxStdout` — chars to return (default 50000 ~12K tokens). Set lower to save context window.
 - `options.maxStderr` — chars to return (default 5000)
+- `options.intent` — one sentence on what a build/git call is for (FS 0.9.38). PLAN-GATE uses it to pick the practices it shows.
 - `options.grepPattern` — Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including `|` alternation (unlike Windows `findstr`). Example: `"MessagesRequestBuilder\\.class$|EventsRequestBuilder\\.class$"`. Use this instead of piping to findstr for any output filtering.
+
+### PLAN-GATE (FS 0.9.37-0.9.39)
+
+The first `execute` per (session, repo) whose statements run `git` or `gradlew` is refused once with
+a list of practices; **repeat the same call unchanged and it passes**. Pass `options.intent` so the
+practices fit the task.
+- Only `git`/`gradlew` in command position count - text in strings, comments, here-strings and
+  heredocs does not. `cmd /c`, `powershell -Command` and `bash -c` bodies are rescanned.
+- Not gated: read-only git (status/log/diff/show/rev-parse...), listing forms (`tag -l`,
+  `branch --list`, `remote -v`, `stash list`, `config --get`, `worktree list`), task-less gradle
+  (`--stop`, tasks, help).
+- The repo is where the command really runs (`cd`, `Set-Location`, `pushd`, `git -C`, `gradlew -p`,
+  a pathed `gradlew`); a shell-variable argument keeps the current directory. All repos in one
+  script are asked about in one pass.
+- Switch: `mcp.filesystem.plan-gate.enforced`.
 
 ### Multi-line scripts (FS 0.9.11)
 

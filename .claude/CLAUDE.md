@@ -105,7 +105,7 @@ Full workflow in `skills/SKILL.md`. Minimum rules:
 
 - Version string is in `build.gradle` → `version = 'X.Y.Z'`
 - Version comment format: `// vX.Y.Z: <one-line description>`
-- After bumping version: update `README.md` "What's New" section AND the version table
+- After bumping version: add a `## [X.Y.Z]` entry at the end of `CHANGELOG.md` and update "Current version" / "Baseline stack" in the root `CLAUDE.md`
 - Jar naming: `mcp-groovy-filesystem-server-X.Y.Z.jar`
 - Deploy: copy to `C:/Users/willw/claude-sync/jars/`
 - Five-config rule: on version bumps, ALL five canonical config files must reference the new jar:

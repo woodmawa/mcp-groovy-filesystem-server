@@ -1,9 +1,9 @@
 # FS-RESTART-SEQUENCE.md
 ## Deploy Restart Sequence and Architecture Reference — Living Reference
 
-**Version:** 3.0  
-**Stack:** FS 0.9.23 / CS 1.0.50 / AW 1.30.14 — 2026-09-09
-**Last updated:** 2026-09-09
+**Version:** 3.1  
+**Stack:** FS 0.9.39 / CS 1.0.84 / AW 1.30.27 - 2026-09-17
+**Last updated:** 2026-09-17
 **Owner:** mcp-groovy-filesystem-server
 **Status:** Active — update whenever deploy behaviour or architecture changes
 
@@ -459,10 +459,34 @@ baked into the source. These are kept in sync with the help_sections rows.
 
 ---
 
+## 9c. Verifying the Restart Took (2026-09-17)
+
+**Closing the Claude Desktop window does NOT restart the MCP servers.** The JVMs keep running the old
+jars. On 2026-09-17 only a **tray Quit** (system tray icon -> Quit) followed by a relaunch replaced
+them. A new jar on disk proves nothing about what is running.
+
+Verify one of two ways:
+
+```
+# 1. Process command lines - the jar name carries the version
+Get-CimInstance Win32_Process -Filter "Name='java.exe'" | Select-Object ProcessId, CommandLine
+
+# 2. The registry (FS 0.9.38+ stamps it at claim_session)
+SELECT server_name, version, installed_version, started_at FROM server_versions;
+```
+
+`version`/`started_at` are written by the running process when it claims a session (an older-started
+JVM cannot regress them); `installed_version` is written by `installMcpbLocal`. If
+`installed_version` is ahead of `version`, the install has not been picked up: tray-Quit and
+relaunch, then claim a session and check again.
+
+---
+
 ## 10. Change Log
 
 | Version | Date | Change |
 |---------|------|--------|
+| 3.1 | 2026-09-17 | Stack stamp to FS 0.9.39 / CS 1.0.84 / AW 1.30.27. New 9c: closing the Desktop window does not restart MCP servers (tray Quit does); verify via java.exe command lines or `server_versions`. |
 | 2.9 | 2026-07-30 | 0.9.10 companion-jar resolution now extension-master: `ServerLifecycleService.resolveCompanionJar` launches the HTTP companion from the MCPB extension `manifest.json` `entry_point` (`%APPDATA%/Claude/Claude Extensions/<mcpbExtDir>/server/<jar>`), falling back to `claude-sync/jars/<pinned>` only for non-mcpb servers (ms-graph) or a missing manifest. Start result adds `jarSource`. Retires the jarsDir-drift outage class (2026-07-30 CS :8082 handshake failure: companion jar missing from jarsDir while present in the extension). New helpers `resolveCompanionJar`/`jarResult`/`extensionsBaseDir`; manifest read logs exception class (practice #626). Section 2 topology note added. compileGroovy clean; behavioural replay verified. |
 | 2.8 | 2026-05-29 | 0.9.9 missing-knownHash detection: `StructureCache.peekHash(path)` cache-only lookup. `ReadResponseHelper.maybeWarnMissingKnownHash` injects `_missing_knownhash` advisory hint when a file was known in cache but knownHash was omitted. `FilesystemTelemetryService.incrementMissingKhCount()` session counter. `ContextServerClient.writeMissingKnownHashObservationAsync` correction pipeline feedback. `MissingKnownHashDetectionSpec` MKH-1..9 green. |
 | 2.7 | 2026-05-22 | 0.9.6 fix #142: `StructuralGuard.checkAll` adds `allowStructuralEdit` bypass for brace/paren delta (threaded through `replace`/`patch`/`multi_replace`). `FileContentWriter.doAppend` emits `code_append_warning` on code files. `StructuralGuardBypassSpec` CT-SG-BYPASS-1..9 green. Tool hints updated in CS `help_sections`. |
