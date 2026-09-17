@@ -129,4 +129,22 @@ class TelemetryOutcomeSpec extends Specification {
         expect:
         McpController.extractOutcome(resp) == 'truncated'
     }
+
+    // FS 0.9.40 K2 (decision 206): the two new served-ledger outcomes
+    def 'CT-K2-1: extractOutcome returns forced for a re-send of held content'() {
+        expect:
+        McpController.extractOutcome(buildTextResponse([content: 'x', forced_repeat: true])) == 'forced'
+    }
+
+    def 'CT-K2-2: extractOutcome returns partial when part of the request was already held'() {
+        expect:
+        McpController.extractOutcome(buildTextResponse([content: 'x', already_served: ['1-10']])) == 'partial'
+        McpController.extractOutcome(buildTextResponse([results: [], unchanged_paths: ['a']])) == 'partial'
+        McpController.extractOutcome(buildTextResponse([unchanged: true, already_served: ['1-10']])) == 'unchanged'
+    }
+
+    def 'CT-K2-3: an ontology-gate refusal is refused, not a successful read'() {
+        expect:
+        McpController.extractOutcome(buildTextResponse([error: 'BLOCKED_ONTOLOGY_GATE', locate_query: 'x'])) == 'refused'
+    }
 }

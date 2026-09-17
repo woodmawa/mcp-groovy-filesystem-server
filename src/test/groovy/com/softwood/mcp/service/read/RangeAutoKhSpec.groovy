@@ -247,8 +247,10 @@ class Sample {
     def 'CT-FS-HINT-RANGE-1: _knownhash_hint emitted in range response'() {
         given:
         def f = writeFile('hint1.txt', (1..20).collect { "line$it" }.join('\n'))
-        wire([:], null)  // no cached entry, full read fires
-        helper.autoKhHintsSuppressed = false
+        // FS 0.9.40 K2: the hint only flows when the served ledger is unavailable
+        helper.contextServerClient = null
+        fileReadService.setContextServerClient(null)
+        helper.autoKhHintsSuppressed = true
 
         when:
         def r = callRange(f, 1, 5)

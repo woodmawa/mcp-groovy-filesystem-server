@@ -1602,3 +1602,24 @@ PLAN-GATE follow-ups found live on 0.9.38 (with CS 1.0.84).
 - **Listing forms are not gated:** `tag` (bare or `-l`), `branch` (bare or listing flags, and not -d/-m/-c), `remote` (bare, show, get-url), `stash list|show`, `config --get|--list`, `worktree list`. Their writing forms are still gated.
 
 Specs: `PlanGateGuardSpec` PGG-13 and PGG-14 (both fail on 0.9.38).
+
+## [0.9.40]
+Every read action asks the served ledger (decision 206, with CS 1.0.85). Repeat reads are de-duplicated without the caller passing anything.
+- **head and tail are ranges.** They use the same coverage check, the same partial answers and the same recording as `range`. The fallback to the old readers is kept for `lines > 500`, for an explicit `knownHash`, and for when CS is unavailable.
+- **Whole-file `read`** answers `unchanged` when the chat holds lines 1..N at this hash, and records 1..N after an untruncated read. The auto-lookup path now honours `force=true`.
+- **`structure`** has a served key (`structure:<class>|compact=`). **`multi`** answers held files as `unchanged` and reads only the rest. **`multi_grep`** skips paths the same grep already ran on and lists them in `unchanged_paths`.
+- **Range truncation cuts at a line boundary** and reports the lines actually sent: `endLine` and `lines` are correct, and the note names the next `startLine`. Before this, `endLine` named the last line asked for, so the ledger recorded lines nobody saw and the next range said they were already served. The narrowed (partial) range records its real end too.
+- **`force=true` is the documented way back** after compaction, or when a subagent made the read (a subagent shares the chat's connection). Every `unchanged` hint says so.
+- **Telemetry outcomes:** `forced` (a re-send of held content, marked `forced_repeat:true`) and `partial` (`already_served` / `unchanged_paths`).
+- **`_knownhash_hint` is no longer sent while the ledger is live.** It was about 350 characters on every partial read. The tool description now leads with automatic de-duplication. The caveat against `knownHash` on `range` stays, because it is still true.
+- **The `tools` tool is PLAN-GATEd (chain f33d662f).** git and gradle calls go through `PlanGateGuard.checkExecute`, like `execute`. A new `intent` option selects the practices shown.
+
+Specs: `ServedReadDedupSpec` SRD-1..9 and `TelemetryOutcomeSpec` CT-K2-1..2 (all fail on 0.9.39); `ToolsServicePlanGateSpec` TPG-1..5. `RangeAutoKhSpec`, `FileReadContractSpec` CT-KH-3, `KnownHashObligationSpec` KH-2 and `FileHashAutoLookupSpec` CT-KH-AUTO-7 were updated for the removed hint.
+
+## [0.9.41]
+Follow-ups found in the live proof of 0.9.40 (with CS 1.0.85). 0.9.40 was verified live in session 2026-09-17-13-56: every outcome (unchanged, partial, forced, truncated) was recorded as designed, and 9 of 10 repeats were served from the ledger.
+- The `_missing_knownhash` advisory is off by default (`mcp.filesystem.missing-kh-warn.enabled=false`). It still nagged on whole-file reads and filed a false correction observation.
+- An ontology-gate refusal is recorded with outcome `refused`, not `success`.
+- The grep and get_method hints now use the same force wording as the others.
+
+Specs: `ServedReadDedupSpec` SRD-10, `TelemetryOutcomeSpec` CT-K2-3. `MissingKnownHashDetectionSpec` now switches the advisory on in its own setup.

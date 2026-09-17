@@ -36,6 +36,10 @@ class ToolsService extends AbstractFileService implements ToolHandler {
     @Value('${mcp.script.max-execution-time-seconds:60}')
     int maxExecutionTimeSeconds
 
+    /** FS 0.9.40 (chain f33d662f): tools git/gradle are gated like execute. */
+    @Autowired(required = false)
+    PlanGateGuard planGateGuard
+
     ToolsService(PathService pathService) {
         super(pathService)
     }
@@ -70,6 +74,7 @@ Developer toolchain. Actions:
                                      workingDir: [type: 'string'],
                                      timeout   : [type: 'integer'],
                                      message   : [type: 'string'],
+                                     intent    : [type: 'string', description: 'FS 0.9.40: one sentence on what this git/gradle call is for; PLAN-GATE selects on it'],
                                      period    : [type: 'string', description: 'Stats period: today|week|month|all (default: today)']
                                  ]]
                 ],
@@ -97,6 +102,9 @@ Developer toolchain. Actions:
 
             int timeout = (options.timeout as Integer) ?: maxExecutionTimeSeconds
 
+            String planRefusal = planGateRefusal(action, subcommand, args, workingDir, options.intent as String)
+            if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
+
             switch (action) {
                 case 'git'         : return doGit(subcommand, args, workingDir, timeout, options, requestId)
                 case 'gradle'      : return doGradle(subcommand, args, workingDir, timeout, requestId)
@@ -118,6 +126,22 @@ Developer toolchain. Actions:
     // -----------------------------------------------------------------------
     // Actions
     // -----------------------------------------------------------------------
+
+    /**
+     * FS 0.9.40 (chain f33d662f). PlanGateGuard was reached only from execute and file_write, so the
+     * build path SKILL.md recommends -- tools action=gradle -- was never gated. The call is rendered
+     * as the command line it runs and handed to the SAME guard, so read-only git, listing forms and
+     * task-less gradle are exempt by the execute rules rather than by a second copy of them.
+     *
+     * @return a refusal message, or null to proceed
+     */
+    String planGateRefusal(String action, String subcommand, List<String> args, String workingDir, String intent) {
+        if (planGateGuard == null || !(action in ['git', 'gradle'])) return null
+        String head = action == 'git' ? 'git' : 'gradlew'
+        String line = ([head] + (subcommand ?: '').trim().split(/\s+/).toList().findAll { it } + (args ?: []))
+            .collect { String t -> t.contains(' ') ? '"' + t + '"' : t }.join(' ')
+        return planGateGuard.checkExecute(line, workingDir, intent)
+    }
 
     private McpResponse doGit(String subcommand, List<String> args, String workingDir,
                                int timeout, Map<String, Object> options, Object requestId) {

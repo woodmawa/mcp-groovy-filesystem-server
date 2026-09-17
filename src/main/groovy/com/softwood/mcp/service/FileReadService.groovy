@@ -86,17 +86,17 @@ class FileReadService extends AbstractFileService implements ToolHandler {
 Read files/directories.
 Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
 
-knownHash saves re-sending content you already hold. Pass the file_content_hash from a previous
-read as options.knownHash on action=read (whole-file) or action=get_method; an unchanged file then
-returns {unchanged:true} at zero token cost. Get the hash from any read response, from the
-_knownhash_hint when you omit it, or from bootstrap globals working_file_hashes[path].hash.
+REPEAT READS ARE DE-DUPLICATED FOR YOU. Every content action (read, head, tail, range, grep, multi,
+multi_grep, structure, get_method) checks what this chat was already sent: same file content, within
+the last 45 minutes. Held content answers {unchanged:true}; a partly-held range sends only the new
+lines and lists the rest in already_served. An edited file is always sent again. If you no longer
+hold the content (context compacted, or a subagent made the read), repeat with options.force=true.
 
-CRITICAL: Do NOT pass options.knownHash to action=range.
-  action=range with a matching knownHash returns {unchanged:true} instead of content.
-  Range reads are deduplicated automatically by the session range cache -- no knownHash needed.
-  knownHash is for action=read (whole-file) and action=get_method only.
+knownHash saves re-sending content you already hold, without the ledger: pass a file_content_hash
+as options.knownHash on action=read or action=get_method. Optional -- nothing needs tracking.
+Do NOT pass options.knownHash to action=range -- it returns {unchanged:true} instead of content.
 
-Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|get_method|list ONLY -- NOT range), options.force (override >200-line refusal), options.compact (minimal response), options.className (structure filter).
+Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|get_method|list ONLY -- NOT range), options.force (re-send content this chat already holds; override >200-line refusal), options.compact (minimal response), options.className (structure filter).
 action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
 action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches.
 All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.
@@ -214,8 +214,8 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   sessionId   : [type: 'string',  description: 'Session ID (required for chunk_read, finalise_read)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_read)'],
                                   compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (methods only, no endLine)'],
-                                  knownHash   : [type: 'string',  description: 'Pass file_content_hash from prior read. For action=read and action=get_method: file unchanged = {unchanged:true}, ZERO tokens. Do NOT pass to action=range -- range returns unchanged:true instead of content; range cache is automatic. Source: (1) bootstrap working_file_hashes[path].hash, (2) file_content_hash of any prior read response.'],
-                                  force       : [type: 'boolean', description: 'Override >200-line refusal on action=read.'],
+                                  knownHash   : [type: 'string',  description: 'Optional. file_content_hash from a prior read, for action=read or get_method: unchanged file = {unchanged:true}. Repeats are de-duplicated without it. Do NOT pass to action=range.'],
+                                  force       : [type: 'boolean', description: 'Re-send content this chat was already sent (after compaction, or when a subagent made the read). Also overrides the >200-line refusal on action=read.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
                                   toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.']
@@ -270,92 +270,11 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
             }
 
             switch (action) {
-                case 'read' : {
-                    McpResponse r = contentReader.doRead(path, options, requestId)
-                    if (r.error == null) fireRegistryUpsert(path, r)
-                    return r
-                }
-                case 'head' : {
-                    McpResponse r = contentReader.doHead(path, options, requestId)
-                    if (r.error == null) fireRegistryUpsert(path, r)
-                    return r
-                }
-                case 'tail' : {
-                    McpResponse r = contentReader.doTail(path, options, requestId)
-                    if (r.error == null) fireRegistryUpsert(path, r)
-                    return r
-                }
-                case 'range': {
-                    // Fix C (v0.8.50): session range read cache.
-                    // knownFileHash lets us validate the cache entry against current file state.
-                    // Graceful degradation: if CS is down or hash absent, fall through to normal read.
-                    // FIX-KH-RANGE-AUTO (FS 0.8.81): if caller did not supply a hash, derive it from
-                    // StructureCache (in-memory, no I/O). This removes the requirement for the caller
-                    // to pass knownHash in order to benefit from the range cache on repeat reads.
-                    // Safety: checkRangeCache only hits when (session, path, startLine, endLine, hash)
-                    // all match -- the hash guards against stale entries if the file changed.
-                    if (contextServerClient != null) {
-                        String fileHash = options.get('knownFileHash') as String
-                        if (!fileHash) fileHash = options.get('knownHash') as String
-                        if (!fileHash) {
-                            // Auto-derive from StructureCache: pure in-memory, populated on every FS op.
-                            // Returns null if file has never been seen this session -> safe cache miss.
-                            fileHash = structureCache?.getHash(pathService.normalizePath(path))
-                        }
-                        int csl = (options.get('startLine') as Integer) ?: 1
-                        int cml = (options.get('maxLines') as Integer) ?: 100
-                        boolean force = Boolean.parseBoolean(String.valueOf(options.get('force') ?: 'false'))
-                        if (fileHash && !force) {
-                            // FS 0.9.35 G4b: de-duplicate by LINES, not by exact window. Exact-pair
-                            // matching served 4 of 867 range reads from cache; paging asks for
-                            // overlapping windows. Fully covered -> unchanged; partly -> only the
-                            // unserved span, with what was already served named.
-                            List<List<Integer>> served = contextServerClient.rangeCoverage(path, fileHash)
-                            if (!served.isEmpty()) {
-                                List<Integer> todo = com.softwood.mcp.service.read.RangeCoverage.uncovered(csl, csl + cml - 1, served)
-                                if (todo == null) {
-                                    return cachedResponse(requestId, fileHash,
-                                        'Lines ' + csl + '-' + (csl + cml - 1) + ' already in context from this session. options.force=true to re-read.',
-                                        com.softwood.mcp.service.read.RangeCoverage.describe(served))
-                                }
-                                if (todo[0] != csl || todo[1] != csl + cml - 1) {
-                                    List<String> alreadyServed = com.softwood.mcp.service.read.RangeCoverage.describe(served)
-                                    Map<String, Object> narrowed = new LinkedHashMap<String, Object>(options)
-                                    narrowed.put('startLine', todo[0])
-                                    narrowed.put('maxLines', todo[1] - todo[0] + 1)
-                                    McpResponse nr = contentReader.doRange(path, narrowed, requestId)
-                                    if (nr.error == null) {
-                                        fireRegistryUpsert(path, nr)
-                                        String nh = fileHash
-                                        contextServerClient.recordRangeCacheAsync(path, todo[0], todo[1], nh)
-                                        Map<String, Object> np = parseResponsePayload(nr)
-                                        if (np != null) {
-                                            np.put('already_served', alreadyServed)
-                                            np.put('requested', csl + '-' + (csl + cml - 1))
-                                            return textResponse(requestId, np)
-                                        }
-                                    }
-                                    return nr
-                                }
-                            }
-                        }
-                    }
-                    McpResponse r = contentReader.doRange(path, options, requestId)
-                    if (r.error == null) {
-                        fireRegistryUpsert(path, r)
-                        if (contextServerClient != null) {
-                            // Record under the SAME hash source the check reads, or they never meet.
-                            String h = structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(r)
-                            Map<String, Object> rp = parseResponsePayload(r)
-                            int rsl = (rp?.get('startLine') as Integer) ?: ((options.get('startLine') as Integer) ?: 1)
-                            int rel = (rp?.get('endLine') as Integer) ?: (rsl + ((options.get('maxLines') as Integer) ?: 100) - 1)
-                            // FS 0.9.35: record the lines ACTUALLY returned (a window past EOF is
-                            // shorter than asked), so coverage never claims lines nobody saw.
-                            if (h && rel >= rsl) contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
-                        }
-                    }
-                    return r
-                }
+                // FS 0.9.40 K2 (decision 206): every content action asks the served ledger.
+                case 'read' : return servedRead(path, options, requestId)
+                case 'head' : return servedHeadTail(path, options, requestId, false)
+                case 'tail' : return servedHeadTail(path, options, requestId, true)
+                case 'range': return dedupedRange(path, options, requestId)
                 case 'grep'         : {
                     // FS 0.9.35 G4c: the same grep on unchanged content is not re-sent.
                     String gh = null
@@ -366,10 +285,12 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         gh = structureCache?.getHash(pathService.normalizePath(path))
                         if (gh && !gforce && contextServerClient.servedKeySeen(path, gkey, gh)) {
                             return cachedResponse(requestId, gh,
-                                'This grep on this file content was already returned this session. options.force=true to repeat.', null)
+                                'This grep on this file content was already returned to this chat. ' + SERVED_FORCE_HINT, null)
                         }
                     }
+                    boolean gForcedRepeat = gh && gforce && contextServerClient.servedKeySeen(path, gkey, gh)
                     McpResponse gr = contentReader.doGrep(path, options, requestId)
+                    if (gForcedRepeat && gr.error == null) gr = markForced(gr, requestId)
                     if (gr.error == null && contextServerClient != null && options.get('pattern')) {
                         String h2 = gh ?: structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(gr)
                         if (h2) contextServerClient.recordServedKeyAsync(path, gkey, h2)
@@ -395,7 +316,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         options.paths = mgAllowed
                         options._blocked = mgBlocked
                     }
-                    return contentReader.doMultiGrep(options, requestId)
+                    return servedMultiGrep(options, requestId)
                 }
                 case 'multi'        : {
                     // Fix D (v0.8.54) guarded this case with a SECOND, different gate: it asked
@@ -423,7 +344,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         options.paths = allowed
                         options._blocked = blocked
                     }
-                    return contentReader.doMulti(options, requestId)
+                    return servedMulti(options, requestId)
                 }
                 case 'info'         : return metaReader.doInfo(path, requestId)
                 case 'summary'      : return metaReader.doSummary(path, requestId)
@@ -458,7 +379,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                     }
                     return listResp
                 }
-                case 'structure'    : return structureReader.doStructure(path, options, requestId)
+                case 'structure'    : return servedStructure(path, options, requestId)
                 case 'get_method'   : {
                     // FS 0.9.30 -- W2: the second gate call for this read has gone.
                     // Dispatch above already asked, for every action not in the exempt list, and
@@ -479,7 +400,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         if (!fileHash) fileHash = structureCache?.getHash(pathService.normalizePath(path))
                         if (fileHash && contextServerClient.servedKeySeen(path, gmKey, fileHash)) {
                             return cachedResponse(requestId, fileHash,
-                                'Method ' + options.get('method') + ' already in context from this session. options.force=true to re-read.', null)
+                                'Method ' + options.get('method') + ' was already sent to this chat. ' + SERVED_FORCE_HINT, null)
                         }
                     }
                     // FS 0.9.30 -- W2: the missing-knownHash advisory moves to the layer that RUNS.
@@ -595,6 +516,281 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
             }
         } catch (Exception ignored) {}
+    }
+
+    // -----------------------------------------------------------------------
+    // FS 0.9.40 K2 (decision 206): the served ledger, asked by every content action.
+    // The ledger is keyed on the CHAT (CS), windowed (cs.served-window-minutes), and
+    // hash-guarded -- an edited file is a different hash and is always sent.
+    // -----------------------------------------------------------------------
+
+    static final String SERVED_FORCE_HINT =
+        'If you no longer hold it (context compacted, or a subagent made the read), repeat with options.force=true.'
+
+    private static boolean isForce(Map<String, Object> options) {
+        return Boolean.parseBoolean(String.valueOf(options?.get('force') ?: 'false'))
+    }
+
+    /** The hash the ledger is keyed on, or null when the ledger is unavailable. */
+    private String ledgerHash(String path) {
+        if (contextServerClient == null || !path) return null
+        try { return structureCache?.getHash(pathService.normalizePath(path)) }
+        catch (Exception ignored) { return null }
+    }
+
+    private int lineCount(String path, Map<String, Object> options) {
+        try {
+            return com.softwood.mcp.service.read.ReadResponseHelper.countLinesUpTo(
+                pathService.normalizePath(path), Integer.MAX_VALUE - 1,
+                (options?.get('encoding') as String) ?: 'UTF-8')
+        } catch (Exception ignored) { return -1 }
+    }
+
+    /** True when this chat already holds every line of the file at this hash. */
+    private boolean wholeFileHeld(String path, String hash, Map<String, Object> options) {
+        List<List<Integer>> served = contextServerClient.rangeCoverage(path, hash)
+        if (served.isEmpty()) return false
+        int total = lineCount(path, options)
+        return total > 0 && com.softwood.mcp.service.read.RangeCoverage.uncovered(1, total, served) == null
+    }
+
+    /** Marks a response as a forced re-send of content the chat already held (wasted_tok). */
+    private McpResponse markForced(McpResponse r, Object requestId) {
+        Map<String, Object> p = parseResponsePayload(r)
+        if (p == null) return r
+        p.put('forced_repeat', true)
+        return textResponse(requestId, p)
+    }
+
+    private McpResponse servedRead(String path, Map<String, Object> options, Object requestId) {
+        String h = options.get('knownHash') ? null : ledgerHash(path)
+        boolean force = isForce(options)
+        boolean held = h && wholeFileHeld(path, h, options)
+        if (held && !force) {
+            return cachedResponse(requestId, h, 'The whole file was already sent to this chat. ' + SERVED_FORCE_HINT, null)
+        }
+        McpResponse r = contentReader.doRead(path, options, requestId)
+        if (r.error != null) return r
+        fireRegistryUpsert(path, r)
+        if (h) {
+            Map<String, Object> rp = parseResponsePayload(r)
+            if (rp != null && rp.get('content') != null && !rp.get('_truncated') && !rp.get('unchanged')) {
+                int total = lineCount(path, options)
+                if (total > 0) contextServerClient.recordRangeCacheAsync(path, 1, total, h)
+            }
+        }
+        if (held) r = markForced(r, requestId)
+        return r
+    }
+
+    /** head and tail are ranges: same ledger, same partial answers. */
+    private McpResponse servedHeadTail(String path, Map<String, Object> options, Object requestId, boolean tail) {
+        int n = (options.get('lines') as Integer) ?: 50
+        if (contextServerClient == null || options.get('knownHash') || n > 500) {
+            McpResponse r = tail ? contentReader.doTail(path, options, requestId) : contentReader.doHead(path, options, requestId)
+            if (r.error == null) fireRegistryUpsert(path, r)
+            return r
+        }
+        int start = 1
+        if (tail) {
+            int total = lineCount(path, options)
+            if (total < 0) return contentReader.doTail(path, options, requestId)   // the reader reports the error
+            start = Math.max(1, total - n + 1)
+            n = Math.max(1, total - start + 1)
+        }
+        Map<String, Object> ro = new LinkedHashMap<String, Object>(options)
+        ro.remove('lines')
+        ro.put('startLine', start)
+        ro.put('maxLines', n)
+        return dedupedRange(path, ro, requestId)
+    }
+
+    private McpResponse servedStructure(String path, Map<String, Object> options, Object requestId) {
+        String h = ledgerHash(path)
+        String key = 'structure:' + (options.get('className') ?: '*') + '|compact=' + (options.get('compact') ?: false)
+        boolean seen = h && contextServerClient.servedKeySeen(path, key, h)
+        if (seen && !isForce(options)) {
+            return cachedResponse(requestId, h,
+                'This structure of this file content was already sent to this chat. ' + SERVED_FORCE_HINT, null)
+        }
+        McpResponse r = structureReader.doStructure(path, options, requestId)
+        if (r.error != null) return r
+        if (h) contextServerClient.recordServedKeyAsync(path, key, h)
+        return seen ? markForced(r, requestId) : r
+    }
+
+    /** multi: files the chat already holds whole are answered unchanged; the rest are read. */
+    private McpResponse servedMulti(Map<String, Object> options, Object requestId) {
+        List<String> paths = (options.get('paths') as List<String>) ?: []
+        if (contextServerClient == null || !paths) return contentReader.doMulti(options, requestId)
+        boolean force = isForce(options)
+        List<Map<String, Object>> held = []
+        List<String> send = []
+        Map<String, String> sendHash = [:]
+        for (String p : paths) {
+            String h = ledgerHash(p)
+            if (h && !force && wholeFileHeld(p, h, options)) {
+                held << ([path: p, unchanged: true, file_content_hash: h, success: true] as Map<String, Object>)
+            } else {
+                send << p
+                if (h) sendHash.put(p, h)
+            }
+        }
+        if (!held.isEmpty() && send.isEmpty()) {
+            Map<String, Object> resp = [action: 'multi', count: held.size(), unchanged_count: held.size(), files: held,
+                hint: 'Every file that could be read was already sent to this chat. ' + SERVED_FORCE_HINT] as Map<String, Object>
+            if (options.get('_blocked')) resp.put('blocked', options.get('_blocked'))
+            return textResponse(requestId, resp)
+        }
+        Map<String, Object> narrowed = options
+        if (!held.isEmpty()) {
+            narrowed = new HashMap<String, Object>(options)
+            narrowed.put('paths', send)
+        }
+        McpResponse r = contentReader.doMulti(narrowed, requestId)
+        if (r.error != null) return r
+        Map<String, Object> payload = parseResponsePayload(r)
+        if (payload == null) return r
+        List<Map<String, Object>> files = (payload.get('files') as List<Map<String, Object>>) ?: []
+        sendHash.each { String p, String h ->
+            String np = pathService.normalizePath(p)
+            Map<String, Object> f = files.find { Map<String, Object> m -> m.get('path') == np || m.get('path') == p }
+            if (f != null && f.get('success') && f.get('content') != null && !f.get('_truncated') && !f.get('unchanged')) {
+                int total = lineCount(p, options)
+                if (total > 0) contextServerClient.recordRangeCacheAsync(p, 1, total, h)
+            }
+        }
+        if (held.isEmpty()) return r
+        files.addAll(held)
+        payload.put('files', files)
+        payload.put('count', files.size())
+        payload.put('unchanged_count', ((payload.get('unchanged_count') as Integer) ?: 0) + held.size())
+        payload.put('hint', '' + held.size() + ' file(s) were already sent to this chat and are not repeated. ' + SERVED_FORCE_HINT)
+        return textResponse(requestId, payload)
+    }
+
+    /** multi_grep: a path this grep already ran on (same content) is not searched again. */
+    private McpResponse servedMultiGrep(Map<String, Object> options, Object requestId) {
+        List<String> paths = (options.get('paths') as List<String>) ?: []
+        if (contextServerClient == null || !paths || !options.get('pattern')) return contentReader.doMultiGrep(options, requestId)
+        String key = 'mgrep:' + options.get('pattern') + '|ctx=' + (options.get('contextLines') ?: 0) +
+                     '|max=' + (options.get('maxMatches') ?: '')
+        boolean force = isForce(options)
+        List<String> held = []
+        List<String> send = []
+        Map<String, String> sendHash = [:]
+        for (String p : paths) {
+            String h = ledgerHash(p)
+            if (h && !force && contextServerClient.servedKeySeen(p, key, h)) held << p
+            else { send << p; if (h) sendHash.put(p, h) }
+        }
+        McpResponse r
+        if (send.isEmpty()) {
+            Map<String, Object> resp = [action: 'multi_grep', pattern: options.get('pattern'), fileCount: 0,
+                matchingFiles: 0, totalMatches: 0, results: []] as Map<String, Object>
+            if (options.get('_blocked')) resp.put('blocked', options.get('_blocked'))
+            r = textResponse(requestId, resp)
+        } else if (!held.isEmpty()) {
+            Map<String, Object> narrowed = new HashMap<String, Object>(options)
+            narrowed.put('paths', send)
+            r = contentReader.doMultiGrep(narrowed, requestId)
+        } else {
+            r = contentReader.doMultiGrep(options, requestId)
+        }
+        if (r.error != null) return r
+        sendHash.each { String p, String h -> contextServerClient.recordServedKeyAsync(p, key, h) }
+        if (held.isEmpty()) return r
+        Map<String, Object> payload = parseResponsePayload(r)
+        if (payload == null) return r
+        payload.put('unchanged_paths', held)
+        payload.put('hint', 'This grep was already returned for ' + held.size() +
+            ' file(s) in this chat; they are not repeated. ' + SERVED_FORCE_HINT)
+        return textResponse(requestId, payload)
+    }
+
+    /**
+     * FS 0.9.40 K2: the served-ledger range path, shared by range, head and tail.
+     */
+    private McpResponse dedupedRange(String path, Map<String, Object> options, Object requestId) {
+        // Fix C (v0.8.50): session range read cache.
+        // knownFileHash lets us validate the cache entry against current file state.
+        // Graceful degradation: if CS is down or hash absent, fall through to normal read.
+        // FIX-KH-RANGE-AUTO (FS 0.8.81): if caller did not supply a hash, derive it from
+        // StructureCache (in-memory, no I/O). This removes the requirement for the caller
+        // to pass knownHash in order to benefit from the range cache on repeat reads.
+        // Safety: checkRangeCache only hits when (session, path, startLine, endLine, hash)
+        // all match -- the hash guards against stale entries if the file changed.
+        boolean forcedRepeat = false
+        if (contextServerClient != null) {
+            String fileHash = options.get('knownFileHash') as String
+            if (!fileHash) fileHash = options.get('knownHash') as String
+            if (!fileHash) {
+                // Auto-derive from StructureCache: pure in-memory, populated on every FS op.
+                // Returns null if file has never been seen this session -> safe cache miss.
+                fileHash = structureCache?.getHash(pathService.normalizePath(path))
+            }
+            int csl = (options.get('startLine') as Integer) ?: 1
+            int cml = (options.get('maxLines') as Integer) ?: 100
+            boolean force = Boolean.parseBoolean(String.valueOf(options.get('force') ?: 'false'))
+            if (fileHash && force) {
+                // K2: a forced re-read of lines the chat already holds is the waste the ledger measures
+                List<List<Integer>> fsv = contextServerClient.rangeCoverage(path, fileHash)
+                forcedRepeat = !fsv.isEmpty() &&
+                    com.softwood.mcp.service.read.RangeCoverage.uncovered(csl, csl + cml - 1, fsv) == null
+            }
+            if (fileHash && !force) {
+                // FS 0.9.35 G4b: de-duplicate by LINES, not by exact window. Exact-pair
+                // matching served 4 of 867 range reads from cache; paging asks for
+                // overlapping windows. Fully covered -> unchanged; partly -> only the
+                // unserved span, with what was already served named.
+                List<List<Integer>> served = contextServerClient.rangeCoverage(path, fileHash)
+                if (!served.isEmpty()) {
+                    List<Integer> todo = com.softwood.mcp.service.read.RangeCoverage.uncovered(csl, csl + cml - 1, served)
+                    if (todo == null) {
+                        return cachedResponse(requestId, fileHash,
+                            'Lines ' + csl + '-' + (csl + cml - 1) + ' were already sent to this chat. ' + SERVED_FORCE_HINT,
+                            com.softwood.mcp.service.read.RangeCoverage.describe(served))
+                    }
+                    if (todo[0] != csl || todo[1] != csl + cml - 1) {
+                        List<String> alreadyServed = com.softwood.mcp.service.read.RangeCoverage.describe(served)
+                        Map<String, Object> narrowed = new LinkedHashMap<String, Object>(options)
+                        narrowed.put('startLine', todo[0])
+                        narrowed.put('maxLines', todo[1] - todo[0] + 1)
+                        McpResponse nr = contentReader.doRange(path, narrowed, requestId)
+                        if (nr.error == null) {
+                            fireRegistryUpsert(path, nr)
+                            String nh = fileHash
+                            Map<String, Object> np = parseResponsePayload(nr)
+                            // K2: record what was SENT -- a capped window ends before todo[1]
+                            int nEnd = (np?.get('endLine') as Integer) ?: todo[1]
+                            if (nEnd >= todo[0]) contextServerClient.recordRangeCacheAsync(path, todo[0], nEnd, nh)
+                            if (np != null) {
+                                np.put('already_served', alreadyServed)
+                                np.put('requested', csl + '-' + (csl + cml - 1))
+                                return textResponse(requestId, np)
+                            }
+                        }
+                        return nr
+                    }
+                }
+            }
+        }
+        McpResponse r = contentReader.doRange(path, options, requestId)
+        if (r.error == null) {
+            fireRegistryUpsert(path, r)
+            if (contextServerClient != null) {
+                // Record under the SAME hash source the check reads, or they never meet.
+                String h = structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(r)
+                Map<String, Object> rp = parseResponsePayload(r)
+                int rsl = (rp?.get('startLine') as Integer) ?: ((options.get('startLine') as Integer) ?: 1)
+                int rel = (rp?.get('endLine') as Integer) ?: (rsl + ((options.get('maxLines') as Integer) ?: 100) - 1)
+                // FS 0.9.35: record the lines ACTUALLY returned (a window past EOF is
+                // shorter than asked), so coverage never claims lines nobody saw.
+                if (h && rel >= rsl) contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
+            }
+        }
+        if (forcedRepeat && r.error == null) r = markForced(r, requestId)
+        return r
     }
 
     /**

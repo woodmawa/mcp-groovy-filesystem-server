@@ -72,7 +72,7 @@ class KnownHashObligationSpec extends Specification {
         desc.contains('knownHash saves re-sending content you already hold')
         desc.contains('file_content_hash')
         desc.contains('unchanged:true')
-        desc.contains('_knownhash_hint')
+        desc.contains('options.force=true')   // FS 0.9.40 K2: the hint is gone; force is the way back
     }
 
     def 'KH-3: the range caveat survives -- that one is real'() {

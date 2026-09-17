@@ -222,39 +222,28 @@ file_write action=server_transform path=<file>
 | FIX-D | `knownHash` on read/range/get_method/list: returns `{unchanged:true}` if unchanged — ZERO tokens consumed. |
 | FIX-KH-AUTO | Server-side auto-lookup (FS 0.8.77+): `doRead` auto-checks CS session hash cache. No hash needed from caller — `{unchanged:true, _auto_kh:true}` fires automatically on repeat whole-file reads. |
 
-### knownHash — how it works (FS 0.8.77+)
+### Repeat reads - the served ledger (FS 0.9.40 / CS 1.0.85, decision 206)
 
-**Server-side auto-lookup is now active for whole-file reads (`action=read`).**
-After every content-returning `doRead`, FS stores the hash in the CS session cache (`/fileHashCache`). On the next `doRead` of the same file without a `knownHash`, FS auto-looks up the cached hash and returns `{unchanged:true, _auto_kh:true}` if the file hasn’t changed. You get the token savings without tracking or passing anything.
+- **Repeat reads are de-duplicated for you.** Every `file_read` content action (read, head, tail, range,
+  grep, multi, multi_grep, structure, get_method) is checked against what this CHAT was already sent: same
+  file content, 45-minute window (`cs.served-window-minutes`). Held content answers `unchanged:true`; a
+  partly held range sends only the new lines and lists the rest in `already_served`. Nothing needs tracking.
+- **`force=true` is the way back** after a context compaction, or when a subagent made the read (a subagent
+  shares this chat's connection, so its reads count as sent to you). An edited file is always re-sent.
+- The ledger is keyed on the conversation (`conv:<id>`), so a Desktop restart does not re-send what the
+  chat holds; `claim_session` resets it only for a session with no conversation. `reset_served` still exists.
+- `knownHash` is optional on read/get_method and never goes on range. `context_read project_instructions`
+  honours `knownHash` and the ledger too.
+- Metrics: `knownhash_pct` = (unchanged+partial)/(unchanged+partial+forced); `wasted_tok` = forced re-sends.
 
-`knownhash_pct` is tracked per session in `mid-session-audit`. Target: >40%. Both auto-hits and explicit hits count.
+Implementation: `FileReadService.servedRead / servedHeadTail / dedupedRange / servedStructure /
+servedMulti / servedMultiGrep`; the ledger is CS `SqliteRangeCacheStore` over POST `/rangeCache`.
+`McpController.extractOutcome` records `forced` and `partial`.
 
-**For `action=range`, `get_method`, `head`, `tail` — pass `knownHash` explicitly** (auto-lookup does not apply to partial reads — returning `unchanged:true` for a range you haven’t seen would be a correctness bug):
-
-**Hash sources (check in this order):**
-1. `bootstrap globals` — `working_file_hashes["<path>"].hash` loaded by session-bootstrap for all prior-session working files
-2. `file_content_hash` — in every `file_read` response that returns content; capture and pass on next read
-3. `listing_hash` — returned by `action=list`; pass back for directory re-checks
-
-```
-# Whole-file read — auto-lookup handles repeat reads, no hash needed
-file_read action=read path=Foo.groovy options={force:true}
-→ {content:"...", file_content_hash:"abc123"}   ← hash stored server-side automatically
-
-file_read action=read path=Foo.groovy options={force:true}   # repeat, no knownHash
-→ {unchanged:true, _auto_kh:true}   # 33 tokens — auto-hit
-
-# Range/get_method — still pass knownHash explicitly
-file_read action=range path=Foo.groovy options={startLine:1,maxLines:50}
-→ {content:"...", file_content_hash:"abc123"}   ← CAPTURE THIS
-
-file_read action=range path=Foo.groovy options={startLine:51,maxLines:50,knownHash:"abc123"}
-→ {unchanged:true}   # ~15 tokens
-```
-
-**Feature flags** (can disable without redeployment via `application.properties`):
-- `mcp.filesystem.auto-kh-lookup.enabled=true` — master switch for auto-lookup
-- `mcp.filesystem.auto-kh-hints-suppressed.enabled=true` — suppresses `_knownhash_hint` noise when auto is active
+**Feature flags** (`application.properties`):
+- `mcp.filesystem.auto-kh-lookup.enabled=true` - whole-file hash sentinel lookup
+- `mcp.filesystem.auto-kh-hints-suppressed.enabled=true` - no `_knownhash_hint` while CS is reachable
+  (the hint only appears when the ledger is unavailable)
 
 ---
 

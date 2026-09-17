@@ -90,17 +90,11 @@ class FileReadContractSpec extends Specification {
         given:
         def f = writeFile('ct-kh-3.groovy', 'class KH3 {\n    def x = 1\n}\n')
 
-        when: "we do a range read WITHOUT knownHash (hint should be injected)"
+        when: "we do a range read WITHOUT knownHash"
         Map result = doRange(f.path, 1, 3)
 
-        then: "a _knownhash_hint is present in the response"
-        result._knownhash_hint != null
-
-        and: "the hint text tells the caller to use the hash for action=read (whole-file), NOT action=range"
-        String hint = result._knownhash_hint as String
-        // 0.9.0: hint must explicitly say NOT to pass knownHash to action=range
-        (hint.toLowerCase().contains('do not') || hint.toLowerCase().contains('not pass')) &&
-         hint.toLowerCase().contains('action=range')
+        then: "FS 0.9.40 K2: no hint while the served ledger is live; when one is sent it must not advise range"
+        result._knownhash_hint == null || (result._knownhash_hint as String).toLowerCase().contains('not on action=range')
     }
 
     // -----------------------------------------------------------------------

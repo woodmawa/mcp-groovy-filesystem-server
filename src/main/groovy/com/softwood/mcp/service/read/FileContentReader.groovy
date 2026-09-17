@@ -328,25 +328,40 @@ class FileContentReader extends AbstractFileService {
                 result << truncateAndSanitize(line)
             }
         }
-        String joined    = result.join('\n')
+        // FS 0.9.40 K2: cut at a LINE boundary and report the lines actually sent. The old cut was
+        // mid-line while endLine still named the last line asked for, so the served ledger recorded
+        // lines nobody saw and the next range was told they were already in context.
         boolean truncated = false
-        if (joined.length() > partialReadCapChars) {
-            joined    = joined.substring(0, partialReadCapChars)
-            truncated = true
+        int emitted = result.size()
+        StringBuilder sb = new StringBuilder()
+        for (int i = 0; i < result.size(); i++) {
+            String l = result[i]
+            int add = (i == 0 ? 0 : 1) + l.length()
+            if (sb.length() + add > partialReadCapChars) {
+                truncated = true
+                if (i == 0) { sb.append(l.substring(0, partialReadCapChars)); emitted = 1 }
+                else emitted = i
+                break
+            }
+            if (i > 0) sb.append('\n')
+            sb.append(l)
         }
+        String joined = sb.toString()
+        int endLine   = startLine + emitted - 1
         String hash = structureCache.getHash(normalized)
         Map<String, Object> resp
         if (isCompact(options)) {
-            resp = [content: joined, lines: result.size(), startLine: startLine,
-                    endLine: startLine + result.size() - 1, file_content_hash: hash] as Map<String, Object>
+            resp = [content: joined, lines: emitted, startLine: startLine,
+                    endLine: endLine, file_content_hash: hash] as Map<String, Object>
         } else {
             resp = [action: 'range', path: normalized, startLine: startLine,
-                    endLine: startLine + result.size() - 1, lines: result.size(),
+                    endLine: endLine, lines: emitted,
                     content: joined, file_content_hash: hash] as Map<String, Object>
         }
         if (truncated) {
             resp._truncated = true
-            resp._truncatedNote = ("range output truncated at ${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Use smaller maxLines or target a narrower startLine." as String)
+            resp._truncatedNote = ("range output capped at ${partialReadCapChars} chars: lines ${startLine}-${endLine} sent. " +
+                "Continue with startLine=${endLine + 1}." as String)
         } else {
             helper.maybeAddSizeWarning(resp, joined.length())
         }

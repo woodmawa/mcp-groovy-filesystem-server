@@ -87,9 +87,12 @@ class MissingKnownHashDetectionSpec extends Specification {
         s
     }
 
+    // FS 0.9.40: the advisory is off by default; these specs exercise it switched on.
+    def setup() { helper.missingKhWarnEnabled = true }
+
     def cleanup() {
         helper.contextServerClient = null
-        helper.missingKhWarnEnabled = true
+        helper.missingKhWarnEnabled = false
     }
 
     // -----------------------------------------------------------------------

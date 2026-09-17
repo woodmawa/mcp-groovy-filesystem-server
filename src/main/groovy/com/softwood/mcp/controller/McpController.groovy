@@ -315,7 +315,13 @@ class McpController {
             }
             List content = response?.result?.content as List
             String text = ((content?.first() as Map)?.get('text') as String) ?: ''
+            // FS 0.9.40 K2 (decision 206): forced = held content re-sent on request (wasted_tok);
+            // partial = some of what was asked was already held and was not re-sent.
+            // K2: a gate refusal sent no content -- it is not a read
+            if (text.contains('"error":"BLOCKED_')) return 'refused'
+            if (text.contains('"forced_repeat":true')) return 'forced'
             if (text.contains('"unchanged":true') || text.contains('"cached":true')) return 'unchanged'
+            if (text.contains('"already_served"') || text.contains('"unchanged_paths"')) return 'partial'
             if (text.contains('_truncated')) return 'truncated'
         } catch (Exception ignored) {}
         return 'success'

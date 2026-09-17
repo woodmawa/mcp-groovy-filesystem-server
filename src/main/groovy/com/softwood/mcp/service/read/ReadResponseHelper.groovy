@@ -118,7 +118,9 @@ class ReadResponseHelper extends AbstractFileService {
      * when the caller omitted {@code options.knownHash} but {@link StructureCache}
      * already holds a hash for the file. Advisory only -- does NOT block the read.
      */
-    @Value('${mcp.filesystem.missing-kh-warn.enabled:true}')
+    // FS 0.9.40 K2: off by default. The served ledger answers repeats without a caller-supplied hash, so a
+    // read without knownHash is no longer a violation -- the advisory nagged and filed a false correction.
+    @Value('${mcp.filesystem.missing-kh-warn.enabled:false}')
     boolean missingKhWarnEnabled
 
     ReadResponseHelper(PathService pathService) {
@@ -210,7 +212,9 @@ class ReadResponseHelper extends AbstractFileService {
         }
 
         // Path 2: auto-lookup -- whole-file reads only, when feature flag is on
-        if (autoLookup && autoKhLookupEnabled && contextServerClient != null) {
+        // FS 0.9.40 K2: force=true is the documented way back to content -- the auto path honours it.
+        boolean forced = Boolean.parseBoolean(String.valueOf(options?.get('force') ?: 'false'))
+        if (autoLookup && !forced && autoKhLookupEnabled && contextServerClient != null) {
             String cachedHash = contextServerClient.lookupFileHash(normalized)
             if (cachedHash) {
                 String currentHash = structureCache.getHash(normalized)
@@ -220,7 +224,7 @@ class ReadResponseHelper extends AbstractFileService {
                         unchanged        : true,
                         file_content_hash: currentHash,
                         _auto_kh         : true,
-                        _note            : 'File unchanged (auto-detected from session hash cache).'
+                        _note            : 'File unchanged (auto-detected) and already sent to this chat. If you no longer hold it (context compacted, or a subagent made the read), repeat with options.force=true.'
                     ] as Map<String, Object>)
                 }
                 log.debug('hash-gate AUTO-MISS: {} changed (cached={}, current={})',
@@ -269,8 +273,10 @@ class ReadResponseHelper extends AbstractFileService {
         // FIX-KH-RANGE-AUTO (FS 0.8.81): only suppress hint for whole-file reads (autoStore=true).
         // For range/get_method (autoStore=false), auto-lookup does NOT fire, so Claude still
         // needs the hint to know the hash for future explicit knownHash use.
-        boolean autoActive = autoKhLookupEnabled && autoKhHintsSuppressed && contextServerClient != null && autoStore
-        if (autoActive) return           // whole-file auto will handle next read -- hint is token noise
+        // FS 0.9.40 K2: every read action now asks the served ledger, so while CS is reachable the
+        // hint is advice the caller no longer needs -- ~350 chars on every partial read, for nothing.
+        boolean autoActive = autoKhHintsSuppressed && contextServerClient != null
+        if (autoActive) return
 
         String fileName = new File(normalized).name
         if (autoStore) {
@@ -278,10 +284,8 @@ class ReadResponseHelper extends AbstractFileService {
                 "Pass as options.knownHash on EVERY subsequent file_read action=read of this file. " +
                 "Unchanged file = {unchanged:true} (~15 tokens). Not passing = full content cost again." as String)
         } else {
-            response._knownhash_hint = ("CAPTURE: file_content_hash=${hash} for path '${fileName}'. " +
-                "Use as options.knownHash for action=read (whole-file) or action=get_method repeat checks. " +
-                "Do NOT pass knownHash to action=range -- it returns unchanged:true instead of content. " +
-                "Repeated range reads are handled by the session range cache automatically." as String)
+            response._knownhash_hint = ("file_content_hash=${hash} for '${fileName}': pass as options.knownHash " +
+                "on a repeat action=read or get_method (the served ledger is unavailable). Not on action=range." as String)
         }
     }
 
