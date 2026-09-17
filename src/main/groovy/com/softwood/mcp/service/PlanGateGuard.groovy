@@ -116,14 +116,15 @@ class PlanGateGuard {
             if (name == 'git') {
                 String runDir = dir
                 String sub = null
+                int subIdx = -1
                 for (int i = 1; i < t.size(); i++) {
                     String x = t[i]
                     if (x == '-C' && i + 1 < t.size()) { runDir = resolve(dir, t[i + 1]); i++; continue }
                     if (GIT_VALUE_OPTS.contains(x)) { i++; continue }
                     if (x.startsWith('-')) continue
-                    sub = x.toLowerCase(); break
+                    sub = x.toLowerCase(); subIdx = i; break
                 }
-                if (sub == null || GIT_READ_ONLY.contains(sub)) continue
+                if (sub == null || isReadOnlyGit(sub, t.drop(subIdx + 1))) continue
                 out << new GatedCommand(kind: 'git', dir: runDir, command: (['git'] + t.drop(1)).join(' '))
                 continue
             }
@@ -140,6 +141,25 @@ class PlanGateGuard {
                 if (!tasks || tasks.every { String k -> GRADLE_READ_ONLY.contains(k.toLowerCase()) }) continue
                 out << new GatedCommand(kind: 'gradle', dir: runDir, command: (['gradlew'] + t.drop(1)).join(' '))
             }
+        }
+    }
+
+    /** FS 0.9.39: listing forms of subcommands whose bare name also writes. */
+    static final Set<String> LIST_FLAGS = (['-l', '--list', '-a', '--all', '-r', '--remotes', '-v', '-vv',
+        '--verbose', '--show-current', '--get', '--get-all', '--list', '--contains', '--merged', '--no-merged'] as Set<String>).asImmutable()
+
+    static boolean isReadOnlyGit(String sub, List<String> rest) {
+        if (GIT_READ_ONLY.contains(sub)) return true
+        List<String> positional = rest.findAll { String x -> !x.startsWith('-') }
+        boolean listing = rest.any { String x -> LIST_FLAGS.contains(x) }
+        switch (sub) {
+            case 'tag':      return !rest || listing
+            case 'branch':   return !rest || (listing && !rest.any { it in ['-d', '-D', '-m', '-M', '-c', '-C', '--delete', '--move', '--copy'] })
+            case 'remote':   return !positional || (positional.size() >= 1 && positional[0] in ['show', 'get-url'])
+            case 'stash':    return positional && positional[0] in ['list', 'show']
+            case 'config':   return listing
+            case 'worktree': return positional && positional[0] == 'list'
+            default:         return false
         }
     }
 
@@ -199,6 +219,9 @@ class PlanGateGuard {
     static String normDir(String d) { (d ?: '').replace('\\', '/').replaceAll('/+$', '') }
 
     static String resolve(String base, String arg) {
+        // FS 0.9.39: a shell variable cannot be resolved here, and taking it literally named the
+        // component '$r'. The statement runs somewhere we cannot know, so keep the current dir.
+        if (arg.contains('$') || arg.contains('%') || arg.contains('`')) return base
         String a = normDir(arg)
         if (!a || a == '.') return base
         boolean abs = a ==~ /^[A-Za-z]:\/.*/ || a ==~ /^[A-Za-z]:$/ || a.startsWith('/')

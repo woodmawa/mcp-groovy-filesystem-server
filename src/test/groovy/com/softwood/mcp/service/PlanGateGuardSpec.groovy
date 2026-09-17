@@ -119,6 +119,29 @@ class PlanGateGuardSpec extends Specification {
         msg.contains("'a:git'") && msg.contains("'b:git'")
     }
 
+    def 'PGG-13: a directory argument holding a shell variable is not taken as the repo'() {
+        when:
+        guard.checkExecute('foreach ($r in $repos) { git -C "C:/x/$r" commit -am y }', 'C:/r')
+        guard.checkExecute('cd %REPO%; git push', 'C:/q')
+        then:
+        1 * client.planGateCheck({ it.workingDir == 'C:/r' && it.command.startsWith('git -C') }, 'sid-1') >> [allow: true]
+        1 * client.planGateCheck({ it.workingDir == 'C:/q' }, 'sid-1') >> [allow: true]
+    }
+
+    def 'PGG-14: listing forms of tag, branch, remote, stash and config are not asked about; their writing forms are'() {
+        when:
+        guard.checkExecute('git tag -l "v1.*"; git tag; git branch; git branch --list; git branch -a; git remote -v; git stash list; git config --get user.name', 'C:/r')
+        then:
+        0 * client.planGateCheck(_, _)
+
+        when:
+        guard.checkExecute('git tag v1.0.0', 'C:/t')
+        guard.checkExecute('git branch feature-x', 'C:/b')
+        then:
+        1 * client.planGateCheck({ it.workingDir == 'C:/t' }, 'sid-1') >> [allow: true]
+        1 * client.planGateCheck({ it.workingDir == 'C:/b' }, 'sid-1') >> [allow: true]
+    }
+
     def 'PGG-6: non-writing file_write actions are not asked about'() {
         when:
         guard.checkWrite('abort_write', 'C:/r/Foo.groovy')

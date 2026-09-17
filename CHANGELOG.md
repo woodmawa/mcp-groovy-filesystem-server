@@ -1596,3 +1596,9 @@ PLAN-GATE tuning (with CS 1.0.83).
 Specs: `PlanGateGuardSpec` PGG-9..12 (all four fail on 0.9.37).
 
 Running version (CS chain 63e4d174). `ProcessIdentity.VERSION`/`REGISTRY_NAME` and `stampRunningVersion(conn)`: the claim records this process's manifest version on its `session_claims` row and moves `server_versions.version` unless a later-started process already has. It never throws, so it cannot cost the claim on an unmigrated schema. `installMcpbLocal` writes `installed_version`/`installed_at` instead of `version`. Spec: `ProcessIdentityVersionStampSpec` PIV-1..3.
+## [0.9.39]
+PLAN-GATE follow-ups found live on 0.9.38 (with CS 1.0.84).
+- **Shell-variable directories.** A `cd` / `git -C` / `-p` argument holding a shell variable (`$r`, `%REPO%`, a backtick) keeps the current directory. Before this, the variable itself became the component (`$r:git`).
+- **Listing forms are not gated:** `tag` (bare or `-l`), `branch` (bare or listing flags, and not -d/-m/-c), `remote` (bare, show, get-url), `stash list|show`, `config --get|--list`, `worktree list`. Their writing forms are still gated.
+
+Specs: `PlanGateGuardSpec` PGG-13 and PGG-14 (both fail on 0.9.38).
