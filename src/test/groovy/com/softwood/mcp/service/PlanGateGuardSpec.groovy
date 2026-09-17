@@ -78,6 +78,47 @@ class PlanGateGuardSpec extends Specification {
         c.contains("'r:git'")
     }
 
+    def 'PGG-9: git or gradle inside strings, comments and here-strings is not a command'() {
+        when:
+        String a = guard.checkExecute('$s = "then git push and gradlew build"; Write-Host $s', 'C:/r')
+        String b = guard.checkExecute("Write-Host 'a; git push'\n# git commit -m x", 'C:/r')
+        String c = guard.checkExecute("\$body = @'\ngit push origin main\n.\\gradlew.bat test\n'@\nSet-Content f.txt \$body", 'C:/r')
+        String d = guard.checkExecute("cat <<'EOF' > notes.md\ngit push\nEOF", 'C:/r')
+        then:
+        [a, b, c, d].every { it == null }
+        0 * client.planGateCheck(_, _)
+    }
+
+    def 'PGG-10: read-only git and gradle housekeeping are not asked about'() {
+        when:
+        guard.checkExecute('git status --porcelain; git log -1; git -C C:/x rev-parse HEAD', 'C:/r')
+        guard.checkExecute('.\\gradlew.bat --stop', 'C:/r')
+        then:
+        0 * client.planGateCheck(_, _)
+    }
+
+    def 'PGG-11: a command in statement position is found, with the directory it really runs in'() {
+        when:
+        guard.checkExecute('Set-Location C:/other; $out = git commit -m "wip"', 'C:/r')
+        guard.checkExecute('git -C C:/x push origin main', 'C:/r')
+        guard.checkExecute('if ($ok) { & C:/y/gradlew.bat installDist }', 'C:/r', 'install the new build')
+        guard.checkExecute('cmd /c "cd sub && gradlew.bat test"', 'C:/r')
+        then:
+        1 * client.planGateCheck({ it.kind == 'git' && it.workingDir == 'C:/other' && it.command == 'git commit -m wip' }, 'sid-1') >> [allow: true]
+        1 * client.planGateCheck({ it.kind == 'git' && it.workingDir == 'C:/x' && it.command == 'git -C C:/x push origin main' }, 'sid-1') >> [allow: true]
+        1 * client.planGateCheck({ it.kind == 'gradle' && it.workingDir == 'C:/y' && it.intent == 'install the new build' }, 'sid-1') >> [allow: true]
+        1 * client.planGateCheck({ it.kind == 'gradle' && it.workingDir == 'C:/r/sub' && it.command == 'gradlew test' }, 'sid-1') >> [allow: true]
+    }
+
+    def 'PGG-12: two gated repos in one script are asked about together, so one retry clears both'() {
+        when:
+        String msg = guard.checkExecute('cd C:/a; git commit -am x; cd C:/b; git commit -am y', 'C:/r')
+        then:
+        1 * client.planGateCheck({ it.workingDir == 'C:/a' }, 'sid-1') >> [allow: false, component: 'a:git', practices: []]
+        1 * client.planGateCheck({ it.workingDir == 'C:/b' }, 'sid-1') >> [allow: false, component: 'b:git', practices: []]
+        msg.contains("'a:git'") && msg.contains("'b:git'")
+    }
+
     def 'PGG-6: non-writing file_write actions are not asked about'() {
         when:
         guard.checkWrite('abort_write', 'C:/r/Foo.groovy')

@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.37'
+version = '0.9.38'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -444,14 +444,22 @@ tasks.register('copyToJarsDir') {
                 def driver = driverClass.getDeclaredConstructor().newInstance()
                 def props = new java.util.Properties()
                 def conn = (driver as java.sql.Driver).connect("jdbc:sqlite:${dbPath}", props)
+                // FS 0.9.38 (CS chain 63e4d174): install records what was INSTALLED. version is what
+                // is RUNNING and is written by the process itself at its claim.
+                ['installed_version', 'installed_at', 'started_at'].each { col ->
+                    try { conn.createStatement().execute("ALTER TABLE server_versions ADD COLUMN ${col} TEXT") } catch (Exception ignored) {}
+                }
                 def ps = conn.prepareStatement(
-                    "INSERT OR REPLACE INTO server_versions (server_name, version, jar_path, updated_at) " +
-                    "VALUES ('filesystem', ?, ?, datetime('now'))")
+                    "INSERT INTO server_versions (server_name, version, jar_path, installed_version, installed_at, updated_at) " +
+                    "VALUES ('filesystem', ?, ?, ?, datetime('now'), datetime('now')) " +
+                    "ON CONFLICT(server_name) DO UPDATE SET jar_path = excluded.jar_path, " +
+                    "installed_version = excluded.installed_version, installed_at = excluded.installed_at")
                 ps.setString(1, project.version as String)
                 ps.setString(2, new File(claudeSyncDir, "jars/${jar.name}").absolutePath)
+                ps.setString(3, project.version as String)
                 ps.executeUpdate()
                 ps.close(); conn.close()
-                logger.lifecycle("DB: server_versions updated filesystem -> ${project.version}")
+                logger.lifecycle("DB: server_versions installed_version filesystem -> ${project.version} (version moves at restart)")
             } catch (Exception e) {
                 logger.warn("DB: WARNING -- could not update server_versions: ${e.message}")
             }

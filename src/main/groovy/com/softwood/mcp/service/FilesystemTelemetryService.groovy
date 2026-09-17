@@ -479,6 +479,9 @@ class FilesystemTelemetryService {
                 ps.executeUpdate()
                 ps.close()
 
+                // FS 0.9.38 (63e4d174): the version this process runs. Never throws.
+                ProcessIdentity.stampRunningVersion(conn)
+
                 // FS 0.9.24 / CS 1.0.51: the upsert above just destroyed this process's previous
                 // claim, which is what made the displacement contract's exclusion void. Record
                 // the claim as a fact too.

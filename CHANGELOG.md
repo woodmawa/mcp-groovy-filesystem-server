@@ -1584,3 +1584,15 @@ helper; specs CT-RD-1..8.
 
 ## [0.9.37]
 C1 PLAN-GATE (with CS 1.0.82). New `PlanGateGuard`: before any writing `file_write` action, and before `execute` scripts that run gradlew or git, FS asks CS (`context_read scope=knowledge action=plan_gate_check`, via `ContextServerClient.planGateCheck`) with its claimed session. A refusal becomes a tool error that lists the practices and says a retry passes. CS decides and keeps the record, so a (session, component) pair is refused at most once. Every uncertain path passes (no CS, no claimed session, timeout, error) and is counted in `unavailable`. Switch: `mcp.filesystem.plan-gate.enforced` (default true). Spec: `PlanGateGuardSpec` PGG-1..8.
+
+## [0.9.38]
+PLAN-GATE tuning (with CS 1.0.83).
+- **Commands, not text.** `PlanGateGuard.findGatedCommands` parses the script into statements: it splits on newline ; | & { } ( ) outside quotes, drops here-string and heredoc bodies and `#` comments, and strips `$x =`, `&` and `.` prefixes. `cmd /c`, `powershell -Command` and `bash -c` bodies are rescanned. Only `git` or `gradlew` in command position is gated. 0.9.37 scanned the whole script, so a PowerShell edit whose string content mentioned git was refused.
+- **Housekeeping is not gated:** read-only git subcommands (status, log, diff, show, rev-parse and similar) and gradle runs with no real task (`--stop`, tasks, help).
+- **The real directory.** `cd`, `Set-Location`, `pushd`, `git -C`, `gradlew -p` and a pathed `gradlew` decide the repo, instead of the default workingDir (which in 0.9.37 attributed the edit to the FS repo).
+- **One retry clears the script.** Every distinct (kind, dir) in a script is asked about in one pass, and the refusals are joined.
+- **CS gets `kind`, `command` and the new `options.intent`** (execute schema) to select on.
+
+Specs: `PlanGateGuardSpec` PGG-9..12 (all four fail on 0.9.37).
+
+Running version (CS chain 63e4d174). `ProcessIdentity.VERSION`/`REGISTRY_NAME` and `stampRunningVersion(conn)`: the claim records this process's manifest version on its `session_claims` row and moves `server_versions.version` unless a later-started process already has. It never throws, so it cannot cost the claim on an unmigrated schema. `installMcpbLocal` writes `installed_version`/`installed_at` instead of `version`. Spec: `ProcessIdentityVersionStampSpec` PIV-1..3.

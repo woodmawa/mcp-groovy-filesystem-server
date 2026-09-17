@@ -93,6 +93,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                   grepPattern : [type: 'string', description: 'Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including | alternation, e.g. "foo|bar", "RequestBuilder\\.class$".'],
                                   async       : [type: 'boolean', description: 'FS-EXEC-2: run in the background and return a jobId immediately. Use for anything that may exceed the ~60s client deadline.'],
                                   jobId       : [type: 'string', description: 'Job id, for job_status / job_output / job_cancel.'],
+                                  intent      : [type: 'string', description: 'FS 0.9.38: one sentence on what this build/git call is for. PLAN-GATE selects the practices it shows on the command plus this.'],
                                   sinceOffset : [type: 'integer', description: 'job_output: resume reading stdout from this character offset. Pass the nextOffset returned by the previous job_output call to tail without re-sending output you already have.']
                               ]]
                 ],
@@ -135,7 +136,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             securityService.validateScript(script, workingDir, action)
 
             // FS 0.9.37 C1: PLAN-GATE on the first build/git call per repo this session.
-            String planRefusal = planGateGuard?.checkExecute(script, workingDir)
+            String planRefusal = planGateGuard?.checkExecute(script, workingDir, options.intent as String)
             if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
 
             // Extract env overrides from options (was previously silently ignored)
