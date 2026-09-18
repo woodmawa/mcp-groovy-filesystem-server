@@ -6,7 +6,16 @@
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
 - **Current version:** `0.9.39` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.44 / CS 1.0.90 / AW 1.30.27 - 2026-09-17 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+- **Baseline stack:** FS 0.9.45 / CS 1.0.99 / AW 1.30.30 - 2026-09-18 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+
+> **How DT works with CS changed between 1.0.92 and 1.0.99. Anything below that contradicts this block is history, not behaviour.**
+>
+> - **Nothing is pushed at bootstrap.** `session-bootstrap:3.50` deleted `turn-package`, `load-bootstrap-gates`, `format-bootstrap-gates`, the `critical_gates` manifest and the "CRITICAL GATES LOADED" banner. Practices arrive only when pulled: `context_read scope=knowledge action=task-brief intent="<in your own words>" components=<what you will touch>`. `intent` is required and is kept on the ledger row, because a retrieval whose question was not kept cannot be scored.
+> - **The operative instructions live in CS, not in the claude.ai project description.** The description is a pointer; the sections are `project_instruction_revisions`, read with `context_read scope=project_bridge action=project_instructions`, and changed by propose-then-approve rather than by editing the description.
+> - **A session is a chat.** Pass `conversationId` on bootstrap AND on the CS claim, the same string on both, or a restart mints a new session instead of resuming. Check `lifecycle-start` for `resumed:true` -- a wrong id fails silently and looks exactly like a correct first run.
+> - **PLAN-GATE refuses the first mutating call per component** and wants `planAck="<id>:y|n,..."` -- your verdict on what it showed you, not an acknowledgement that it spoke. `file_write` and `execute` take `options.intent`, which is what the gate selects on.
+> - **Retrieval admits on two channels** since 1.0.98: term coverage, and cosine neighbourhood over `practice_embeddings` (local Ollama, `nomic-embed-text`). `ranking=terms` turns the semantic channel off. Measured: it changes the golden-set score by nothing at k=3 -- see decision 216 for why, and do not repeat the claim that it improved retrieval.
+> - **Five hard gates**, compiled live: read them with `context_read scope=session_init section=policy`. Never write the count or the list into prose.
 - **Deployed jar:** `C:/Users/willw/claude-sync/jars/mcp-groovy-filesystem-server-<version>.jar`
 
 ---
