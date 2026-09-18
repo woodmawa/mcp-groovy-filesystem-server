@@ -6,7 +6,7 @@
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
 - **Current version:** `0.9.39` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.45 / CS 1.1.0 / AW 1.30.30 - 2026-09-18 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+- **Baseline stack:** FS 0.9.45 / CS 1.1.1 / AW 1.30.30 - 2026-09-18 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
 
 > **How DT works with CS changed between 1.0.92 and 1.0.99. Anything below that contradicts this block is history, not behaviour.**
 >
