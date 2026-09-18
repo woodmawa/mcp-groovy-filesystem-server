@@ -1639,3 +1639,14 @@ WP-5d N11 of `BUILD-BRIEF-2026-09-17-close-the-loop-at-the-gate`, paired with CS
 ## [0.9.44]
 WP-2a of `BUILD-BRIEF-2026-09-17-close-the-loop-at-the-gate`, paired with CS 1.0.90.
 - **`options.planAck` is carried to the gate.** `file_write` and `execute` both take it and pass it through `PlanGateGuard` to CS: `"<id>:y|n,..."`, your verdict on the practices PLAN-GATE just showed. A retry carrying an ack is never refused; without one the retry is refused once more, then allowed and recorded unjudged. Both tool schemas document it (practice #310: a new parameter that is not in the schema is a parameter Claude calls blind).
+
+
+## 0.9.45 — file_write can say what it is for
+
+`file_write options.intent` — free text, optional, passed straight through to CS's PLAN-GATE.
+
+Until now only `execute` carried an intent, so a `file_write` was gated on the **component** alone: the gate answered "what does the corpus know about `ContextWriteActionRouter`" when the question was "what does it know about the thing I am about to do to it", and the component is the one part of that the caller could not have got wrong. CS 1.0.96 WP-3c added the selection on intent and the fallback to the session's last stated intent; this is the parameter that makes the stated half reachable.
+
+It is also kept on the retrieval ledger (`practice_use_events.intent_text`), so what the gate showed you can be scored afterwards — 146 of 209 `for-action` retrievals up to 2026-09-17 recorded a blank `task_signal` because free-text intent was read by nothing and kept nowhere.
+
+Without one, nothing changes: the gate falls back exactly as before. Suite: **432 tests, 0 failures**, run fresh this session.

@@ -56,12 +56,24 @@ class PlanGateGuard {
 
     final AtomicInteger unavailable = new AtomicInteger()
 
-    /** @return a refusal message, or null to proceed. */
-    String checkWrite(String action, String path, String planAck = null) {
+    /**
+     * @param intent  FS 0.9.45 WP-2b -- what this write is FOR, in the caller's own words.
+     *
+     * <p>Until now only execute carried an intent, so a file_write was gated on the COMPONENT alone:
+     * the gate answered "what does the corpus know about ContextWriteActionRouter" when the question
+     * was "what does it know about the thing I am about to do to it", and the component is the one
+     * part of that the caller could not have got wrong. CS 1.0.96 WP-3c added the selection on
+     * intent and the fallback to the session's last stated intent; this is the parameter that makes
+     * the stated half reachable. Optional: without one the gate falls back exactly as before.</p>
+     *
+     * @return a refusal message, or null to proceed.
+     */
+    String checkWrite(String action, String path, String planAck = null, String intent = null) {
         if (!enforced || !path || NON_MUTATING_WRITE_ACTIONS.contains(action)) return null
         Map<String, Object> args = [tool: 'file_write', path: path] as Map<String, Object>
         // FS 0.9.44 WP-2a: the judgement DT gives at the retry, passed straight through to CS.
         if (planAck) args.put('planAck', planAck)
+        if (intent)  args.put('intent', intent)
         return ask(args)
     }
 
