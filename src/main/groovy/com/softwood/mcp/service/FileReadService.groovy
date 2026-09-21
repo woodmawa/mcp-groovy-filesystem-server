@@ -197,7 +197,19 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                      'read_office']],
                     path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read/help)'],
                     options: [type: 'object', description: 'Action-specific options',
-                              properties: [
+                              properties: READ_OPTION_SCHEMA]
+                ],
+                required  : ['action']
+            ]
+        ]] as List<Map<String, Object>>
+    }
+
+    // FS 0.9.46 -- the declared option schema, lifted out of getToolDefinitions so that the set of
+    // keys the server ADVERTISES and the set it NORMALISES are the same object rather than two
+    // hand-kept lists. Practice #195 is about exactly this drift: the fix there was to derive the
+    // schema from a registry instead of maintaining a parallel copy, and a second hand-written
+    // key list here would have been the same defect in a new place.
+    private static final Map<String, Object> READ_OPTION_SCHEMA = [
                                   lines       : [type: 'integer', description: 'Lines for head/tail (default 50)'],
                                   startLine   : [type: 'integer', description: 'Start line for range, 1-indexed (required for range)'],
                                   maxLines    : [type: 'integer', description: 'Max lines for range (default 100)'],
@@ -218,23 +230,93 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   force       : [type: 'boolean', description: 'Re-send content this chat was already sent (after compaction, or when a subagent made the read). Also overrides the >200-line refusal on action=read.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
-                                  toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.']
-                              ]]
-                ],
-                required  : ['action']
-            ]
-        ]] as List<Map<String, Object>>
-    }
+                                  toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.'],
+                                  endLine     : [type: 'integer', description: 'End line for range, 1-indexed INCLUSIVE -- alternative to maxLines. Accepted because every read response (range, get_method, structure) REPORTS endLine, and file_write action=patch accepts it.']
+    ] as Map<String, Object>
+
+    // Keys the read path genuinely reads but the schema has never declared. Each is arguably a
+    // schema bug rather than a legitimate exception, which is why they are named here instead of
+    // being folded silently into the derived set -- a list of four is auditable, a permissive
+    // allowlist is not. knownFileHash is an undeclared alias for knownHash (see dedupedRange);
+    // _blocked is set by this class after dispatch, not by a caller.
+    private static final Set<String> UNDECLARED_OPTION_KEYS =
+        ['knownFileHash', '_blocked', 'allowNoLocate', 'intent'] as Set<String>
+
+    private static final Set<String> READ_OPTION_KEYS =
+        ((READ_OPTION_SCHEMA.keySet() as Set<String>) + UNDECLARED_OPTION_KEYS) as Set<String>
 
     @Override
     boolean canHandle(String toolName) { toolName == 'file_read' }
+
+    /**
+     * FS 0.9.46 -- fold top-level option keys into options, correct their casing, and translate
+     * endLine into maxLines.
+     *
+     * Measured 2026-09-21 in a live session. A range read passed startLine/endLine at TOP level:
+     * neither is declared there, so they were dropped before this service ever saw them and the
+     * defaults answered instead -- lines 1-100 of a file where 412-505 were wanted. The retry
+     * moved them inside options and still passed endLine, which range did not accept, so maxLines
+     * defaulted to 100 and answered again. Two reads that reported success and answered a
+     * different question than the one asked -- worse than an error, because an error prompts a
+     * retry and a plausible wrong answer gets acted on.
+     *
+     * file_write has had promoteTopLevelParams for this since 0.9.0; file_read never got it. And
+     * endLine was never an exotic guess: get_method, structure, range and the served ledger all
+     * REPORT endLine, and file_write action=patch ACCEPTS it. The server spoke endLine everywhere
+     * except the one place a caller had to type it, so the caller was reading the server's own
+     * vocabulary back to it and being told it did not exist.
+     *
+     * Deliberately a translation and NOT a refusal. Two of the keys this path reads are not in
+     * the schema at all, so a strict allowlist would refuse working calls; and making a call mean
+     * what the caller intended is strictly better than making it fail.
+     */
+    private static Map<String, Object> normaliseReadOptions(
+            String action, Map<String, Object> arguments, Map<String, Object> options) {
+
+        Map<String, Object> merged = new LinkedHashMap<String, Object>(options ?: [:])
+        Map<String, String> byLower = new LinkedHashMap<String, String>()
+        for (String k : READ_OPTION_KEYS) byLower.put(k.toLowerCase(), k)
+
+        // Case-correct keys already in the right place: startline -> startLine. A caller who got
+        // both the key and the nesting right should not lose to a shift key.
+        for (String supplied : new ArrayList<String>(merged.keySet())) {
+            String canonical = byLower.get(supplied.toLowerCase())
+            if (canonical != null && canonical != supplied && !merged.containsKey(canonical)) {
+                merged.put(canonical, merged.remove(supplied))
+                log.debug('file_read {}: option key {} case-corrected to {}', action, supplied, canonical)
+            }
+        }
+
+        // Promote recognised option keys sent at the top level rather than inside options.
+        for (Map.Entry<String, Object> e : arguments.entrySet()) {
+            String key = String.valueOf(e.key)
+            if (key == 'action' || key == 'path' || key == 'options') continue
+            String canonical = byLower.get(key.toLowerCase())
+            if (canonical != null && !merged.containsKey(canonical)) {
+                merged.put(canonical, e.value)
+                log.debug('file_read {}: promoted top-level option {} into options', action, canonical)
+            }
+        }
+
+        // endLine -> maxLines, INCLUSIVE, matching how every read response reports a line range.
+        if (merged.containsKey('endLine') && !merged.containsKey('maxLines')) {
+            Integer end = merged.get('endLine') as Integer
+            int start = (merged.get('startLine') as Integer) ?: 1
+            if (end != null && end >= start) {
+                merged.put('maxLines', (end - start) + 1)
+                log.debug('file_read {}: endLine={} with startLine={} -> maxLines={}',
+                          action, end, start, merged.get('maxLines'))
+            }
+        }
+        return merged
+    }
 
     @Override
     McpResponse handleToolCall(String toolName, Map<String, Object> arguments, Object requestId) {
         try {
             String action               = arguments.action as String
             String path                 = arguments.path as String
-            Map<String, Object> options = normaliseOptions(arguments.options)
+            Map<String, Object> options = normaliseReadOptions(action, arguments, normaliseOptions(arguments.options))
 
             // Guard: most actions require a valid path
             if (!path && action != 'multi' && action != 'multi_grep' && action != 'project_root' && action != 'allowed_dirs' && action != 'chunk_read' && action != 'finalise_read' && action != 'help') {

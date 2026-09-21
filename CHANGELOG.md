@@ -1650,3 +1650,32 @@ Until now only `execute` carried an intent, so a `file_write` was gated on the *
 It is also kept on the retrieval ledger (`practice_use_events.intent_text`), so what the gate showed you can be scored afterwards — 146 of 209 `for-action` retrievals up to 2026-09-17 recorded a blank `task_signal` because free-text intent was read by nothing and kept nowhere.
 
 Without one, nothing changes: the gate falls back exactly as before. Suite: **432 tests, 0 failures**, run fresh this session.
+
+
+## 0.9.46 — file_read speaks the same language it answers in
+
+`file_read action=range` silently answered a different question than the one asked, twice in one session, and reported success both times.
+
+`startLine`/`endLine` passed at **top level** are not declared there, so they were dropped before `FileReadService` ever saw them and the defaults answered instead — lines 1-100 of a file where 412-505 were wanted. Moved inside `options`, `endLine` was not a parameter of `range` at all, so `maxLines` defaulted to 100 and answered again. Neither call errored. That is worse than an error: an error prompts a retry, a plausible wrong answer gets acted on.
+
+Both halves were the server's, not the caller's.
+
+`file_write` has had `promoteTopLevelParams` for exactly this since 0.9.0 — it quietly rescues a top-level `expectedHash`, `oldText`, `newText` or `replacements`. `file_read` never got it, so the same mistake is forgiven on one tool and silently punished on the other.
+
+And `endLine` was never an exotic guess. `get_method`, `structure`, `range` and the served ledger all **report** `endLine`; `file_write action=patch` **accepts** it. `range` was the single place it was refused. The caller was reading the server's own vocabulary back to it and being told it did not exist.
+
+### normaliseReadOptions
+
+Promotes recognised option keys sent at top level, case-corrects keys already inside `options` (`startline` → `startLine` — a caller who got both the key and the nesting right should not lose to a shift key), and translates `endLine` into `maxLines` inclusively.
+
+The key set is **derived from the schema map**, not hand-listed. The first cut kept a parallel hand-written list beside the schema; PLAN-GATE surfaced practice #195 — schema drift, where the fix is to derive from one source rather than maintain a copy — and a second hand-kept list would have been that defect in a new place. `READ_OPTION_SCHEMA` is now the single object the server both advertises and normalises against, lifted out of `getToolDefinitions`.
+
+Four keys the read path genuinely reads are in no schema and are named explicitly in `UNDECLARED_OPTION_KEYS` rather than folded in silently: `knownFileHash` (an undeclared alias for `knownHash`), `_blocked` (set after dispatch, never by a caller), `allowNoLocate`, `intent`. A list of four is auditable; a permissive allowlist is not. Each is arguably a schema bug.
+
+Deliberately a **translation and not a refusal**. Two of those keys are live and undeclared, so a strict allowlist built from the schema would refuse working calls — and making a call mean what the caller intended beats making it fail.
+
+### file_write names its actions
+
+`Unknown file_write action: bogus` now enumerates the valid set, which `file_read` has done since it was written. Two probe calls were burned this session discovering that, against a server that already knew the answer.
+
+Suite: **432 tests, 0 failures**, run fresh this session.

@@ -270,7 +270,15 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                 case 'server_transform': response = fileTransformService.applyTransform(path, options, requestId); break
                 case 'write_office'    : response = officeHandler.writeOffice(path, options, requestId); break
                 default:
-                    return McpResponse.toolError(requestId, "Unknown file_write action: ${action}")
+                    // FS 0.9.46: enumerate. file_read has named its valid actions in this error
+                    // since it was written; file_write named none, so the only way to discover a
+                    // valid action was to guess again or go and read the schema. Measured
+                    // 2026-09-21: two consecutive probe calls burned on exactly that, against a
+                    // server that already knew the answer.
+                    return McpResponse.toolError(requestId,
+                        "Unknown file_write action: '${action}'. Valid actions: write|append|replace|patch|" +
+                        "multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status|" +
+                        "write_office. For reads use the 'file_read' tool; for scripts use 'execute'.")
             }
             // Invalidate structure cache after any successful mutating action.
             // CT-FW-RG-4 (FS 0.9.3): guard against toolError responses -- McpResponse.toolError()
