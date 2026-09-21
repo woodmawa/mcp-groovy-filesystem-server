@@ -6,7 +6,7 @@
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
 - **Current version:** `0.9.39` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.45 / CS 1.1.5 / AW 1.30.30 - 2026-09-18 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+- **Baseline stack:** FS 0.9.46 / CS 1.1.7 / AW 1.30.30 - 2026-09-21 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
 
 > **How DT works with CS changed between 1.0.92 and 1.0.99. Anything below that contradicts this block is history, not behaviour.**
 >
@@ -100,6 +100,25 @@ src/main/groovy/com/softwood/mcp/
 ---
 
 ## Critical call patterns — get these right
+
+### file_read options: endLine works, and top-level keys are promoted (FS 0.9.46)
+
+`action=range` accepts **`endLine`** (1-indexed, INCLUSIVE) as an alternative to `maxLines`:
+
+```
+file_read action=range path=<p> options={startLine: 412, endLine: 505}
+```
+
+Before 0.9.46 it accepted only `maxLines`, which was the single place in the server where `endLine` was refused -- `get_method`, `structure`, `range` and the served ledger all **report** `endLine`, and `file_write action=patch` **accepts** it. A caller passing `endLine` was reading the server's own vocabulary back to it and being told it did not exist.
+
+**Recognised option keys sent at the TOP level are now folded into `options`**, and keys inside `options` are case-corrected (`startline` -> `startLine`). `file_write` has had `promoteTopLevelParams` for this since 0.9.0; `file_read` never did, so the same mistake was forgiven on one tool and silently punished on the other.
+
+**Why this mattered more than it sounds.** Measured live on 2026-09-21: a range read passed `startLine`/`endLine` at top level, where neither is declared, so both were dropped before `FileReadService` saw them and the defaults returned lines 1-100 of a file where 412-505 were wanted. The retry moved them into `options` and still passed `endLine`, so `maxLines` defaulted to 100 and answered again. **Neither call errored.** Two reads that reported success and answered a different question than the one asked -- worse than an error, because an error prompts a retry and a plausible wrong answer gets acted on.
+
+It is a translation, not a refusal. `knownFileHash` and `_blocked` are read by the live path and appear in no schema, so an allowlist built from the schema would refuse working calls. The key set is DERIVED from `READ_OPTION_SCHEMA` rather than hand-listed (practice #195), with the four undeclared keys named explicitly in `UNDECLARED_OPTION_KEYS`.
+
+Also 0.9.46: `file_write`'s unknown-action error now **enumerates** its valid actions, which `file_read` has done since it was written.
+
 
 ### file_read action=list — returns listing_hash, supports knownHash
 
