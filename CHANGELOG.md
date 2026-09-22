@@ -2042,3 +2042,19 @@ Practice #3506 rewritten to describe the sandbox.
 
 Still known: `file_write action=replace` with `newText == oldText` reports success over an unchanged file
 (same class as the 0.9.48 empty append).
+
+
+## [0.9.53]
+
+**`args_hash` identifies the call, not the gate conversation around it.** `M3-advice-changed-the-next-call`
+scores a PLAN-GATE refusal as "followed" when the next call from the same process differs in action or
+`args_hash`. The first `plan_gate_fired` rows the platform ever wrote (0.9.52, verified live 2026-09-22) showed
+the flaw at once: every acked retry adds `options.planAck`, so it always hashed differently, and M3 would have
+read close to 100% for a caller who acknowledged every practice and changed nothing. `buildArgsHash` now removes
+`planAck` and `intent` -- the caller talking to the gate, not the work -- and sorts nested options so key order
+cannot move the hash. The same change makes `is_repeat` honest for a retry that changed nothing else.
+
+`ArgsHashGateKeysSpec` FS-M3-HASH-1..5, with two controls: a retry whose content changed, and one whose real
+options changed, still hash differently. Red-first was by construction rather than by mutation --
+`buildArgsHash` was private and the spec did not compile against 0.9.52 -- so HASH-1/2 are the ones to watch if
+this method is touched again.

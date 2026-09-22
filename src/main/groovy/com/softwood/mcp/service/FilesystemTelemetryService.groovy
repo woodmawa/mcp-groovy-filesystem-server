@@ -610,10 +610,30 @@ class FilesystemTelemetryService {
         }
     }
 
-    private static String buildArgsHash(Map<String, Object> args) {
+    /**
+     * FS 0.9.53: the hash identifies the CALL, not the gate conversation around it.
+     *
+     * <p>M3-advice-changed-the-next-call asks whether the call after a PLAN-GATE refusal differs
+     * from the refused one in action or args_hash. Every acked retry adds options.planAck, so it
+     * always hashed differently and M3 would have scored every retry as advice followed -- measured
+     * 2026-09-22 on the first plan_gate_fired rows the platform ever wrote. planAck and intent are
+     * the caller talking to the gate, not the work; they are removed before hashing. The same
+     * change makes is_repeat honest for a retry that changed nothing else.</p>
+     */
+    static final Set<String> GATE_ONLY_OPTION_KEYS = ['planAck', 'intent'] as Set<String>
+
+    @groovy.transform.PackageScope
+    static String buildArgsHash(Map<String, Object> args) {
         if (!args) return 'noargs'
         try {
-            String str = args.sort().toString()
+            Map<String, Object> copy = new TreeMap<String, Object>(args)
+            Object opts = copy.get('options')
+            if (opts instanceof Map) {
+                Map<String, Object> o = new TreeMap<String, Object>(opts as Map<String, Object>)
+                GATE_ONLY_OPTION_KEYS.each { o.remove(it) }
+                copy.put('options', o)
+            }
+            String str = copy.toString()
             return Integer.toHexString(str.hashCode()).padLeft(8, '0')[0..7]
         } catch (Exception e) {
             return 'hasherr'
