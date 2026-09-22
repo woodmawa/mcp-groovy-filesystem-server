@@ -6,7 +6,9 @@
 - **Purpose:** MCP filesystem server — file read/write/search/list/execute for Windows
 - **Transport:** STDIO (primary, Claude Desktop) + Streamable HTTP companion (:8081)
 - **Current version:** `0.9.39` (check `build.gradle` to confirm)
-- **Baseline stack:** FS 0.9.46 / CS 1.1.7 / AW 1.30.30 - 2026-09-21 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.47; 408 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+- **Baseline stack:** FS 0.9.48 / CS 1.1.10 / AW 1.30.30 - 2026-09-22 (every read action de-duplicated by the per-chat served ledger, decision 206; PLAN-GATE live and tuned: command-position git/gradlew only, listing forms and shell-variable directories handled; running version stamped at claim_session; session-bootstrap 3.50; 445 FS tests; the CS and AW numbers are hand-maintained here and watched by nothing — see W26)
+
+- **Since 0.9.46, two releases that are one lesson.** **0.9.47** — `execute action=groovy` had been completely dead since `e259442` (v0.7.1), roughly forty minor versions: `SecureMcpScript.getScriptOutput()` was `private` and invisible to the caller's compiled `Script1`, *and* `doGroovy` never read the output buffer, returning only the script's last expression. Two defects, the second surviving a fix to the first. It stayed dark because no spec ran the action. **0.9.48** — `file_write action=append` with absent `content` returned `success: true` and wrote nothing; and `ExecuteService` got `ExecuteServiceDispatchSpec`, the first spec in its history to call `handleToolCall` at all. **If you are about to trust that some backend works because nothing has complained, check that something actually exercises it.**
 
 > **How DT works with CS changed between 1.0.92 and 1.0.99. Anything below that contradicts this block is history, not behaviour.**
 >
