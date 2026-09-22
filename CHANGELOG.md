@@ -1843,3 +1843,61 @@ without the name, which leaves the action merely unadvertised.
 
 Suite: **445 tests, 0 failures**, run fresh this session. Mutation checks run in both
 directions on CT-APPEND (two passes, as above) and on FS-EXEC-5b.
+
+---
+
+## [0.9.49]
+
+### `installed_version` recorded builds, not installs
+
+`copyToJarsDir` writes `server_versions.installed_version`, and its guard was
+`jar.exists()` — the jar in `build/libs`, which exists because the **build** succeeded and
+says nothing whatever about whether the **install** did.
+
+The wiring makes that worse rather than harmless:
+
+```groovy
+tasks.named('installMcpbLocal').configure { finalizedBy 'copyToJarsDir' }
+```
+
+`finalizedBy` is Gradle's `finally` block. **It runs when the finalized task fails.** So a
+failed install ran the finalizer, the finalizer saw a built jar, and the registry recorded
+an install that had not happened.
+
+**Why this one mattered more than its size.** `WP4c-installed-is-running` and `WP4d` read
+`installed_version` to decide whether the installed version is the running one. A contract
+was being disarmed by its own data source — the third instance of that shape in this arc,
+after `INSERT OR REPLACE` nulling the column WP4c guarded on, and `gate-shows-are-applicable`
+measuring session hygiene. Observation 11412, chain `fea4265c`.
+
+Not hypothetical: on 2026-09-22 an install failed because the filename was unchanged and the
+running JVM held the jar open. The registry recorded it anyway.
+
+**The fix asserts the install's own evidence** — the jar sitting in the DT extension cache,
+carrying this build's bytes — and not the task's exit state, not a flag, not the build output.
+
+**Hash, not length.** A failed copy over a locked file of the same name leaves the *old* jar
+in place, and two builds of one version are near enough in size to match. Length would have
+passed the exact case that motivated this.
+
+**And it fails loudly.** The skip prints which of the two reasons applies — no jar for this
+version at all, or a jar whose contents differ — and says plainly that `installed_version` was
+left alone because it records installs, not builds. Silence is what let a phantom install
+stand.
+
+### A/B, run live in both directions
+
+Not on a fixture — against the real registry, with 0.9.48 genuinely installed:
+
+| | guard | `copyToJarsDir` on uninstalled 0.9.49 | `installed_version` after |
+|---|---|---|---|
+| **old** | `jar.exists()` | wrote `-> 0.9.49` | **0.9.49 — a phantom** |
+| **new** | install-evidence hash | refused, with the reason | **0.9.48 — unchanged** |
+
+The row was restored to `0.9.48` afterwards. Three builds across FS, CS and AW then ran with
+the new guard and produced **zero** phantom rows between them.
+
+Suite: **445 tests, 0 failures**, run fresh this session (CS 3118/0 and AW 889/0 alongside;
+CS first reported `BUILD SUCCESSFUL in 959ms`, which was `UP-TO-DATE` against results two
+hours stale — re-run with `cleanTest`, and the result-file timestamps checked rather than the
+word "successful").

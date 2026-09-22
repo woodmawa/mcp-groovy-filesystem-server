@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.48'
+version = '0.9.49'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -380,6 +380,14 @@ tasks.register('installMcpbLocal') {
     }
 }
 
+// FS 0.9.49: used by copyToJarsDir to prove an install actually landed, by comparing the
+// built jar's bytes with the jar sitting in the DT extension cache.
+ext.sha256Of = { File f ->
+    def digest = java.security.MessageDigest.getInstance('SHA-256')
+    f.eachByte(8192) { byte[] buf, int len -> digest.update(buf, 0, len) }
+    return digest.digest().collect { String.format('%02x', it & 0xff) }.join('')
+}
+
 // --- copyToJarsDir -------------------------------------------------------
 // Copies the built jar to claude-sync/jars/ so HTTP companion mode works
 // after a DT restart. installMcpbLocal copies to the DT Extensions dir
@@ -430,7 +438,48 @@ tasks.register('copyToJarsDir') {
 
         // Update server_versions in best_practices.db so session-bootstrap reports correct
         // version immediately on first run after DT restart. Removes manual context_write step.
-        if (jar.exists()) {
+        //
+        // FS 0.9.49 -- THE WRITE DEPENDS ON THE INSTALL, NOT ON THE BUILD.
+        //
+        // This guard used to be jar.exists(): the jar in build/libs, which exists because the
+        // BUILD succeeded and says nothing about whether the INSTALL did. copyToJarsDir is
+        // wired with finalizedBy, which in Gradle is a finally block -- it runs even when
+        // installMcpbLocal FAILS. So a failed install still stamped installed_version, and
+        // the registry asserted an install that had not happened. WP4c and WP4d read exactly
+        // that column to decide whether the installed version is the running one, so the
+        // contract was being disarmed by its own data source.
+        //
+        // Not hypothetical: on 2026-09-22 an install failed because the filename was unchanged
+        // and the running JVM held the jar open. The registry recorded it anyway.
+        // Observation 11412, chain fea4265c.
+        //
+        // The evidence of an install is the jar in the DT extension cache carrying THIS
+        // build's bytes -- so that is what is checked, by hash. Not the task's exit state and
+        // not the build output. Length alone is not enough: a failed copy over a locked file
+        // of the same name leaves the OLD jar in place, and two builds of one version are
+        // near enough in size to match.
+        def dtInstalledJar = new File(
+            "$System.env.APPDATA/Claude/Claude Extensions/local.mcpb.will-woodman.${project.name}/server/${jar.name}")
+        String builtHash = null, installedHash = null
+        if (jar.exists() && dtInstalledJar.exists()) {
+            builtHash     = sha256Of(jar)
+            installedHash = sha256Of(dtInstalledJar)
+        }
+        boolean installLanded = builtHash != null && builtHash == installedHash
+
+        if (!installLanded) {
+            // LOUD, and it says which of the two reasons. Silence here is what let a phantom
+            // install stand for months.
+            logger.warn('DB: server_versions NOT updated -- no evidence this version was installed.')
+            logger.warn("DB:   built jar      : ${jar.exists() ? jar.path : 'MISSING'}")
+            logger.warn("DB:   DT extension jar: ${dtInstalledJar.exists() ? dtInstalledJar.path : 'MISSING'}")
+            logger.warn(dtInstalledJar.exists()
+                ? 'DB:   both present but contents DIFFER -- the copy did not take (jar most likely locked by a running JVM).'
+                : 'DB:   the install never placed a jar for this version. Close Claude and the JVMs, then re-run.')
+            logger.warn('DB:   installed_version left as it was. This is correct: it records installs, not builds.')
+        }
+
+        if (installLanded) {
             def dbPath = 'C:/Users/willw/claude-sync/best_practices.db'
             try {
                 // Load sqlite-jdbc from resolved runtime classpath -- avoids buildscript classpath issue
