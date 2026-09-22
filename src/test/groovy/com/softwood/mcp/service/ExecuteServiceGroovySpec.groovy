@@ -33,21 +33,19 @@ import spock.lang.Title
  * script. A backend with no test can go dark and stay dark.
  *
  * These specs MUST FAIL on today's code.
+ *
+ * FS 0.9.51: moved onto the @SpringBootTest fixture. doGroovy now runs through
+ * SecurityService.executeWithTimeout and hands the allowed directories to the sandbox, and
+ * a hand-built `new ExecuteService()` has neither -- the null-fixture shape the dispatch
+ * spec's header warns about, one file over.
  */
+@org.springframework.boot.test.context.SpringBootTest
+@org.springframework.test.context.ActiveProfiles('test')
 @Title('ExecuteService -- FS-EXEC-3 the groovy runner')
 class ExecuteServiceGroovySpec extends Specification {
 
-    ExecuteService service
+    @org.springframework.beans.factory.annotation.Autowired ExecuteService service
     String workDir = System.getProperty('java.io.tmpdir')
-
-    def setup() {
-        service = new ExecuteService()
-        service.enableGroovy = true
-        service.maxExecutionTimeSeconds = 30
-        CommandWhitelistConfig cfg = new CommandWhitelistConfig()
-        cfg.initPatterns()
-        service.whitelistConfig = cfg
-    }
 
     private static String payloadOf(def response) {
         def content = response?.result?.content

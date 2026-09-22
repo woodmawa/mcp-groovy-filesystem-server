@@ -2,6 +2,7 @@ package com.softwood.mcp.service
 
 import com.softwood.mcp.config.CommandWhitelistConfig
 import com.softwood.mcp.model.McpResponse
+import com.softwood.mcp.script.PathConfinementCustomizer
 import com.softwood.mcp.script.SecureMcpScript
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
@@ -341,13 +342,21 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         try {
             CompilerConfiguration config = new CompilerConfiguration()
             config.scriptBaseClass = SecureMcpScript.name
+            // FS 0.9.51 FS-GS: the sandbox. Rewrites new File / Paths.get / Path.of into the
+            // confined DSL helpers and refuses unconfinable stream constructors at compile time.
+            config.addCompilationCustomizers(new PathConfinementCustomizer())
 
             Binding binding = new Binding()
             binding.setVariable('workingDir', workingDir)
             binding.setVariable('args', (options.args as List<String>) ?: [])
+            binding.setVariable('__allowedDirs', new ArrayList<String>(allowedDirectories ?: [] as List<String>))
 
             GroovyShell shell = new GroovyShell(this.class.classLoader, binding, config)
-            Object result = shell.evaluate(script)
+            // FS 0.9.51: options.timeout was accepted and never applied here -- evaluate ran
+            // unbounded on the caller's thread while executeWithTimeout sat unused one service
+            // over. A script that hangs now returns 'Execution timed out after Ns'.
+            Object result = securityService.executeWithTimeout("groovy-${requestId}".toString(),
+                { -> shell.evaluate(script) } as java.util.concurrent.Callable<Object>, timeout)
 
             long durationMs = System.currentTimeMillis() - start
 

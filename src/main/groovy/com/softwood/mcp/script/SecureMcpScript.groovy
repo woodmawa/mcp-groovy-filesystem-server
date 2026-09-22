@@ -74,7 +74,53 @@ abstract class SecureMcpScript extends Script {
     File file(String path) {
         if (!path) return null
         File f = new File(path)
-        return f.isAbsolute() ? f : new File(workingDir, path).canonicalFile
+        return confine(f.isAbsolute() ? f : new File(workingDir, path))
+    }
+
+    // -----------------------------------------------------------------------
+    // FS 0.9.51 FS-GS -- the sandbox. PathConfinementCustomizer rewrites every
+    // `new File(...)`, `Paths.get(...)` and `Path.of(...)` in the script into these helpers,
+    // so the natural script shape gains: relative names resolve against workingDir (not the
+    // JVM cwd, which is the Claude app folder), and any canonical path outside the allowed
+    // directories is refused. The allowed set arrives in the `allowedDirs` binding from
+    // doGroovy; with no binding, workingDir alone is allowed.
+    // -----------------------------------------------------------------------
+
+    File file(String parent, String child)  { confine(new File(file(parent), child ?: '')) }
+    File file(File parent, String child)    { confine(new File(confine(parent), child ?: '')) }
+    File file(Object any)                   { any instanceof File ? confine((File) any) : file(any?.toString()) }
+
+    /** Confined replacement for Paths.get(first, more...) / Path.of(first, more...). */
+    java.nio.file.Path path(Object first, Object... more) {
+        String joined = ([first?.toString()] + (more ? more*.toString() : [])).findAll { it != null }.join(File.separator)
+        return file(joined).toPath()
+    }
+
+    /** The directories a script may touch, canonicalised. Read from the `__allowedDirs` binding
+     *  (doGroovy sets it); the double underscore keeps it out of the way of script variables, and
+     *  confine() calls this getter EXPLICITLY -- inside a Script a bare property name resolves to the
+     *  binding before the class, which is how the first build compared against the raw list. */
+    protected List<String> getAllowedDirs() {
+        List<String> dirs = binding.hasVariable('__allowedDirs') ? (binding.getVariable('__allowedDirs') as List<String>) : null
+        if (!dirs) dirs = [workingDir]
+        return dirs.collect { canonicalKey(new File(it)) }
+    }
+
+    private static String canonicalKey(File f) {
+        String c = f.canonicalPath.replace('\\', '/')
+        return System.getProperty('os.name').toLowerCase().contains('windows') ? c.toLowerCase(Locale.ROOT) : c
+    }
+
+    /** Refuse a File whose canonical path is not under an allowed directory; return it canonical otherwise. */
+    protected File confine(File f) {
+        if (f == null) return null
+        File canon = f.canonicalFile
+        String key = canonicalKey(canon)
+        List<String> allowed = getAllowedDirs()
+        for (String dir : allowed) {
+            if (key == dir || key.startsWith(dir.endsWith('/') ? dir : dir + '/')) return canon
+        }
+        throw new SecurityException("SANDBOX: path '${canon}' is not in the allowed directories for this script (${allowed.join(', ')}). Relative names resolve against workingDir.")
     }
 
     String readText(String path, String encoding = 'UTF-8') {
@@ -144,9 +190,12 @@ abstract class SecureMcpScript extends Script {
     }
     Map<String, Object> ps(String command) { powershell(command) }
 
-    /** Run a bash command */
+    /** Run a bash command. FS 0.9.51: base64 through argv, never the script itself -- the same
+     *  Windows argv-quoting defect fixed in ExecuteService.doBash (0.9.50) lived here too. */
     Map<String, Object> bash(String command) {
-        runCmd(['bash', '-c', command])
+        String body = command.replaceAll('\\r\\n', '\n')
+        String b64 = Base64.encoder.encodeToString(body.getBytes('UTF-8'))
+        runCmd(['bash', '-c', "echo ${b64} | base64 -d | bash".toString()])
     }
 
     /** Run a cmd /c command (Windows) */

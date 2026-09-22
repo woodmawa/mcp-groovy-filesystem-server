@@ -1983,3 +1983,31 @@ code-file filter; `file_list action=list` and `file_read action=list` produce `l
 different lengths, so a hash from one never matches the other; `file_read action=normalize` does not
 collapse `..` (security still refuses the escape). A stray top-level directory `C` + U+F03A sits in the
 repo root -- something once created `C:...` as a relative path.
+
+
+## [0.9.51]
+
+**`execute action=groovy` runs inside a sandbox, and `options.timeout` is applied.** Will's decision after
+0.9.50's probe read `C:/Windows/win.ini` from a groovy script: protect groovy within a secure sandbox that
+still supports what Claude routinely writes.
+
+- `PathConfinementCustomizer` (CONVERSION phase) rewrites `new File(...)`, `Paths.get(...)` and `Path.of(...)`
+  into `SecureMcpScript.file(...)` / `path(...)`, which resolve a relative name against `workingDir` and refuse
+  a canonical path outside the allowed directories. The ordinary script keeps its shape and gains the
+  confinement -- `new File('rel.txt')` now lands in `workingDir` instead of the Claude app folder. Closure
+  bodies are walked explicitly (`ClosureExpression.transformExpression` returns itself).
+- Stream constructors that open a path directly (`FileInputStream`, `FileWriter`, `RandomAccessFile`,
+  `PrintWriter` ...) and unconfined factories (`File.createTempFile`, `Files.createTemp*`, `FileSystems.*`)
+  are refused at compile time with a message naming the helper.
+- `doGroovy` evaluates through `SecurityService.executeWithTimeout` -- the helper existed and was never called,
+  so `options.timeout` was accepted and ignored. A hung script now returns `Execution timed out after Ns`.
+- The DSL `bash()` helper had the same argv-quoting defect as `doBash`; base64 now.
+- `SecureMcpScript.confine()` calls `getAllowedDirs()` explicitly: inside a `Script`, a bare property name
+  resolves to the binding before the class, and the first build compared against the raw list. The binding
+  key is `__allowedDirs` so nothing a script declares can shadow it.
+- `ExecuteServiceGroovySpec` moved onto the Spring fixture (a hand-built service has no `SecurityService`).
+
+`ExecuteServiceGroovySandboxSpec` (8 cases) 8/8 red on 0.9.50 for the intended reasons -- win.ini read three
+ways, `..` escape, timeout ignored, bash helper truncated, relative file missing -- and green on 0.9.51 with the
+control case (`new File(workingDir, 'a.txt')`, `writeText`, `Paths.get(workingDir, ...)`, `listDir`) unchanged.
+Practice #3506 rewritten to describe the sandbox.
