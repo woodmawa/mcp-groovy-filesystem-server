@@ -1759,3 +1759,87 @@ the file is unchanged *and* a refusal returned, not that a flag was true.
 
 Suite: **438 tests, 0 failures**, run fresh this session. Mutation check run in both
 directions on FS-EXEC-4 (red with the guard disabled, nothing else red; green restored).
+
+---
+
+## [0.9.48]
+
+Two entries, and they are the same entry twice: a step that reported success without
+doing the work, and the fixture that could not have caught it.
+
+### `append` with no content returned `success: true` and wrote nothing
+
+`doAppend` did `(content ?: '')`, so a null content wrote zero bytes and answered
+success. Found on 2026-09-22 while writing the 0.9.47 changelog — `content` had been
+passed inside `options` rather than at top level, where `doAppend` never looks.
+
+It was caught **only** because the response's `content_hash` came back **identical to
+the `expectedHash` sent in**, which for an append is impossible. One commit later that
+changelog entry would simply have been missing, behind a green write. Chain `8216fbea`.
+
+Three things changed:
+
+1. **The refusal lives at the dispatch layer**, in `FileWriteService.handleToolCall`,
+   beside the `path`-required guard — because that is the layer that reads the
+   arguments, and it raises a proper `McpResponse.toolError`. The first cut returned
+   `success: false` from inside `doAppend` and the spec stayed red: `isError` is the
+   flag the protocol carries, and a caller reading only the body sees an ordinary
+   result. *That is the same mistake as the defect being fixed, one layer down.*
+2. `doAppend` keeps a backstop that **throws** rather than returning a body, so no
+   future path that skips dispatch can turn a zero-byte append back into a success.
+3. **`appended` is now on the compact response.** It was on the verbose path only —
+   so the single field that would have shown `0 bytes` was the single field the
+   default response dropped.
+
+**Empty, not blank.** `'\n'` and `' '` are legitimate content; appending a trailing
+newline is an ordinary thing to want. CT-APPEND-3 pins that boundary and passed as the
+control while CT-APPEND-1, -2 and -4 were red.
+
+The mutation check needed two passes and the first one is the interesting one.
+Disabling the dispatch guard alone left the suite **green** — the `doAppend` backstop
+was covering it. Only disabling both guards *and* restoring `(content ?: '')` turned
+CT-APPEND-1 and -2 red, with nothing else red. The specs pin the behaviour rather than
+either particular guard, which is the right contract for deliberate redundancy — but it
+is worth knowing that a single-line mutation could not distinguish them.
+
+### `ExecuteService` gets the fixture it never had — `ExecuteServiceDispatchSpec`
+
+**All five existing `ExecuteService` specs construct the service with
+`new ExecuteService()`, leaving the final `pathService` null.** Every one calls
+`doGroovy` / `doBash` / `doCmd` directly; **not one had ever gone through
+`handleToolCall`**. Working-directory resolution, `normalizePath`, `isPathAllowed`, the
+plan-gate guard, option promotion, the action guard — none of it was asserted by
+anything, in a service whose entry point is the only thing a caller ever reaches.
+
+That gap is what produced the vacuous spec deleted in 0.9.47: with a null `PathService`
+every script action NPE'd before the dispatch switch, and an NPE message does not
+contain the string the assertion looked for.
+
+The fix was embarrassingly small. `@SpringBootTest` supplies a real `PathService`, the
+test profile already allows `${java.io.tmpdir}`, and that is exactly what `@TempDir`
+hands out. `FileWriteContractSpec` had been doing this for the write side all along.
+
+Three cases, ordered deliberately:
+
+- **FS-EXEC-5** proves the fixture reaches the dispatcher and the script actually runs.
+  It is the guard on the other two: if anything starts refusing before the switch, this
+  goes red and names it, instead of the others passing for an unrelated reason.
+- **FS-EXEC-5b** restores the deleted correspondence check — every name in
+  `VALID_EXECUTE_ACTIONS` must dispatch. It now **goes red** on the mutation that beat
+  its predecessor twice (remove `case 'python'`, leave `'python'` advertised), and only
+  it goes red.
+- **FS-EXEC-5c** asserts the converse, so 5b cannot pass by the error text vanishing.
+
+One Groovy trap worth recording: the helper could not be named `call()`. Inside a
+closure, `call(...)` binds to the closure's own `call`, and the failure surfaces as a
+`MissingMethodException` naming `doCall` — which reads like the spec is broken rather
+than the name being taken.
+
+### What this still does not cover
+
+`VALID_EXECUTE_ACTIONS` is now guarded, but it is still **hand-derived from two dispatch
+points**. 5b catches a name advertised without a handler; nothing catches a `case` added
+without the name, which leaves the action merely unadvertised.
+
+Suite: **445 tests, 0 failures**, run fresh this session. Mutation checks run in both
+directions on CT-APPEND (two passes, as above) and on FS-EXEC-5b.

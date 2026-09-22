@@ -226,4 +226,94 @@ class FileWriteContractSpec extends Specification {
         !readFileContent(f.path).contains('toDelete')
         readFileContent(f.path).contains('keep this too')
     }
+
+    // -----------------------------------------------------------------------
+    // CT-APPEND-1..4: an append that appends nothing must not report success
+    //
+    // Found 2026-09-22 writing the FS 0.9.47 changelog. content was passed inside
+    // options instead of at top level, so doAppend saw null, did (content ?: '')
+    // and wrote zero bytes -- and answered success:true. The changelog entry would
+    // have been committed missing behind a green write. Chain 8216fbea.
+    //
+    // These assert the FILE, not the flag. A spec that checked success:false only
+    // would pass against a version that refuses and then corrupts the file, and a
+    // spec that checked the file only would pass against today's silent no-op.
+    // -----------------------------------------------------------------------
+    def "CT-APPEND-1: append with no content at all is refused and leaves the file untouched"() {
+        given:
+        def f = writeFile('ct-append-1.txt', 'original line\n')
+
+        when: "the content argument is absent entirely -- the real shape of the defect"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action: 'append',
+            path  : f.path
+        ], 'test')
+
+        then: "it refuses, and says which argument it wanted"
+        assertToolError(r, 'content')
+
+        and: "and the file is byte-identical -- the half a success flag cannot tell you"
+        readFileContent(f.path) == 'original line\n'
+    }
+
+    def "CT-APPEND-2: append with an empty string is refused for the same reason"() {
+        given:
+        def f = writeFile('ct-append-2.txt', 'original line\n')
+
+        when: "an explicitly empty content -- appending nothing is still appending nothing"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'append',
+            path   : f.path,
+            content: ''
+        ], 'test')
+
+        then:
+        assertToolError(r, 'content')
+
+        and:
+        readFileContent(f.path) == 'original line\n'
+    }
+
+    def "CT-APPEND-3: a bare newline IS legitimate content and must still append"() {
+        // The boundary. Refusing 'blank' rather than 'empty' would break this, and
+        // appending a newline to end a file properly is an ordinary thing to want.
+        given:
+        def f = writeFile('ct-append-3.txt', 'no trailing newline')
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'append',
+            path   : f.path,
+            content: '\n'
+        ], 'test')
+
+        then:
+        r.result != null
+        r.result.isError == null || r.result.isError == false
+
+        and:
+        readFileContent(f.path) == 'no trailing newline\n'
+    }
+
+    def "CT-APPEND-4: a normal append reports how many bytes it wrote, compact response included"() {
+        // The evidence that was missing. doAppend has always returned `appended`, but
+        // ONLY on the verbose path -- the default compact response dropped it, so the
+        // one field that would have shown 0 bytes was the one field suppressed.
+        given:
+        def f = writeFile('ct-append-4.txt', 'first\n')
+
+        when: "the default (compact) response shape"
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'append',
+            path   : f.path,
+            content: 'second\n'
+        ], 'test')
+        def parsed = new groovy.json.JsonSlurper().parseText(r.result.content[0].text as String) as Map
+
+        then: "the byte count is present and correct"
+        parsed.appended == 7
+
+        and:
+        readFileContent(f.path) == 'first\nsecond\n'
+    }
 }

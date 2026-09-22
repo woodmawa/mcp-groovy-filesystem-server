@@ -251,6 +251,25 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                     "Ensure 'path' is at the top level of the arguments object, not nested inside options.")
             }
 
+            // FS 0.9.48: an append that appends nothing is refused HERE, beside the other
+            // argument guards, because this is the layer that reads the arguments -- and as
+            // a tool error, not a success:false body. The first cut returned success:false
+            // from inside doAppend and the spec stayed red: isError is the flag the protocol
+            // carries, and a caller reading only the body sees an ordinary result. That is
+            // the same mistake as the defect being fixed, one layer down.
+            //
+            // Until now `(content ?: '')` turned a null into a zero-byte write reporting
+            // success. Found 2026-09-22 with content passed inside options: the FS 0.9.47
+            // changelog entry was silently not written. Chain 8216fbea.
+            //
+            // EMPTY, not blank -- '\n' and ' ' are legitimate content (CT-APPEND-3).
+            if (action == 'append' && (content == null || content.isEmpty())) {
+                return McpResponse.toolError(requestId,
+                    "file_write 'append' requires a non-empty 'content' parameter (received " +
+                    (content == null ? 'null' : 'an empty string') + "). " +
+                    "Ensure 'content' is at the top level of the arguments object, not nested inside options.")
+            }
+
             // FS 0.9.37 C1: PLAN-GATE on the first write per component this session.
             String planRefusal = planGateGuard?.checkWrite(action, path, options?.planAck as String,
                                                        options?.intent as String)

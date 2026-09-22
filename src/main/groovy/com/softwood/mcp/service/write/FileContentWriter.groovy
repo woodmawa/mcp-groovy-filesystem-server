@@ -124,10 +124,30 @@ class FileContentWriter extends AbstractFileService {
     }
 
     McpResponse doAppend(String path, String content, Map<String, Object> options, Object requestId) {
+        // FS 0.9.48: REFUSE AN APPEND THAT APPENDS NOTHING.
+        //
+        // This used to be `(content ?: '')`, so a null content wrote zero bytes and
+        // returned success:true. Found 2026-09-22 passing content inside options rather
+        // than at top level: the FS 0.9.47 changelog entry was silently not written and
+        // was one commit away from being lost behind a green write. Chain 8216fbea.
+        //
+        // EMPTY, not blank. '\n' and ' ' are legitimate content -- appending a trailing
+        // newline is an ordinary thing to want -- and refusing those would trade a silent
+        // no-op for a refusal of working calls. CT-APPEND-3 pins that boundary.
+        // The caller-facing refusal lives in FileWriteService.handleToolCall, beside the
+        // other argument guards and raised as a proper tool error. This is the backstop for
+        // any other caller of doAppend, and it throws rather than returning a body, so a
+        // zero-byte append cannot become a success on some future path that skips dispatch.
+        if (content == null || content.isEmpty()) {
+            throw new IllegalArgumentException(
+                "doAppend called with " + (content == null ? 'null' : 'empty') +
+                " content -- an append that appends nothing must be refused, not reported as success")
+        }
+
         String normalized = normalizeAndCheckPath(path)
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean mkdirs    = options.get('mkdirs') != null ? Boolean.valueOf(options.get('mkdirs').toString()) : true
-        byte[] bytes      = (content ?: '').getBytes(encoding)
+        byte[] bytes      = content.getBytes(encoding)
 
         Path target = Paths.get(normalized)
         if (mkdirs && target.parent) {
@@ -160,7 +180,13 @@ class FileContentWriter extends AbstractFileService {
             : null
         if (codeAppendWarning) log.warn('FileContentWriter.doAppend: code file append on {}', normalized)
         if (isWriteCompact(options)) {
-            Map<String, Object> resp = [success: true, content_hash: hash, file_content_hash: hash]
+            // `appended` is carried on the compact response too, since FS 0.9.48. It was
+            // on the verbose path only, so the single field that would have revealed a
+            // zero-byte append was the single field the default response dropped. A hash
+            // that comes back equal to the one you sent in is the same evidence, but it
+            // relies on the caller noticing; a byte count states it.
+            Map<String, Object> resp = [success: true, appended: bytes.length,
+                                        content_hash: hash, file_content_hash: hash]
             if (codeAppendWarning) resp.code_append_warning = codeAppendWarning
             return textResponse(requestId, resp)
         }
