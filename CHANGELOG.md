@@ -1901,3 +1901,85 @@ Suite: **445 tests, 0 failures**, run fresh this session (CS 3118/0 and AW 889/0
 CS first reported `BUILD SUCCESSFUL in 959ms`, which was `UP-TO-DATE` against results two
 hours stale — re-run with `cleanTest`, and the result-file timestamps checked rather than the
 word "successful").
+
+
+## [0.9.50]
+
+**A full probe of every FS tool and action, with scratch files, before anything else.** Session
+`2026-09-22-13-03` (Fable), on Will's instruction that FS has to be provably wired before it can be
+trusted to drive. Every action of all eight tools was exercised against `claude-sync/fs-probe-2026-09-22`
+and asserted on bytes on disk, not on flags. The file tools held: every hash, guard and refusal behaved,
+path security refused a `..` escape, the served ledger de-duplicated correctly. The defects were in
+`execute` and in one Groovy idiom repeated five times.
+
+### `execute action=bash` silently truncated any script at a double-quoted phrase containing whitespace
+
+`['bash', '-c', script]` handed the script to `ProcessBuilder`, which on Windows wraps the argument in
+double quotes for the child's command line and does not escape the quotes inside it. An inner quote next
+to a space closes the wrapper early: `echo "one two"` reached bash as `echo "one` and the remainder
+arrived as positional parameters. bash printed `one`, exited 0, `success:true` -- and every command after
+the phrase (`echo marker > file`, a `git commit -m "..."`) never ran. `echo "one"; echo "two"` was fine,
+which is why the common test strings never tripped it. `doPowershell`/`doCmd`/`doPython` had all been
+moved to temp files for the same class of problem; bash was assumed safe because `bash -c` accepts
+multi-line input, which is true and irrelevant to quoting. Practices #77 and #202 had recorded the identical
+silent-blank-output shape for python-via-cmd; the knowledge was one executor away and never crossed.
+
+The script now never travels through argv: it is base64-encoded (`echo <b64> | base64 -d | bash`), which
+no argv parser can split and which needs no path translation between Windows and WSL; scripts that read
+stdin, or exceed a Windows command line, go through a temp file. CRLF is normalised to LF, because the
+spec's second case found that a Windows-authored script created a file literally named `out.txt<CR>`.
+
+`ExecuteServiceBashQuotingSpec` (5 cases) asserts stdout **and** a file the script writes after the quoted
+phrase, so a fix that repairs the echo but still truncates the tail cannot pass. 5/5 red on 0.9.49, for
+the right reason (every payload showed the truncated first word with `success:true`).
+
+Today's FS stats made the cost visible before the cause was known: `execute:cmd` 94 calls,
+`execute:bash` 8 -- all eight from the probe. Claude had learned to avoid bash without anyone knowing why.
+
+### `file_lifecycle` copy/move/touch, `file_write` append and chunked finalise: `mkdirs` never created a missing parent
+
+Groovy truth on a `java.nio.file.Path` is `Files.exists(path)` (`NioExtensions.asBoolean`). So
+`if (dstPath.parent && mkdirs) Files.createDirectories(dstPath.parent)` reads, literally, "create the
+parent only if it already exists", and copy into a new folder failed with a bare `src -> dst`
+`NoSuchFileException`. `doWrite` had already been corrected to `parentDir != null`; the other five sites
+had not. All five now compare to null. The companion idiom `options.mkdirs as boolean ?: true` was not a
+default either -- `false ?: true` is `true` -- so `mkdirs:false` was unhonourable; `create` also
+defaulted to `false` while its own description said `true`. One `flag()` helper reads absent, present and
+explicitly-false as three different answers. `FileLifecycleMkdirsSpec` (5 cases) asserts the file exists
+afterwards; 3/3 red first, and the append case went red again under a deliberate re-mutation.
+Practice #3505 records the trap alongside #311 (the `Integer` variant).
+
+### The advertised surface is now a contract
+
+`ToolSurfaceContractSpec` dispatches every value of every tool's `action.enum` through `handleToolCall`
+on the real Spring fixture and fails if any dispatcher answers "Unknown <tool> action" for a name it
+advertises. A control case asserts the converse; enum floors stop it going vacuous (practice #1958).
+Mutation-checked by unwiring `file_list action=sizes`. `execute` and `file_read` now publish the same list
+they refuse against (`VALID_EXECUTE_ACTIONS`, new `VALID_READ_ACTIONS`); `file_read`'s unknown-action
+message had drifted four actions behind its enum (`summary`, `project_root`, `allowed_dirs`, `read_office`).
+
+### Hints that had been sending callers into refusals
+
+- `file_write` schema now advertises the whole `server_transform` family (`transform` enum and every
+  per-transform key: `method`, `newBody`/`body`, `import`, `heading`, `newContent`, `content`, `match`,
+  `occurrence`, `startAnchor`, `endAnchor`, `after`, `before`) plus `raw`, `allowStructuralEdit` and
+  `suppressCodeAppendWarning`. Probing the transforms cost three refused calls to learn three option names
+  the server already knew.
+- `add_method` accepts `newBody` as an alias of `body`: the served help said `newBody`, the code wanted
+  `body`, and a caller following the help was refused.
+- `file_read` schema advertises `allowNoLocate`, which the ONTOLOGY-GATE refusal names and the schema hid.
+- `execute` description states groovy's real semantics: in-process, `options.workingDir` is a binding
+  variable and not a chdir (a relative `new File('x')` resolves against the Claude app folder), and the
+  groovy path is not confined to the allowed directories. Practice #3506.
+- `USAGE.md` (served by `file_read action=help`): PLAN-GATE text updated from "repeat unchanged and it
+  passes" (0.9.37) to the `planAck` contract (0.9.44).
+- `tools` git/gradle now forward `options.planAck` to PLAN-GATE (and advertise it). Found while committing
+  this very release: the retry carrying the ack was refused again ("Second ask") and the third call
+  recorded unjudged -- three round trips per git call, and the git component's applicability numerator
+  starved because `ToolsService` called the three-argument `checkExecute`.
+
+Still known and not changed here: `file_search action=project` reports itself as `content` and applies no
+code-file filter; `file_list action=list` and `file_read action=list` produce `listing_hash` values of
+different lengths, so a hash from one never matches the other; `file_read action=normalize` does not
+collapse `..` (security still refuses the escape). A stray top-level directory `C` + U+F03A sits in the
+repo root -- something once created `C:...` as a relative path.

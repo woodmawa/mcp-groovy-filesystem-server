@@ -150,7 +150,10 @@ class FileContentWriter extends AbstractFileService {
         byte[] bytes      = content.getBytes(encoding)
 
         Path target = Paths.get(normalized)
-        if (mkdirs && target.parent) {
+        // FS 0.9.50: `!= null`, not Groovy truth -- Path.asBoolean() is Files.exists(), so the
+        // old `mkdirs && target.parent` skipped createDirectories precisely when the parent
+        // was missing. doWrite had already been corrected (parentDir != null); this had not.
+        if (mkdirs && target.parent != null) {
             try {
                 Files.createDirectories(target.parent)
             } catch (IOException e) {

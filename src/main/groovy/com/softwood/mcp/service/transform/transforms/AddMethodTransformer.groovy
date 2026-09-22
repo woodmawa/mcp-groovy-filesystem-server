@@ -43,7 +43,11 @@ class AddMethodTransformer implements FileTransformer {
     @Override
     TransformResult apply(String normalizedPath, Map<String, Object> options) {
         String methodName = options.method as String
-        String body       = options.body as String
+        // FS 0.9.50: `newBody` accepted as an alias. The help topic (file_read help=file_write)
+        // documented add_method as taking `newBody`, replace_method takes `newBody`, and the
+        // code wanted `body` -- so a caller doing what the documentation said was refused.
+        // Found 2026-09-22 while probing every transform with a scratch class.
+        String body       = (options.body ?: options.newBody) as String
         String after      = options.after as String
         String before     = options.before as String
 

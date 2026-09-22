@@ -99,13 +99,44 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
     // Actions
     // -----------------------------------------------------------------------
 
+    /**
+     * FS 0.9.50: read an optional boolean flag with a real default.
+     *
+     * `options.mkdirs as boolean ?: true` looks like a default and is not one: `false as
+     * boolean` is false, and `false ?: true` is true, so mkdirs:false could never be honoured
+     * and `overwrite as boolean ?: false` was the only variant that behaved. Absent, present
+     * and explicitly-false are three different answers and this helper returns them.
+     */
+    private static boolean flag(Map<String, Object> options, String key, boolean dflt) {
+        Object v = options?.get(key)
+        if (v == null) return dflt
+        if (v instanceof Boolean) return (boolean) v
+        return Boolean.parseBoolean(v.toString())
+    }
+
+    /**
+     * FS 0.9.50: create the destination's parent when asked, and say so when refused.
+     * Compared with `!= null` on purpose -- Groovy truth on a Path is Files.exists.
+     */
+    private static void ensureParent(Path target, boolean mkdirs) {
+        Path parent = target.parent
+        if (parent == null) return
+        if (Files.isDirectory(parent)) return
+        if (mkdirs) {
+            Files.createDirectories(parent)
+        } else {
+            throw new FileNotFoundException("Destination parent does not exist and options.mkdirs=false: ${parent}")
+        }
+    }
+
     private McpResponse doCreate(String path, Map<String, Object> options, Object requestId) {
         validateWriteEnabled()
         String normalized = pathService.normalizePath(path)
         if (!isPathAllowed(normalized)) throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
 
         String type   = options.type as String ?: 'file'
-        boolean mkdirs = options.mkdirs as boolean ?: false
+        // Default true, as the tool description on the schema has always said ("options.mkdirs=true").
+        boolean mkdirs = flag(options, 'mkdirs', true)
         Path target   = Paths.get(normalized)
 
         if (mkdirs || type == 'directory') {
@@ -161,11 +192,15 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
 
         Path srcPath      = Paths.get(normSrc)
         Path dstPath      = Paths.get(normDst)
-        boolean overwrite = options.overwrite as boolean ?: false
-        boolean mkdirs    = options.mkdirs as boolean ?: true
+        boolean overwrite = flag(options, 'overwrite', false)
+        boolean mkdirs    = flag(options, 'mkdirs', true)
 
         if (!Files.exists(srcPath)) throw new FileNotFoundException("Source not found: ${normSrc}")
-        if (dstPath.parent && mkdirs) Files.createDirectories(dstPath.parent)
+        // FS 0.9.50: `dstPath.parent && mkdirs` was the defect. Groovy truth on a java.nio.file.Path
+        // is Files.exists(path) (NioExtensions.asBoolean), so the condition read "create the
+        // parent only if it already exists" and copy into a missing folder failed with a bare
+        // `src -> dst` NoSuchFileException. Found 2026-09-22 (FileLifecycleMkdirsSpec).
+        ensureParent(dstPath, mkdirs)
 
         if (overwrite) {
             Files.copy(srcPath, dstPath, StandardCopyOption.REPLACE_EXISTING)
@@ -189,11 +224,11 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
 
         Path srcPath      = Paths.get(normSrc)
         Path dstPath      = Paths.get(normDst)
-        boolean overwrite = options.overwrite as boolean ?: false
-        boolean mkdirs    = options.mkdirs as boolean ?: true
+        boolean overwrite = flag(options, 'overwrite', false)
+        boolean mkdirs    = flag(options, 'mkdirs', true)
 
         if (!Files.exists(srcPath)) throw new FileNotFoundException("Source not found: ${normSrc}")
-        if (dstPath.parent && mkdirs) Files.createDirectories(dstPath.parent)
+        ensureParent(dstPath, mkdirs)   // FS 0.9.50, see doCopy
 
         if (overwrite) {
             Files.move(srcPath, dstPath, StandardCopyOption.REPLACE_EXISTING)
@@ -212,9 +247,9 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
         if (!isPathAllowed(normalized)) throw new SecurityException("Path not allowed: ${sanitize(normalized)}")
 
         Path target = Paths.get(normalized)
-        boolean mkdirs = options.mkdirs as boolean ?: true
+        boolean mkdirs = flag(options, 'mkdirs', true)
 
-        if (mkdirs && target.parent) Files.createDirectories(target.parent)
+        ensureParent(target, mkdirs)   // FS 0.9.50, see doCopy
 
         if (Files.exists(target)) {
             // Update last-modified time

@@ -89,12 +89,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'execute',
-            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.\nMULTI-LINE: all actions run every line of a multi-line script. Lines execute in order and the LAST command\'s exit code is returned -- a mid-script failure does not abort the rest (same contract as bash -c, which has no set -e). Check state explicitly rather than trusting a single exitCode when a script mutates something. (cmd silently ran only the first line before FS 0.9.11.)\nASYNC: set options.async=true for work that may exceed the ~60s MCP client deadline (gradle builds, full test suites). It returns a jobId immediately instead of blocking -- the deadline is imposed by the client, not by FS, so options.timeout cannot extend it and a blocked call also serialises the calls behind it. Poll with action=job_status jobId=<id>; tail incrementally with action=job_output jobId=<id> sinceOffset=<nextOffset from the previous read>; stop with action=job_cancel; enumerate with action=job_list. Jobs are retained for 30 minutes after finishing.',
+            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.\nGROOVY IS IN-PROCESS (FS 0.9.50, stated): action=groovy compiles and runs inside the FS JVM. options.workingDir is validated and handed to the script as the binding variable `workingDir` -- it is NOT a chdir, so a relative `new File(\'x\')` resolves against the JVM cwd (the Claude app folder). Use `new File(workingDir, \'x\')` or absolute paths. The groovy sandbox screens dangerous patterns only; it does not confine file access to the allowed directories. bash/powershell/cmd/python are child processes and DO run in workingDir.\nBASH (FS 0.9.50): the script never travels through argv -- double-quoted phrases with spaces and CRLF line endings are safe; before 0.9.50 `echo "one two"` silently truncated the script at the quote.\nMULTI-LINE: all actions run every line of a multi-line script. Lines execute in order and the LAST command\'s exit code is returned -- a mid-script failure does not abort the rest (same contract as bash -c, which has no set -e). Check state explicitly rather than trusting a single exitCode when a script mutates something. (cmd silently ran only the first line before FS 0.9.11.)\nASYNC: set options.async=true for work that may exceed the ~60s MCP client deadline (gradle builds, full test suites). It returns a jobId immediately instead of blocking -- the deadline is imposed by the client, not by FS, so options.timeout cannot extend it and a blocked call also serialises the calls behind it. Poll with action=job_status jobId=<id>; tail incrementally with action=job_output jobId=<id> sinceOffset=<nextOffset from the previous read>; stop with action=job_cancel; enumerate with action=job_list. Jobs are retained for 30 minutes after finishing.',
             inputSchema: [
                 type      : 'object',
                 properties: [
-                    action : [type: 'string', enum: ['bash', 'powershell', 'groovy', 'cmd', 'python',
-                                                     'job_status', 'job_output', 'job_cancel', 'job_list'],
+                    action : [type: 'string', enum: VALID_EXECUTE_ACTIONS,
                               description: 'Execution environment, or a job_* action for background jobs (FS-EXEC-2)'],
                     script : [type: 'string', description: 'Script or command to execute'],
                     options: [type: 'object', description: 'workingDir (string), timeout (int seconds), args (list), env (map), verbose (bool). IMPORTANT: maxStdout (int chars, default 50000 ~12K tokens): cap stdout in response - set lower to save context window. maxStdout (int chars, default 50000 ~12K tokens), maxStderr (int chars, default 5000 ~1.2K tokens)',
@@ -204,8 +203,41 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             log.warn("Bash script rejected by whitelist/blacklist config")
             return McpResponse.toolError(requestId, "Bash command not permitted by whitelist configuration")
         }
-        List<String> cmd = ['bash', '-c', script]
-        return runProcess(cmd, workingDir, timeout, 'bash', requestId, envOverrides, options)
+        // FS-EXEC-6 (0.9.50): NEVER put the script itself into argv. ['bash','-c',script]
+        // hands the script to ProcessBuilder, which on Windows wraps it in double quotes for
+        // the child's command line and does not escape the quotes INSIDE it. An inner quote
+        // adjacent to whitespace closes the wrapper early: `echo "one two"` reached bash as
+        // `echo "one` and the remainder arrived as positional parameters. bash printed `one`,
+        // exited 0, and everything after the phrase -- a file write, a git commit -- never
+        // ran. `echo "one"; echo "two"` was fine, which is why forty versions of specs missed it
+        // and why today's stats read execute:cmd 94 / execute:bash 8.
+        //
+        // doPowershell/doCmd/doPython write a temp file for this class of problem, but bash on
+        // this machine is WSL's and a Windows temp path is not a bash path. Base64 sidesteps
+        // both problems: the token contains no quote, space or backslash, so argv cannot split
+        // it, and no path crosses the boundary. The pipeline's exit status is the inner bash's.
+        // Scripts that READ STDIN would consume their own text -- a temp file is used for those
+        // and for anything too large for a Windows command line.
+        // CRLF -> LF: bash treats a trailing \r as part of the last token on the line, so a
+        // Windows-authored script `echo done > out.txt\r\n` creates a file named `out.txt\r`.
+        // Spec FS-EXEC-6b found this on the first run after the argv fix. doCmd does the
+        // reverse normalisation for its shell; this is the same rule facing the other way.
+        String body = script.replaceAll('\\r\\n', '\n')
+        String b64 = Base64.encoder.encodeToString(body.getBytes('UTF-8'))
+        boolean readsStdin = (body =~ /(^|[^\w])read\s/).find() || body.contains('/dev/stdin') || body.contains('<&0')
+        List<String> cmd
+        File tempScript = null
+        if (b64.length() > 20000 || readsStdin) {
+            tempScript = File.createTempFile('mcp-sh-', '.sh')
+            tempScript.text = body
+            // Forward slashes and no quoting: a temp path has no spaces on this platform's
+            // default temp dir, and wslpath translates it for WSL while git-bash takes it as is.
+            String p = tempScript.absolutePath.replace('\\', '/')
+            cmd = ['bash', '-c', "bash \$(wslpath -u ${p} 2>/dev/null || echo ${p})".toString()]
+        } else {
+            cmd = ['bash', '-c', "echo ${b64} | base64 -d | bash".toString()]
+        }
+        return runProcess(cmd, workingDir, timeout, 'bash', requestId, envOverrides, options, tempScript)
     }
 
     // protected, not private: @CompileStatic private methods are unreachable from a

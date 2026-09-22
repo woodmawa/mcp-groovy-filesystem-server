@@ -79,7 +79,7 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 
 **server_transform** — server-side named transformation. File content never crosses context boundary. REQUIRED: `options.expectedHash`. `options.transform`:
 - `replace_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
-- `add_method` — Groovy/Java only. Params: `options.method` (name), `options.newBody` (full method text)
+- `add_method` — Groovy/Java only. Params: `options.newBody` (full method text; `options.body` accepted as an alias since FS 0.9.50 — before that only `body` worked and this line said `newBody`), optional `options.method` (duplicate check), `options.after` / `options.before` (placement)
 - `add_import` — Groovy/Java only. Params: `options.import` (full import line e.g. `'import com.example.Foo'` or just `'com.example.Foo'` — `import ` prefix added automatically if absent)
 - `replace_section` — Markdown/yml/yaml/toml only. Params: `options.heading`, `options.newContent`
 - `insert_before_match` — **any file type**. Params: `options.match` (substring), `options.content`, `options.occurrence` (1=first/default, -1=last, N=Nth)
@@ -99,7 +99,7 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 
 ### Rules
 - Always pass `expectedHash` on every mutating action
-- **PLAN-GATE (FS 0.9.37):** the first writing action per (session, file component) is refused once with a list of practices; repeat the same call unchanged and it passes
+- **PLAN-GATE (FS 0.9.37, ack since 0.9.44):** the first writing action per (session, file component) is refused once with a list of practices. Repeat the call with `options.planAck="<id>:y|n,..."` naming each id shown (y = applies, n = does not) and it passes; without an ack it is refused once more, then allowed and recorded unjudged. Pass `options.intent` so the practices fit the task rather than the class name
 - `path` must be at TOP LEVEL of arguments, not inside options
 - Never use sequential replace calls without re-reading between them → use multi_replace
 - After any patch, re-read before next patch (line numbers shift)
@@ -166,7 +166,8 @@ Key options:
 ### PLAN-GATE (FS 0.9.37-0.9.39)
 
 The first `execute` per (session, repo) whose statements run `git` or `gradlew` is refused once with
-a list of practices; **repeat the same call unchanged and it passes**. Pass `options.intent` so the
+a list of practices; **repeat the call with `options.planAck="<id>:y|n,..."` naming each id it showed and it passes**
+(FS 0.9.44; an unacked retry is refused once more, then allowed and recorded unjudged). Pass `options.intent` so the
 practices fit the task.
 - Only `git`/`gradlew` in command position count - text in strings, comments, here-strings and
   heredocs does not. `cmd /c`, `powershell -Command` and `bash -c` bodies are rescanned.

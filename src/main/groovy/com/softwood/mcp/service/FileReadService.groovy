@@ -45,6 +45,19 @@ import org.springframework.stereotype.Service
 @CompileStatic
 class FileReadService extends AbstractFileService implements ToolHandler {
 
+    /**
+     * FS 0.9.50: the one list the schema enum AND the unknown-action message both read.
+     * Before this the message was a hand-typed string that had drifted four actions behind
+     * the enum (summary, project_root, allowed_dirs, read_office) -- and the message is
+     * exactly what a caller reads when they have guessed wrong, so a stale one sends them
+     * to guess again. ToolSurfaceContractSpec asserts this list against the dispatch switch.
+     */
+    static final List<String> VALID_READ_ACTIONS =
+        ['read','head','tail','range','grep','multi_grep','multi','info','summary','stat',
+         'exists','project_root','allowed_dirs','normalize',
+         'diff','checksum','list','structure','get_method','chunk_read','finalise_read','help',
+         'read_office'].asImmutable()
+
     @Autowired FileContentReader   contentReader
     @Autowired FileStructureReader  structureReader
     @Autowired FileMetaReader       metaReader
@@ -191,10 +204,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 type      : 'object',
                 properties: [
                     action : [type: 'string',
-                              enum: ['read','head','tail','range','grep','multi_grep','multi','info','summary','stat',
-                                     'exists','project_root','allowed_dirs','normalize',
-                                     'diff','checksum','list','structure','get_method','chunk_read','finalise_read','help',
-                                     'read_office']],
+                              enum: VALID_READ_ACTIONS],
                     path   : [type: 'string', description: 'File or dir path (not required for project_root/allowed_dirs/multi/chunk_read/finalise_read/help)'],
                     options: [type: 'object', description: 'Action-specific options',
                               properties: READ_OPTION_SCHEMA]
@@ -228,6 +238,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (methods only, no endLine)'],
                                   knownHash   : [type: 'string',  description: 'Optional. file_content_hash from a prior read, for action=read or get_method: unchanged file = {unchanged:true}. Repeats are de-duplicated without it. Do NOT pass to action=range.'],
                                   force       : [type: 'boolean', description: 'Re-send content this chat was already sent (after compaction, or when a subagent made the read). Also overrides the >200-line refusal on action=read.'],
+                                  allowNoLocate: [type: 'boolean', description: 'FS 0.9.50 (advertised): read an ontology-indexed file without a prior context_read scope=ontology action=locate. Use it when the read is itself navigation (grep, multi_grep, structure) or the file is small or non-code; the refusal named this key but the schema did not.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
                                   toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.'],
@@ -529,7 +540,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 case 'help'         : return metaReader.doHelp(options, requestId)
                 case 'read_office'  : return officeHandler.readOffice(path, options, requestId)
                 default:
-                    return McpResponse.toolError(requestId, "Unknown file_read action: '${action}'. Valid actions: read|head|tail|range|grep|multi_grep|multi|info|structure|get_method|list|checksum|stat|exists|diff|normalize|chunk_read|finalise_read|help. For script execution use the 'execute' tool.")
+                    return McpResponse.toolError(requestId, "Unknown file_read action: '${action}'. Valid actions: ${VALID_READ_ACTIONS.join('|')}. For script execution use the 'execute' tool.")
             }
         } catch (SecurityException e) {
             return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")

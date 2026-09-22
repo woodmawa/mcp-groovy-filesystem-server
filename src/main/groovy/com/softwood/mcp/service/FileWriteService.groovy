@@ -197,7 +197,29 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                                      endLine  : [type: 'integer']
                                                  ]]],
                                   compact     : [type: 'boolean', description: 'Minimal response (default: true for all write actions)'],
-                                  verbose     : [type: 'boolean', description: 'Full response with action/path/size/diagnostics']
+                                  verbose     : [type: 'boolean', description: 'Full response with action/path/size/diagnostics'],
+                                  // FS 0.9.50: the server_transform family was invisible from the schema. Probing it
+                                  // on 2026-09-22 cost three refused calls to learn three option names the server
+                                  // already knew (body, import, newBody) -- exactly the 'tries, fails, works around'
+                                  // cost this server exists to remove. Every key below is what the transformer reads.
+                                  transform   : [type: 'string', enum: ['replace_method', 'add_method', 'add_import', 'replace_section',
+                                                                        'insert_before_match', 'insert_after_heading', 'append_section', 'replace_between'],
+                                                 description: 'action=server_transform ONLY. Keys per transform: replace_method -> method + newBody; add_method -> newBody (alias body), optional method/after/before; add_import -> import; replace_section -> heading + newContent; insert_after_heading / append_section -> heading + content; insert_before_match -> match + content, optional occurrence; replace_between -> startAnchor + endAnchor + newContent. expectedHash always required. Groovy/Java only: replace_method, add_method, add_import. Markdown/yml/yaml/toml only: replace_section, insert_after_heading, append_section.'],
+                                  method      : [type: 'string', description: 'server_transform replace_method (required) / add_method (optional duplicate check): method name'],
+                                  newBody     : [type: 'string', description: 'server_transform replace_method / add_method: the full method text, signature and braces included'],
+                                  body        : [type: 'string', description: 'server_transform add_method: alias of newBody'],
+                                  import      : [type: 'string', description: "server_transform add_import: the import, with or without the leading 'import '"],
+                                  heading     : [type: 'string', description: 'server_transform replace_section / insert_after_heading / append_section: the heading text to find (or to create, for append_section)'],
+                                  newContent  : [type: 'string', description: 'server_transform replace_section / replace_between: the replacement text'],
+                                  match       : [type: 'string', description: 'server_transform insert_before_match: substring to insert before'],
+                                  occurrence  : [type: 'integer', description: 'server_transform insert_before_match: 1 = first (default), -1 = last, N = Nth'],
+                                  startAnchor : [type: 'string', description: 'server_transform replace_between: text marking the start of the replaced region'],
+                                  endAnchor   : [type: 'string', description: 'server_transform replace_between: text marking the end of the replaced region'],
+                                  after       : [type: 'string', description: 'server_transform add_method: insert after this method (optional)'],
+                                  before      : [type: 'string', description: 'server_transform add_method: insert before this method (optional)'],
+                                  raw         : [type: 'boolean', description: 'action=write/append: skip the escape pass entirely so backslash-n/t/r in content survive verbatim. USE THIS FOR SOURCE CODE -- a Groovy string literal containing \\n is otherwise converted to a real newline and will not compile. The response reports an `unescaped` block whenever the pass changed something.'],
+                                  allowStructuralEdit: [type: 'boolean', description: 'replace|patch|multi_replace: bypass the brace/paren delta guard, e.g. to repair orphaned braces (FS 0.9.6)'],
+                                  suppressCodeAppendWarning: [type: 'boolean', description: 'append on .groovy/.java/.kt: suppress the code_append_warning']
                               ]]
                 ],
                 required  : ['action', 'path']

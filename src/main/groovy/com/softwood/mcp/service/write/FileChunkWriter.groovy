@@ -65,12 +65,14 @@ class FileChunkWriter extends AbstractFileService {
         String normalized = normalizeAndCheckPath(path)
         boolean backup    = options.backup as boolean ?: false
         String encoding   = options.encoding as String ?: 'UTF-8'
-        boolean mkdirs    = options.mkdirs as boolean ?: true
+        // FS 0.9.50: a real default -- `false as boolean ?: true` is true, so mkdirs:false was unhonourable.
+        boolean mkdirs    = options.get('mkdirs') != null ? Boolean.valueOf(options.get('mkdirs').toString()) : true
 
         Collection<String> chunks = chunkBufferService.getWriteChunksAndRelease(sessionId, totalChunks)
 
         Path target = Paths.get(normalized)
-        if (mkdirs && target.parent) Files.createDirectories(target.parent)
+        // FS 0.9.50: `!= null`, not Groovy truth (Path.asBoolean() is Files.exists) -- see FileLifecycleService.ensureParent.
+        if (mkdirs && target.parent != null) Files.createDirectories(target.parent)
         if (backup && Files.exists(target)) WriteUtils.makeBackup(target)
 
         Path tmp          = target.resolveSibling(target.fileName.toString() + '.tmp')

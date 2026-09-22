@@ -75,6 +75,7 @@ Developer toolchain. Actions:
                                      timeout   : [type: 'integer'],
                                      message   : [type: 'string'],
                                      intent    : [type: 'string', description: 'FS 0.9.40: one sentence on what this git/gradle call is for; PLAN-GATE selects on it'],
+                                     planAck   : [type: 'string', description: 'FS 0.9.50: your verdict on the practices PLAN-GATE just showed, as "<id>:y|n,...". Pass it on the retry; a retry carrying an ack is never refused. Before 0.9.50 tools ignored this key and re-refused the acked retry.'],
                                      period    : [type: 'string', description: 'Stats period: today|week|month|all (default: today)']
                                  ]]
                 ],
@@ -102,7 +103,10 @@ Developer toolchain. Actions:
 
             int timeout = (options.timeout as Integer) ?: maxExecutionTimeSeconds
 
-            String planRefusal = planGateRefusal(action, subcommand, args, workingDir, options.intent as String)
+            // FS 0.9.50: pass the ack. Without it the retry that carried options.planAck was refused
+            // again ('Second ask') and the third call recorded unjudged -- three round trips per git
+            // call and a starved applicability numerator for the git component.
+            String planRefusal = planGateRefusal(action, subcommand, args, workingDir, options.intent as String, options.planAck as String)
             if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
 
             switch (action) {
@@ -135,12 +139,12 @@ Developer toolchain. Actions:
      *
      * @return a refusal message, or null to proceed
      */
-    String planGateRefusal(String action, String subcommand, List<String> args, String workingDir, String intent) {
+    String planGateRefusal(String action, String subcommand, List<String> args, String workingDir, String intent, String planAck = null) {
         if (planGateGuard == null || !(action in ['git', 'gradle'])) return null
         String head = action == 'git' ? 'git' : 'gradlew'
         String line = ([head] + (subcommand ?: '').trim().split(/\s+/).toList().findAll { it } + (args ?: []))
             .collect { String t -> t.contains(' ') ? '"' + t + '"' : t }.join(' ')
-        return planGateGuard.checkExecute(line, workingDir, intent)
+        return planGateGuard.checkExecute(line, workingDir, intent, planAck)
     }
 
     private McpResponse doGit(String subcommand, List<String> args, String workingDir,
