@@ -28,6 +28,22 @@ import java.util.regex.Pattern
 @CompileStatic
 class ExecuteService extends AbstractFileService implements ToolHandler {
 
+    /**
+     * Every action a caller may pass to this tool, in one place, named by the
+     * unknown-action error. Script actions dispatch from the switch in handle();
+     * the job_* actions are intercepted before it. A caller sees one tool, so
+     * the error names one set.
+     *
+     * Derived by hand from two dispatch points rather than from them, which is the
+     * schema-drift shape practice #195 warns about -- so ExecuteServiceGroovySpec
+     * FS-EXEC-4 asserts every name here actually dispatches, which is the half that
+     * goes wrong (a name advertised and not handled). Adding a case without adding
+     * it here leaves it merely unadvertised.
+     */
+    static final List<String> VALID_EXECUTE_ACTIONS =
+        ['bash', 'powershell', 'groovy', 'cmd', 'python',
+         'job_status', 'job_output', 'job_cancel', 'job_list'].asImmutable()
+
     @Autowired
     SecurityService securityService
 
@@ -121,6 +137,16 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 return handleJobAction(action, options, requestId)
             }
 
+            // FS 0.9.47: refuse an unknown action HERE, for the same reason the job actions
+            // are handled above -- everything below resolves and validates a working directory,
+            // so a typo'd action was being refused for a path it never needed. The spec that
+            // proves this error text could not even reach it until this moved.
+            if (!(action in VALID_EXECUTE_ACTIONS)) {
+                return McpResponse.toolError(requestId,
+                    "Unknown execute action: '${action}'. Valid actions: " +
+                    "${VALID_EXECUTE_ACTIONS.join('|')}")
+            }
+
             String workingDir = options.workingDir as String ?: activeProjectRoot ?: allowedDirectories[0]
             int timeout       = (options.timeout as Integer) ?: maxExecutionTimeSeconds
 
@@ -150,7 +176,13 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 case 'cmd'       : return doCmd(script, workingDir, timeout, envOverrides, options, requestId)
                 case 'python'    : return doPython(script, workingDir, timeout, envOverrides, options, requestId)
                 default:
-                    return McpResponse.toolError(requestId, "Unknown execute action: ${action}")
+                    // FS 0.9.47: NAME THE VALID SET. file_read has always done this and
+                    // file_write was given it in 0.9.46; execute was the last one guessing.
+                    // Four probe calls were spent this session discovering 'cmd' against a
+                    // server that knew the answer and would not say it.
+                    return McpResponse.toolError(requestId,
+                        "Unknown execute action: '${action}'. Valid actions: " +
+                        "${VALID_EXECUTE_ACTIONS.join('|')}")
             }
         } catch (SecurityException e) {
             log.warn("execute security violation: {}", sanitize(e.message))
@@ -286,7 +318,23 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             Object result = shell.evaluate(script)
 
             long durationMs = System.currentTimeMillis() - start
-            String output   = result != null ? sanitize(result.toString()) : ''
+
+            // FS 0.9.47 FS-EXEC-3: READ THE BUFFER BACK.
+            //
+            // This used to be result.toString() and nothing else -- the script's last expression.
+            // SecureMcpScript.println writes into the scriptOutput binding, and doGroovy threw it
+            // away unread, so the whole output-capture mechanism the base class exists to provide
+            // produced nothing. That is the SECOND defect and it survives a fix to the first: with
+            // getScriptOutput made protected, println works and its output still vanished.
+            //
+            // Printed lines first, then the return value if there is one, so neither is lost.
+            List<String> printed = binding.hasVariable('scriptOutput') ?
+                ((binding.getVariable('scriptOutput') ?: []) as List<String>) : ([] as List<String>)
+            String returned = result != null ? result.toString() : ''
+            List<String> parts = new ArrayList<String>()
+            if (printed) parts.addAll(printed)
+            if (returned) parts.add(returned)
+            String output = parts ? sanitize(parts.join(System.lineSeparator())) : ''
 
             log.info("Groovy script executed in {}ms, workingDir={}", durationMs, workingDir)
             if (isWriteCompact(options)) {

@@ -1679,3 +1679,83 @@ Deliberately a **translation and not a refusal**. Two of those keys are live and
 `Unknown file_write action: bogus` now enumerates the valid set, which `file_read` has done since it was written. Two probe calls were burned this session discovering that, against a server that already knew the answer.
 
 Suite: **432 tests, 0 failures**, run fresh this session.
+
+---
+
+## [0.9.47]
+
+### `action=groovy` has been dead for roughly forty minor versions
+
+Every Groovy script submitted to `execute` failed, including `println 'hello'`:
+
+```
+No such property: scriptOutput for class: Script1
+```
+
+Found by accident on 2026-09-21 while rewriting a flow template. `action=python` and
+`action=powershell` were used instead and the whole backend stayed dark. Chain `816b2861`.
+
+**Two defects, and the second survives a fix to the first.**
+
+1. `SecureMcpScript.getScriptOutput()` was `private`. `println` is declared on
+   `SecureMcpScript` but dispatches on the *runtime* class — the caller's compiled `Script1`,
+   which extends it. Groovy resolves `scriptOutput` as a property against `Script1`'s
+   metaclass, where a private superclass getter is not visible. Hence "No such property"
+   rather than an access error. Introduced by `e259442` (v0.7.1). Now `protected`, and it
+   lazily seeds the binding rather than assuming someone else did.
+
+2. `doGroovy` never **read** the buffer. It returned `result.toString()` — the script's last
+   expression — and ignored the `scriptOutput` binding entirely. So with (1) fixed,
+   `println 'hello'` still returned an empty string: the output capture the base class exists
+   to provide was written and then thrown away. `doGroovy` now reads the printed lines back
+   and appends the return value, so neither is lost.
+
+**Why it stayed dead: there was no spec for `action=groovy`.** Four `ExecuteService` specs
+existed — async, multiline, native-command, stream-capture — and not one ran a Groovy script.
+A backend with no test can go dark and stay dark for forty versions. `ExecuteServiceGroovySpec`
+is new and was confirmed **4 of 5 red** on 0.9.46 before either fix, with FS-EXEC-3c (return
+value only) passing as the control.
+
+### `execute` now names its valid actions
+
+`Unknown execute action: native` said nothing about what *was* valid. `file_read` has
+enumerated since it was written and `file_write` was given it in 0.9.46; `execute` was the
+last one leaving callers to guess. Four probe calls were spent this session discovering `cmd`
+against a server that knew the answer and would not say it — the same cost 0.9.46 recorded,
+in the same release, one tool over.
+
+The check also **moved earlier**, above working-directory resolution, for the same reason the
+job actions are handled there: everything below resolves and validates a path, so a typo'd
+action was being refused for a path it never needed. Its spec could not reach the error text
+until this moved. `job_list` joined the advertised set — it dispatched and was never named.
+
+### A deleted spec, and the gap it leaves open
+
+`FS-EXEC-4b` claimed to prove every advertised name actually dispatches. **Its mutation check
+stayed green** — remove `case 'python'` from the switch, leave `'python'` advertised, run:
+pass. Twice, for two different reasons. Unwired, every script action NPE'd before reaching the
+switch; wired, every script action is refused by working-directory validation before reaching
+the switch. Both refusals satisfy "the payload does not say Unknown execute action", so the
+case was true of its fixture and blind to the defect it existed for.
+
+It was **deleted rather than weakened**. A check that cannot fail is worse than no check: it is
+a green light over an untested claim.
+
+What that leaves open, recorded here rather than quietly: `VALID_EXECUTE_ACTIONS` is
+hand-derived from two dispatch points and nothing guards the correspondence. Covering it needs
+a fixture that reaches the dispatch switch — a working directory surviving `normalizePath` +
+`isPathAllowed` — and **no `ExecuteService` spec has ever had one**. All five construct the
+service with a null `PathService`. That is the larger gap, and it is why `handleToolCall` is
+effectively untested across this service, not just for this one list.
+
+### Found while writing this entry, not fixed here
+
+`file_write action=append` with `content` absent returns `success: true` and writes nothing.
+It was caught only because the returned `content_hash` came back **identical to the
+`expectedHash` sent in**, which for an append is impossible. Unnoticed, this entry would have
+been committed missing behind a green write. Chain `8216fbea`. The fix belongs with the 0.9.46
+enumeration work — a `doAppend` that refuses null or blank content — and its spec must assert
+the file is unchanged *and* a refusal returned, not that a flag was true.
+
+Suite: **438 tests, 0 failures**, run fresh this session. Mutation check run in both
+directions on FS-EXEC-4 (red with the guard disabled, nothing else red; green restored).

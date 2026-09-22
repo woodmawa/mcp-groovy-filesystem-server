@@ -33,7 +33,20 @@ abstract class SecureMcpScript extends Script {
         binding.hasVariable('args') ? binding.getVariable('args') as List<String> : []
     }
 
-    private List<String> getScriptOutput() {
+    /**
+     * FS 0.9.47 FS-EXEC-3 -- PROTECTED, and it has to be.
+     *
+     * <p>This was {@code private} from e259442 (v0.7.1), and it made every Groovy script fail with
+     * {@code No such property: scriptOutput for class: Script1} -- including {@code println 'hello'}.
+     * {@code println} is declared here, but it dispatches on the RUNTIME class: the user's compiled
+     * {@code Script1}, which extends this one. Groovy resolves the unqualified {@code scriptOutput}
+     * as a property against that subclass's metaclass, and a private getter on the superclass is not
+     * in it -- so the failure reads as a missing property rather than an access violation, which is
+     * why it never looked like a visibility problem.</p>
+     *
+     * <p>Dead for roughly forty minor versions, because no spec ran a Groovy script. FS-EXEC-3 does.</p>
+     */
+    protected List<String> getScriptOutput() {
         if (!binding.hasVariable('scriptOutput')) {
             binding.setVariable('scriptOutput', [])
         }
