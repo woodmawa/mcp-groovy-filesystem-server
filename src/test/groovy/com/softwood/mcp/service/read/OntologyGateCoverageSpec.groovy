@@ -170,7 +170,10 @@ class OntologyGateCoverageSpec extends Specification {
         // is what locate returns -- and gating it made finding a symbol cost a locate first. The
         // rest of the list is unchanged, and LocateEvidenceSpec LE-6 pins grep's exemption from
         // the other side so this is not merely an assertion deleted.
-        ['head', 'tail', 'structure', 'summary', 'read', 'range', 'get_method'].each {
+        // FS 0.9.52: 'structure' left this list. It returns signatures and line numbers -- the
+        // shape locate returns -- and the gate's own hint tells the caller to use it INSTEAD of
+        // reading. LE-6 pins its exemption from the other side, as it does for grep.
+        ['head', 'tail', 'summary', 'read', 'range', 'get_method'].each {
             String contentAction ->
                 assert !guard.contains("'${contentAction}'"),
                     "'${contentAction}' returns file content and must not be exempt from the gate"
@@ -244,28 +247,24 @@ class OntologyGateCoverageSpec extends Specification {
              options    : [paths: [blockedPath, freePath], pattern: 'class']] as Map<String, Object>,
             'req-ogc-6b'))
 
-        then: 'multi_grep is gated at all -- until FS 0.9.30 it was the last action that was not'
-        List grepBlocked = grepData.blocked as List
-        grepBlocked?.size() == 1
+        then: 'FS 0.9.52: multi_grep is EXEMPT -- it returns the matching lines grep returns, across files'
+        grepData.blocked == null
+        (grepData.results as List)?.size() == 2
 
-        and: 'and it answers exactly as multi does, rather than in a second dialect'
+        and: 'multi -- whole files -- is still gated, per path, in the node_id dialect'
         List multiBlocked = multiData.blocked as List
         multiBlocked?.size() == 1
-        (grepBlocked[0] as Map).error        == (multiBlocked[0] as Map).error
-        (grepBlocked[0] as Map).error        == 'BLOCKED_ONTOLOGY_GATE'
-        (grepBlocked[0] as Map).locate_query == (multiBlocked[0] as Map).locate_query
-
-        and: 'both hand back the node_id CS resolved -- not the bare stem Fix D used to return'
+        (multiBlocked[0] as Map).error        == 'BLOCKED_ONTOLOGY_GATE'
         (multiBlocked[0] as Map).locate_query == 'class:filesystem/BlockedOne'
-
-        and: 'the unindexed file is still served by both'
         (multiBlocked[0] as Map).file != freePath
-        (grepBlocked[0] as Map).file  != freePath
 
-        // Two assertions that fail for different reasons before this release: multi_grep had no
-        // gate at all, so grepData.blocked was null; and multi answered
-        // BLOCKED_UNRANGED_INDEXED_READ with locate_query set to the bare file STEM -- the exact
-        // hint CS 1.0.62 shipped to remove, because 2,012 names are shared across source_files and
-        // following such a hint resolves to a different file and leaves you still blocked.
+        // History. FS 0.9.30 gated multi_grep here as "the last file_read action that returned
+        // file content with no gate at all" and this case asserted it answered exactly as multi.
+        // FS 0.9.43 N11 then exempted single-file grep on the grounds that matching lines with
+        // their numbers ARE the navigation the gate exists to send people to. Both could not
+        // stand: on 2026-09-22 one grep per file was free while the same pattern across eight
+        // files was refused eight times, each refusal demanding a locate that could not answer
+        // the question the grep asked. multi_grep now follows grep; multi still returns whole
+        // files and is still gated. The multi half of this case is unchanged.
     }
 }

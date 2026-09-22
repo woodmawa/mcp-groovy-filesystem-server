@@ -86,7 +86,7 @@ class LocateEvidenceSpec extends Specification {
         !registry.isSatisfied('session-b', PATH)
     }
 
-    def "LE-6: grep is exempt at dispatch, and the content actions are still gated"() {
+    def "LE-6: grep, multi_grep and structure are exempt at dispatch, and read/range are still gated"() {
         given:
         String src = new File('src/main/groovy/com/softwood/mcp/service/FileReadService.groovy').text
         int at = src.indexOf("!(action in ['exists'")
@@ -94,11 +94,28 @@ class LocateEvidenceSpec extends Specification {
         expect: 'the anchor was found -- a source scan that cannot find its anchor proves nothing'
         at > 0
 
-        and:
-        String block = src.substring(at, Math.min(src.length(), at + 300))
+        and: 'FS 0.9.52: the navigation actions are named in the exempt set, the content actions are not'
+        String block = src.substring(at, Math.min(src.length(), at + 400))
         block.contains("'grep'")
+        block.contains("'multi_grep'")
+        block.contains("'structure'")
         !block.contains("'read'")
         !block.contains("'range'")
-        !block.contains("'structure'")
+    }
+
+    def "LE-7: multi_grep no longer routes through gateMultiPaths -- the same lines grep returns, across files"() {
+        given:
+        String src = new File('src/main/groovy/com/softwood/mcp/service/FileReadService.groovy').text
+        int caseAt = src.indexOf("case 'multi_grep'")
+        int nextCase = src.indexOf("case 'multi'", caseAt + 1)
+
+        expect: 'anchors found'
+        caseAt > 0
+        nextCase > caseAt
+
+        and: 'the multi_grep case calls the served grep and nothing gates it in between'
+        String body = src.substring(caseAt, nextCase)
+        body.contains('servedMultiGrep(options, requestId)')
+        !body.contains('gateMultiPaths(')
     }
 }

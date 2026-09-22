@@ -2011,3 +2011,34 @@ still supports what Claude routinely writes.
 ways, `..` escape, timeout ignored, bash helper truncated, relative file missing -- and green on 0.9.51 with the
 control case (`new File(workingDir, 'a.txt')`, `writeText`, `Paths.get(workingDir, ...)`, `listDir`) unchanged.
 Practice #3506 rewritten to describe the sandbox.
+
+
+## [0.9.52]
+
+**The two per-call frictions the value review measured, and the instrument M3 has waited two months for.**
+
+- **ONTOLOGY-GATE no longer gates navigation.** `multi_grep` and `structure` join `grep` in the exempt set.
+  FS 0.9.30 gated `multi_grep` as "the last action returning content with no gate"; FS 0.9.43 N11 then exempted
+  single-file `grep` because matching lines *are* the navigation. Both could not stand: on 2026-09-22 one grep
+  per file was free while the same pattern across eight files was refused eight times, each demanding a locate
+  that could not answer the question the grep asked. `structure` returns signatures with line numbers -- the
+  call the gate's own hint recommends *instead* of reading -- and was gated on a 31-line interface and on a file
+  the chat had written seconds earlier. `multi` (whole files), `read`, `range`, `get_method`, `head`, `tail`
+  are gated exactly as before. OGC-4 and OGC-6 rewritten with the reasoning; LE-6/LE-7 pin the exemptions.
+  Practices #199 and #435 amended -- #435 had said "locate first, no exceptions" for grep since March and
+  contradicted #199 as amended in September.
+- **PLAN-GATE asks only about writes that are plans.** `PlanGateGuard.isPlannedArtefact`: the file must sit in a
+  git repository and not carry a scratch extension (`txt log csv tsv tmp bak out backup orig`). A scratch
+  `alpha.txt` had drawn three CS migration practices, `hello.txt` a sandbox-tool practice, and `ARC-STATE.md`
+  in `claude-sync` the ontology-first rule; 24 of 43 judged shows that session were `n` and the wrong half was
+  almost entirely files that belong to no codebase. PGG-9/10; `PlanGateGuardSpec` now uses a real temp
+  repository with a `.git` marker instead of `C:/r/Foo.groovy`.
+- **A gate is not a fault.** `McpController.extractOutcome` records a PLAN-GATE refusal as
+  `outcome='plan_gate_fired'` and an ontology block as `refused` instead of folding both into `error`.
+  `M3-advice-changed-the-next-call` is specified against that literal (WP-C C1) and read the `-1` sentinel for
+  two months because nothing ever wrote it: 20 refusals on 2026-09-22 alone, zero rows. CT-M3-1/2; CT-16B-4
+  remains the control that a real fault still reads `error`. Verify live after the restart (practice #3454):
+  `SELECT outcome, COUNT(*) FROM tool_call_telemetry WHERE called_at >= datetime('now','-1 hour') GROUP BY 1`.
+
+Still known: `file_write action=replace` with `newText == oldText` reports success over an unchanged file
+(same class as the 0.9.48 empty append).

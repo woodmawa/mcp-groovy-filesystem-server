@@ -357,9 +357,13 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 // gate should be sending people TO -- it returns matching lines with their numbers,
                 // which is what locate returns -- and gating it made the cheapest way to find a
                 // symbol cost a locate first. Its hits are recorded as locate evidence below.
+                // FS 0.9.52: 'structure' joins it -- it returns signatures and line numbers, not
+                // content, and practice #78 tells the caller to use it INSTEAD of reading. Gating
+                // the recommended navigation call behind a locate is the ceremony this session
+                // measured on a 31-line interface and a file the chat had written seconds before.
                 !(action in ['exists', 'stat', 'info', 'checksum', 'normalize', 'project_root',
                              'allowed_dirs', 'list', 'help', 'chunk_read', 'finalise_read',
-                             'grep', 'multi', 'multi_grep'])) {
+                             'grep', 'multi', 'multi_grep', 'structure'])) {
                 String gateNorm = pathService.normalizePath(path)
                 McpResponse gateBlock =
                     responseHelper.checkOntologyGate(gateNorm, options, requestId, action)
@@ -395,24 +399,15 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                     return gr
                 }
                 case 'multi_grep'   : {
-                    // FS 0.9.30 -- W3: multi_grep was the last file_read action that returned file
-                    // content with no gate at all. The dispatch guard cannot cover it -- there is no
-                    // single `path` to ask about -- so it is gated here, per path, through the same
-                    // decision function dispatch uses. Being named in the exempt list above is about
-                    // the shape of the arguments, not about being exempt.
-                    Map<String, Object> mg = gateMultiPaths(
-                        (options.paths as List<String>) ?: [], options, 'multi_grep', false)
-                    List<Map> mgBlocked = mg.get('blocked') as List<Map>
-                    if (mgBlocked) {
-                        List<String> mgAllowed = mg.get('allowed') as List<String>
-                        if (!mgAllowed) return McpResponse.toolError(requestId,
-                            groovy.json.JsonOutput.toJson([error  : 'BLOCKED_ONTOLOGY_GATE',
-                                blocked: mgBlocked,
-                                hint   : 'All requested files are ontology-indexed and unlocated. locate each locate_query below, then retry.']))
-                        options = new HashMap<String, Object>(options as Map<String, Object>)
-                        options.paths = mgAllowed
-                        options._blocked = mgBlocked
-                    }
+                    // FS 0.9.30 -- W3 gated multi_grep here, per path, as "the last file_read action
+                    // that returned file content with no gate at all". FS 0.9.43 N11 then exempted
+                    // single-file grep because matching lines ARE the navigation the gate exists to
+                    // send people to. multi_grep returns the same lines across several files, so the
+                    // two positions could not both stand: on 2026-09-22 one grep per file was free
+                    // and the same pattern across eight files was refused eight times, with eight
+                    // locate calls demanded that could not answer the question the grep asked.
+                    // FS 0.9.52: multi_grep is exempt on the same terms as grep. `multi` (whole files)
+                    // stays gated below.
                     return servedMultiGrep(options, requestId)
                 }
                 case 'multi'        : {

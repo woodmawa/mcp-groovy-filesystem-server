@@ -1,6 +1,10 @@
 package com.softwood.mcp.service
 
 import spock.lang.Specification
+import spock.lang.TempDir
+
+import java.nio.file.Files
+import java.nio.file.Path
 
 /**
  * FS 0.9.37 C1 -- PLAN-GATE at FS's mutating entry points. CS decides; this pins how FS asks and
@@ -14,6 +18,8 @@ import spock.lang.Specification
  * PGG-6  non-writing file_write actions are not asked about
  * PGG-7  the gate switched off asks nothing
  * PGG-8  a throwing client passes
+ * PGG-9  FS 0.9.52: a scratch extension is never a plan, wherever it lives
+ * PGG-10 FS 0.9.52: a file outside any git repository is not a plan; inside one it is
  */
 class PlanGateGuardSpec extends Specification {
 
@@ -21,16 +27,49 @@ class PlanGateGuardSpec extends Specification {
     FilesystemTelemetryService telemetry = Mock()
     PlanGateGuard guard = new PlanGateGuard(contextServerClient: client, telemetryService: telemetry)
 
-    def setup() { telemetry.readActiveSessionId() >> 'sid-1' }
+    @TempDir Path tmp
+    /** A code file inside a directory that carries a .git marker -- what 'C:/r/Foo.groovy' used to stand for. */
+    String repoFile
+
+    def setup() {
+        telemetry.readActiveSessionId() >> 'sid-1'
+        Files.createDirectories(tmp.resolve('repo/.git'))
+        Files.createDirectories(tmp.resolve('repo/src'))
+        repoFile = tmp.resolve('repo/src/Foo.groovy').toString()
+    }
+
+    def 'PGG-9: a scratch extension is never a plan, even inside a repo'() {
+        expect:
+        !PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/src/alpha.txt').toString())
+        !PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/build.log').toString())
+
+        when:
+        String msg = guard.checkWrite('write', tmp.resolve('repo/src/alpha.txt').toString())
+
+        then: 'so CS is never asked about it'
+        msg == null
+        0 * client.planGateCheck(_, _)
+    }
+
+    def 'PGG-10: outside a repository nothing is a plan; inside one a code file is'() {
+        given:
+        Files.createDirectories(tmp.resolve('notes'))
+
+        expect:
+        !PlanGateGuard.isPlannedArtefact(tmp.resolve('notes/ARC-STATE.md').toString())
+        !PlanGateGuard.isPlannedArtefact(tmp.resolve('notes/Probe.groovy').toString())
+        PlanGateGuard.isPlannedArtefact(repoFile)
+        PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/CHANGELOG.md').toString())
+    }
 
     def 'PGG-1: a refusal names the practices and says the retry passes'() {
         given:
-        client.planGateCheck([tool: 'file_write', path: 'C:/r/Foo.groovy'], 'sid-1') >> [
+        client.planGateCheck([tool: 'file_write', path: repoFile], 'sid-1') >> [
             allow: false, component: 'Foo',
             practices: [[id: 7, valence: 'proscriptive', title: 'never do X to Foo', summary: 'because Y']],
             retry: 'Read these, then repeat the same call unchanged -- a retry is never refused.']
         when:
-        String msg = guard.checkWrite('write', 'C:/r/Foo.groovy')
+        String msg = guard.checkWrite('write', repoFile)
         then:
         msg.startsWith("PLAN-GATE: first mutating call on 'Foo'")
         msg.contains('#7 [proscriptive] never do X to Foo -- because Y')
@@ -41,14 +80,14 @@ class PlanGateGuardSpec extends Specification {
         given:
         client.planGateCheck(_, _) >> [allow: true, reason: 'already-gated']
         expect:
-        guard.checkWrite('replace', 'C:/r/Foo.groovy') == null
+        guard.checkWrite('replace', repoFile) == null
     }
 
     def 'PGG-3: CS unreachable passes and is counted'() {
         given:
         client.planGateCheck(_, _) >> null
         when:
-        String msg = guard.checkWrite('write', 'C:/r/Foo.groovy')
+        String msg = guard.checkWrite('write', repoFile)
         then:
         msg == null
         guard.unavailable.get() == 1
@@ -58,7 +97,7 @@ class PlanGateGuardSpec extends Specification {
         given:
         PlanGateGuard g = new PlanGateGuard(contextServerClient: client, telemetryService: Mock(FilesystemTelemetryService))
         when:
-        String msg = g.checkWrite('write', 'C:/r/Foo.groovy')
+        String msg = g.checkWrite('write', repoFile)
         then:
         msg == null
         0 * client.planGateCheck(_, _)
@@ -144,8 +183,8 @@ class PlanGateGuardSpec extends Specification {
 
     def 'PGG-6: non-writing file_write actions are not asked about'() {
         when:
-        guard.checkWrite('abort_write', 'C:/r/Foo.groovy')
-        guard.checkWrite('chunk_status', 'C:/r/Foo.groovy')
+        guard.checkWrite('abort_write', repoFile)
+        guard.checkWrite('chunk_status', repoFile)
         then:
         0 * client.planGateCheck(_, _)
     }
@@ -154,7 +193,7 @@ class PlanGateGuardSpec extends Specification {
         given:
         guard.enforced = false
         when:
-        guard.checkWrite('write', 'C:/r/Foo.groovy')
+        guard.checkWrite('write', repoFile)
         guard.checkExecute('gradlew test', 'C:/r')
         then:
         0 * client.planGateCheck(_, _)
@@ -164,6 +203,6 @@ class PlanGateGuardSpec extends Specification {
         given:
         client.planGateCheck(_, _) >> { throw new IllegalStateException('boom') }
         expect:
-        guard.checkWrite('write', 'C:/r/Foo.groovy') == null
+        guard.checkWrite('write', repoFile) == null
     }
 }

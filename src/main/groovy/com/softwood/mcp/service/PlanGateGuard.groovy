@@ -70,11 +70,42 @@ class PlanGateGuard {
      */
     String checkWrite(String action, String path, String planAck = null, String intent = null) {
         if (!enforced || !path || NON_MUTATING_WRITE_ACTIONS.contains(action)) return null
+        // FS 0.9.52: only a write that is a PLAN is gated. On 2026-09-22 a scratch alpha.txt in
+        // claude-sync drew three CS migration practices, hello.txt drew a sandbox-tool practice,
+        // and ARC-STATE.md drew the ontology-first rule -- 24 of 43 judged shows were 'n', and the
+        // wrong half was almost entirely files that are not part of any codebase. A plan lives in
+        // a repository; a note, a probe file or a brief does not.
+        if (!isPlannedArtefact(path)) return null
         Map<String, Object> args = [tool: 'file_write', path: path] as Map<String, Object>
         // FS 0.9.44 WP-2a: the judgement DT gives at the retry, passed straight through to CS.
         if (planAck) args.put('planAck', planAck)
         if (intent)  args.put('intent', intent)
         return ask(args)
+    }
+
+    /** Extensions that are never a plan, wherever they live. */
+    static final Set<String> SCRATCH_EXTENSIONS =
+        ['txt', 'log', 'csv', 'tsv', 'tmp', 'bak', 'out', 'backup', 'orig'] as Set<String>
+
+    /**
+     * FS 0.9.52: a write is a plan when the file sits inside a git repository (a {@code .git}
+     * directory within twelve levels up) and its extension is not scratch. Static and pure so it
+     * can be asserted without CS.
+     */
+    static boolean isPlannedArtefact(String path) {
+        if (!path) return false
+        String name = new File(path).name
+        int dot = name.lastIndexOf('.')
+        String ext = dot > 0 ? name.substring(dot + 1).toLowerCase(Locale.ROOT) : ''
+        if (SCRATCH_EXTENSIONS.contains(ext)) return false
+        File dir = new File(path).absoluteFile.parentFile
+        int hops = 0
+        while (dir != null && hops < 12) {
+            if (new File(dir, '.git').exists()) return true
+            dir = dir.parentFile
+            hops++
+        }
+        return false
     }
 
     /**

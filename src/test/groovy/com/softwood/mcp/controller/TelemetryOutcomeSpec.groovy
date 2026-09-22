@@ -114,6 +114,26 @@ class TelemetryOutcomeSpec extends Specification {
         McpController.extractOutcome(resp) == 'error'
     }
 
+    // FS 0.9.52: a gate is not a fault. M3-advice-changed-the-next-call is specified against the
+    // literal 'plan_gate_fired' and read -1 for two months because every refusal was 'error'.
+    def 'CT-M3-1: a PLAN-GATE refusal is recorded as plan_gate_fired, not error'() {
+        given:
+        McpResponse resp = McpResponse.toolError(1,
+            "PLAN-GATE: first mutating call on 'Foo' this session. The corpus already holds this for it:\n  #7 [proscriptive] x")
+
+        expect:
+        McpController.extractOutcome(resp) == 'plan_gate_fired'
+    }
+
+    def 'CT-M3-2: an ontology-gate toolError is refused, and CT-16B-4 above is the control that error still exists'() {
+        given:
+        McpResponse resp = McpResponse.toolError(1,
+            '{"error":"BLOCKED_ONTOLOGY_GATE","blocked":[],"hint":"locate first"}')
+
+        expect:
+        McpController.extractOutcome(resp) == 'refused'
+    }
+
     // =========================================================================
     // CT-16B-5 — truncated response
     // =========================================================================

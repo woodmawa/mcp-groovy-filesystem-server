@@ -311,7 +311,20 @@ class McpController {
             // Tool-level errors set result.isError=true and must not be recorded as 'success'.
             if (result instanceof Map) {
                 Map<String, Object> resultMap = result as Map<String, Object>
-                if (resultMap.get('isError') == Boolean.TRUE) return 'error'
+                if (resultMap.get('isError') == Boolean.TRUE) {
+                    // FS 0.9.52: a GATE is not a fault. M3-advice-changed-the-next-call is specified
+                    // against the literal 'plan_gate_fired' (WP-C C1) and read -1 for two months
+                    // because every refusal landed here as 'error': 20 refusals on 2026-09-22 alone,
+                    // zero rows carrying the literal. Classify before folding into 'error'.
+                    String errText = ''
+                    try {
+                        List errContent = resultMap.get('content') as List
+                        errText = ((errContent?.first() as Map)?.get('text') as String) ?: ''
+                    } catch (Exception ignored) { }
+                    if (errText.startsWith('PLAN-GATE:')) return 'plan_gate_fired'
+                    if (errText.contains('BLOCKED_ONTOLOGY_GATE')) return 'refused'
+                    return 'error'
+                }
             }
             List content = response?.result?.content as List
             String text = ((content?.first() as Map)?.get('text') as String) ?: ''
