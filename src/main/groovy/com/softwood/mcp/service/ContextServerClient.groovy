@@ -230,7 +230,7 @@ class ContextServerClient {
                     ]
                 ] as Map<String, Object>
                 URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput     = true
@@ -336,6 +336,25 @@ class ContextServerClient {
     }
 
     /**
+     * FS 0.9.60 -- the ONE place this client opens an HTTP connection to CS. It declares the session the
+     * call is for as X-Mcp-Caller-Session, which is the only thing CS attributes telemetry from on its
+     * HTTP companion. Before this, 1,018 file-registry upserts, 215 ontology gate checks, 115 plan-gate
+     * checks and 46 locates in six hours (2026-09-23) arrived with no declared session and filed as
+     * 'unknown' -- this client already knew the session and sent it only as a tool argument, on some
+     * calls. No session, no header: nothing is invented. resolveSessionId()'s own HTTP fallback does
+     * not use this (it would recurse).
+     */
+    private HttpURLConnection openCs(URL url) {
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+        String sid = resolveSessionId()
+        if (sid) conn.setRequestProperty(CALLER_SESSION_HEADER, sid)
+        return conn
+    }
+
+    /** Same header CS (HttpMcpController) and FS's own McpController read. */
+    static final String CALLER_SESSION_HEADER = 'X-Mcp-Caller-Session'
+
+    /**
      * Fire-and-forget: re-index a source file in the ontology after a write.
      * Only fires for .groovy / .java files. Queued on the same asyncWriter executor.
      */
@@ -353,7 +372,7 @@ class ContextServerClient {
                     ]
                 ] as Map<String, Object>
                 URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput     = true
@@ -406,7 +425,7 @@ class ContextServerClient {
         ] as Map<String, Object>
 
         URL url = new URL("${contextServerUrl}/mcp")
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+        HttpURLConnection conn = openCs(url)
         try {
             conn.requestMethod = 'POST'
             conn.doOutput      = true
@@ -427,7 +446,7 @@ class ContextServerClient {
 
     private String postWithTimeout(String jsonBody, int timeoutMs) {
         URL url = new URL("${contextServerUrl}/mcp")
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+        HttpURLConnection conn = openCs(url)
         try {
             conn.requestMethod  = 'POST'
             conn.doOutput       = true
@@ -489,7 +508,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(body)
             URL url = new URL("${contextServerUrl}/rangeCache")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod = 'POST'
                 conn.doOutput      = true
@@ -556,7 +575,7 @@ class ContextServerClient {
         try {
             String json = groovy.json.JsonOutput.toJson(body)
             URL url = new URL("${contextServerUrl}/rangeCache")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod = 'POST'
                 conn.doOutput      = true
@@ -594,7 +613,7 @@ class ContextServerClient {
                 ] as Map<String, Object>
                 String json = groovy.json.JsonOutput.toJson(body)
                 URL url = new URL("${contextServerUrl}/rangeCache")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput      = true
@@ -629,7 +648,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(callBody)
             URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod = 'POST'
                 conn.doOutput      = true
@@ -675,7 +694,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(callBody)
             URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod = 'POST'
                 conn.doOutput      = true
@@ -720,7 +739,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(callBody)
             URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod = 'POST'
                 conn.doOutput      = true
@@ -758,7 +777,7 @@ class ContextServerClient {
                 Map<String, Object> body = [filePath: filePath] as Map<String, Object>
                 String json = groovy.json.JsonOutput.toJson(body)
                 URL url = new URL("${contextServerUrl}/invalidate")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput      = true
@@ -792,7 +811,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(callBody)
             URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod = 'POST'
                 conn.doOutput      = true
@@ -842,7 +861,7 @@ class ContextServerClient {
                     contentHash: hash
                 ] as Map<String, Object>)
                 URL url = new URL("${contextServerUrl}/fileHashCache")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput      = true
@@ -877,7 +896,7 @@ class ContextServerClient {
                 sourceFile: normalizedPath
             ] as Map<String, Object>)
             URL url = new URL("${contextServerUrl}/fileHashCache")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod = 'POST'
                 conn.doOutput      = true
@@ -942,7 +961,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(callBody)
             URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod  = 'POST'
                 conn.doOutput       = true
@@ -984,7 +1003,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(callBody)
             URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod  = 'POST'
                 conn.doOutput       = true
@@ -1047,7 +1066,7 @@ class ContextServerClient {
             ] as Map<String, Object>
             String json = groovy.json.JsonOutput.toJson(callBody)
             URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+            HttpURLConnection conn = openCs(url)
             try {
                 conn.requestMethod  = 'POST'
                 conn.doOutput       = true
@@ -1093,7 +1112,7 @@ class ContextServerClient {
                     ]
                 ] as Map<String, Object>
                 URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput     = true
@@ -1150,7 +1169,7 @@ class ContextServerClient {
                     ]
                 ] as Map<String, Object>
                 URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput     = true
@@ -1207,7 +1226,7 @@ class ContextServerClient {
                     ]
                 ] as Map<String, Object>
                 URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection()
+                HttpURLConnection conn = openCs(url)
                 try {
                     conn.requestMethod = 'POST'
                     conn.doOutput     = true

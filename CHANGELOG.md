@@ -2191,3 +2191,20 @@ that edit and acked `c` without the grep being done.
 with both headers: HC-1 red on 0.9.58, HC-2 the control. The grep this time found one more HTTP caller of the
 one-argument form, the legacy SSE `POST /message`; nothing on this platform calls it, and it is left unchanged rather
 than changed without a spec. Stdio has no headers and needs none.
+
+
+## [0.9.60]
+
+**Every call FS makes to CS declares the session it is for** (2026-09-23, carry-forward brief section 4). Measured over
+six hours on 2026-09-23: CS attributed 2,342 of 5,273 telemetry rows, and the FS-originated ones carried no declared
+session at all -- 1,018 file-registry upserts (one per FS file read), 215 ontology gate checks, 115 plan-gate checks,
+46 locates. `ContextServerClient` already knew the session (`resolveSessionId()`, sent as a tool ARGUMENT on some
+calls), but never sent `X-Mcp-Caller-Session`, and CS attributes HTTP telemetry only from that header. 0.9.58 fixed the
+receiving half for FS's own companion; this is the sending half.
+
+New `openCs(url)` is the one place the client opens a connection to CS: it sets the header when a session is active
+and invents nothing when none is. All 20 CS call sites go through it; the only raw `openConnection()` left is
+`resolveSessionId()`'s own HTTP fallback, which would otherwise recurse. `ContextServerClientCallerHeaderSpec` runs a
+real `HttpServer` and asserts on the header that arrives -- a synchronous call, the async file-registry upsert, and the
+no-session control. CH-1/CH-2 red first; `mutation-check` removing the header line turned exactly those two red.
+503 tests, 0 failures.
