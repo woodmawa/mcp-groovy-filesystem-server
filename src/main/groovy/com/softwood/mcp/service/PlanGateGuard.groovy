@@ -101,6 +101,15 @@ class PlanGateGuard {
         ['txt', 'log', 'csv', 'tsv', 'tmp', 'bak', 'out', 'backup', 'orig'] as Set<String>
 
     /**
+     * FS 0.9.57 -- documentation is not a plan either, even inside a repository. Measured over the 7 days
+     * to 2026-09-23: 47 refusals on .md/.adoc (CHANGELOG, CLAUDE, README, the books, usage and
+     * architecture docs); in the telemetry window their next call changed 0 of 17 times -- the practices
+     * shown there, #478 above all, were already being followed. build.gradle is NOT here: it carries
+     * build logic as well as version stamps.
+     */
+    static final Set<String> DOC_EXTENSIONS = ['md', 'adoc'] as Set<String>
+
+    /**
      * FS 0.9.52: a write is a plan when the file sits inside a git repository (a {@code .git}
      * directory within twelve levels up) and its extension is not scratch. Static and pure so it
      * can be asserted without CS.
@@ -110,7 +119,7 @@ class PlanGateGuard {
         String name = new File(path).name
         int dot = name.lastIndexOf('.')
         String ext = dot > 0 ? name.substring(dot + 1).toLowerCase(Locale.ROOT) : ''
-        if (SCRATCH_EXTENSIONS.contains(ext)) return false
+        if (SCRATCH_EXTENSIONS.contains(ext) || DOC_EXTENSIONS.contains(ext)) return false
         File dir = new File(path).absoluteFile.parentFile
         int hops = 0
         while (dir != null && hops < 12) {

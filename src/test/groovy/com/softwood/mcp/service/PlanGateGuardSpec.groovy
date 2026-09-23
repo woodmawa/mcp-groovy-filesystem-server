@@ -59,7 +59,26 @@ class PlanGateGuardSpec extends Specification {
         !PlanGateGuard.isPlannedArtefact(tmp.resolve('notes/ARC-STATE.md').toString())
         !PlanGateGuard.isPlannedArtefact(tmp.resolve('notes/Probe.groovy').toString())
         PlanGateGuard.isPlannedArtefact(repoFile)
-        PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/CHANGELOG.md').toString())
+        PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/build.gradle').toString())
+    }
+
+    def 'PGG-11: FS 0.9.57 -- docs are never a plan, even inside a repo; build.gradle still is'() {
+        // Measured 7 days to 2026-09-23: 47 gate refusals on .md/.adoc (CHANGELOG, CLAUDE, README, the
+        // book, usage and architecture docs). Their next call changed 0 of 17 times in the telemetry
+        // window -- the practices shown there (#478 above all) were already being followed. build.gradle
+        // carries real build logic as well as version stamps, so it stays gated.
+        expect:
+        !PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/CHANGELOG.md').toString())
+        !PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/README.MD').toString())
+        !PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/docs/asciidoc/index.adoc').toString())
+        PlanGateGuard.isPlannedArtefact(tmp.resolve('repo/build.gradle').toString())
+
+        when:
+        String msg = guard.checkWrite('write', tmp.resolve('repo/CHANGELOG.md').toString())
+
+        then: 'so CS is never asked about it'
+        msg == null
+        0 * client.planGateCheck(_, _)
     }
 
     def 'PGG-1: a refusal names the practices and says the retry passes'() {

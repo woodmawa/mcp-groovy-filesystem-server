@@ -2144,3 +2144,20 @@ the tools one had already drifted ("FS 0.9.50 ... Before 0.9.50 tools ignored th
 `PlanAckDescriptionSpec` PAD-1 (x3, one per tool) and PAD-2 (one description, not three): all four red on 0.9.55,
 asserted on the runtime `getToolDefinitions()` output in positive form. No behaviour change: FS forwards `planAck`
 verbatim and already excluded it from `args_hash` (0.9.53).
+
+
+## [0.9.57]
+
+**Documentation is not a plan: `.md` and `.adoc` writes are not gated by PLAN-GATE** (with CS 1.1.18, 2026-09-23).
+
+Measured over the 7 days to 2026-09-23: 47 gate refusals landed on `.md`/`.adoc` files inside repositories
+(CHANGELOG, CLAUDE, README, the asciidoc books, usage and architecture docs). They were acked `y` as readily as code
+fires -- #478, the release checklist, "applies" to every one -- but in the telemetry window their next call changed
+0 of 17 times, against 6 of 27 for code. The advice was already being followed; the refusal bought a round trip and a
+re-sent payload.
+
+`PlanGateGuard.DOC_EXTENSIONS = ['md', 'adoc']` joins `SCRATCH_EXTENSIONS` in `isPlannedArtefact`, so CS is never
+asked. `build.gradle` is deliberately NOT exempt: it carries build logic as well as version stamps.
+
+`PlanGateGuardSpec` PGG-11 red on 0.9.56. PGG-10 asserted `repo/CHANGELOG.md` IS a plan -- the old discriminator --
+and now asserts `repo/build.gradle` instead.
