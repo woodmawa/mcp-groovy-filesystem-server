@@ -2175,3 +2175,19 @@ it forward). A declared session wins over this process's own claim for the TELEM
 for nothing else: PLAN-GATE and the read ledger still read the process's own claim, so a flow's gradle call is not
 newly gated because its caller declared a session. The one-argument `handleRequest` is kept for direct callers.
 `FsCallerSessionSpec` CS-1..5 (CS-1/3/5 red first; CS-2 and CS-4 are the controls); 498 tests, 0 failures.
+
+
+## [0.9.59]
+
+**0.9.58's caller-session fix did not run live -- this one does.** Verified straight after the 0.9.58 install: the next
+flow call to FS (`mutation-check`'s gradle run) still filed its telemetry as `unknown`. AW's `mcp.tool_call` posts to
+`/mcp`, served by `HttpMcpController`, which delegated to the ONE-argument `McpController.handleRequest` -- so the header
+never reached the code 0.9.58 changed and `FsCallerSessionSpec` proved. The spec asserted one layer short of the real
+entry point. Practice 3502 (grep for the caller before believing a method is on the path) was shown at the gate for
+that edit and acked `c` without the grep being done.
+
+`HttpMcpController` now reads `X-Mcp-Caller-Session` from the servlet request and calls the two-argument form.
+`HttpCallerSessionSpec` drives `POST /mcp` exactly as AW does -- `initialize` for a transport session, then `tools/call`
+with both headers: HC-1 red on 0.9.58, HC-2 the control. The grep this time found one more HTTP caller of the
+one-argument form, the legacy SSE `POST /message`; nothing on this platform calls it, and it is left unchanged rather
+than changed without a spec. Stdio has no headers and needs none.

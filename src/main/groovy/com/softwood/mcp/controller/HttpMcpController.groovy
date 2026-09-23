@@ -130,7 +130,11 @@ class HttpMcpController {
         }
 
         log.debug('Streamable HTTP POST: method={} session={}', request.method, sessionId)
-        McpResponse response = mcpController.handleRequest(request)
+        // FS 0.9.59: THIS is the route AW's mcp.tool_call uses. 0.9.58 read X-Mcp-Caller-Session only on
+        // McpController's POST / and was proven there, but /mcp delegated to the one-argument form, so the
+        // header never arrived live: the first flow call after the install still filed as 'unknown'.
+        String callerSession = servletRequest?.getHeader(McpController.CALLER_SESSION_HEADER)
+        McpResponse response = mcpController.handleRequest(request, callerSession)
         return ResponseEntity.ok()
             .header('Mcp-Session-Id', sessionId)
             .body(response)
