@@ -333,8 +333,11 @@ derive-old-version
 
 **Note:** `notify-build` tells Claude to run the build manually before continuing.
 In DT/MCPB stdio mode the flow cannot run the build (port 8081 not bound in stdio mode).
-Claude must run: `gradlew.bat packageMcpbThin installMcpbLocal` via `execute action=cmd`
-**before** starting the flow. The flow's `build-verify` node confirms the jar exists.
+**SUPERSEDED 2026-09-22 (release handoff, practice #3503):** Claude does NOT run `installMcpbLocal`. The MCPB jar is
+held open by the running CS process, so an install from inside a live session only works when a version bump changes
+the filename, and a failed install still writes `server_versions.installed_version`. Claude runs
+`gradlew.bat packageMcpbThin` only and stops at READY FOR RESTART; Will stops Claude, kills the JVMs, installs, and
+restarts. (Was: "Claude must run `gradlew.bat packageMcpbThin installMcpbLocal` before starting the flow.")
 
 ### Canonical invocation
 
@@ -348,15 +351,16 @@ flow_management action=start mode=flow templateName=mcp-deploy version=3.5
   }
 ```
 
-### Full deploy procedure (no exceptions)
+### Full deploy procedure (CORRECTED 2026-09-23 -- see the release handoff above)
 
 ```
-1. Edit code
-2. gradlew.bat compileGroovy --no-daemon        ← compile check, NO 2>&1
-3. gradlew.bat packageMcpbThin installMcpbLocal ← build + install + auto-updates mcp-http-servers.json
-4. flow_management start mcp-deploy:4.1         ← config sync, deploy-state, docs
-5. HUMAN GATE: close DT, reopen DT
-6. New session: detect deploy-state.json → verify → update DB → delete file
+1. Edit code (red-first spec)
+2. gradle-test-summary flow, full suite            ← quote the count
+3. git-release flow (after git status --porcelain)
+4. gradlew.bat packageMcpbThin                     ← Claude: build only, NOT installMcpbLocal
+5. Claude writes a checkpoint and says READY FOR RESTART
+6. HUMAN: stop Claude, kill the JVMs, installMcpbLocal, restart
+7. Claude re-claims the SAME session and runs the checkpoint's verification list
 ```
 
 **`mcp-http-servers.json` is now auto-updated by `copyToJarsDir`** (step 3) — no manual patching needed.
