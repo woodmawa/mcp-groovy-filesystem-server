@@ -10,6 +10,7 @@ import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 
 /**
@@ -137,8 +138,35 @@ class McpController {
         log.info("v{} ready  {} tools registered from {} handlers: {}",
             SERVER_VERSION, handlerMap.size(), toolHandlers.size(), handlerMap.keySet().join(', '))
     }
+    /**
+     * FS 0.9.58 -- the session a caller DECLARES for this request (header {@link #CALLER_SESSION_HEADER}).
+     *
+     * <p>AW stamps it on every outbound mcp.tool_call (DeclaredSession.applyTo, AW 1.30.22) and CS
+     * has read it since 1.0.59. FS never did, so every flow call to FS's unclaimed HTTP companion
+     * filed as 'unknown': 55 of 61 such rows in two days were gradle-test-summary's 'tools' calls,
+     * which is why fs-telemetry-not-stranded-in-unknown rose with flow use, not with restarts.</p>
+     *
+     * <p>Used for TELEMETRY ATTRIBUTION ONLY. PLAN-GATE and the read ledger keep reading this
+     * process's own claim, so a flow node's call is not newly gated because it declared a session.
+     * Set per request and removed in finally -- a pooled HTTP thread must never carry it forward.</p>
+     */
+    static final String CALLER_SESSION_HEADER = 'X-Mcp-Caller-Session'
+    private static final ThreadLocal<String> CALLER_SESSION = new ThreadLocal<String>()
+
+    /** HTTP entry. The one-argument form below is kept for direct (stdio) callers. */
     @PostMapping('/')
-    McpResponse handleRequest(@RequestBody McpRequest request) {
+    McpResponse handleRequest(@RequestBody McpRequest request,
+                              @RequestHeader(value = 'X-Mcp-Caller-Session', required = false) String callerSession) {
+        String declared = callerSession?.trim()
+        CALLER_SESSION.set(declared ?: null)
+        try {
+            return handleRequest(request)
+        } finally {
+            CALLER_SESSION.remove()
+        }
+    }
+
+    McpResponse handleRequest(McpRequest request) {
         try {
             return dispatch(request)
         } catch (Exception e) {
@@ -235,7 +263,9 @@ class McpController {
                 // Prior 'unknown' hardcode caused knownhash_pct/read_count to read 0 for FS calls.
                 // FS 0.9.27 W11.1: null here is the ONLY signal that this call is about to be filed
                 // as unattributed. It was being silently coalesced to 'unknown' and thrown away.
-                String resolved  = telemetryService.readActiveSessionId()
+                // FS 0.9.58: a session the caller declared wins; then this process's own claim.
+                String declared  = CALLER_SESSION.get()
+                String resolved  = declared ?: telemetryService.readActiveSessionId()
                 unbound = (resolved == null)
                 String sessionId = resolved ?: 'unknown'
                 telemetryService.recordToolCall(sessionId, toolName, charCount, arguments,

@@ -2161,3 +2161,17 @@ asked. `build.gradle` is deliberately NOT exempt: it carries build logic as well
 
 `PlanGateGuardSpec` PGG-11 red on 0.9.56. PGG-10 asserted `repo/CHANGELOG.md` IS a plan -- the old discriminator --
 and now asserts `repo/build.gradle` instead.
+
+## [0.9.58]
+
+**Telemetry honours the caller's declared session (`X-Mcp-Caller-Session`).** Measured first, 2026-09-23:
+`fs-telemetry-not-stranded-in-unknown` went 60 -> 85 -> 102 over the day and was suspected to be restart-driven. It
+is not. Of 61 FS rows filed as `unknown` in two days, 55 were `tool_name='tools'` -- `gradle-test-summary`'s
+`mcp.tool_call` to this server's HTTP companion, which holds no chat's claim. AW has stamped the header on every
+outbound tool call since 1.30.22 and CS has read it since 1.0.59; FS never referenced it. The count rose with flow use.
+
+The HTTP entry reads the header into a per-request thread-local (removed in `finally`, so a pooled thread never carries
+it forward). A declared session wins over this process's own claim for the TELEMETRY row and the unbound warning, and
+for nothing else: PLAN-GATE and the read ledger still read the process's own claim, so a flow's gradle call is not
+newly gated because its caller declared a session. The one-argument `handleRequest` is kept for direct callers.
+`FsCallerSessionSpec` CS-1..5 (CS-1/3/5 red first; CS-2 and CS-4 are the controls); 498 tests, 0 failures.
