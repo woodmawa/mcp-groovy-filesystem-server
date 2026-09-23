@@ -396,6 +396,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         String h2 = gh ?: structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(gr)
                         if (h2) contextServerClient.recordServedKeyAsync(path, gkey, h2)
                     }
+                    recordGrepEvidence(gr, path)   // FS 0.9.54: a grep hit is locate evidence (N11)
                     return gr
                 }
                 case 'multi_grep'   : {
@@ -408,7 +409,9 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                     // locate calls demanded that could not answer the question the grep asked.
                     // FS 0.9.52: multi_grep is exempt on the same terms as grep. `multi` (whole files)
                     // stays gated below.
-                    return servedMultiGrep(options, requestId)
+                    McpResponse mg = servedMultiGrep(options, requestId)
+                    recordGrepEvidence(mg, null)   // FS 0.9.54: each file with matches is locate evidence
+                    return mg
                 }
                 case 'multi'        : {
                     // Fix D (v0.8.54) guarded this case with a SECOND, different gate: it asked
@@ -762,6 +765,37 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
     }
 
     /** multi_grep: a path this grep already ran on (same content) is not searched again. */
+    /**
+     * FS 0.9.54 -- the files a grep or multi_grep actually found matches in become locate evidence.
+     *
+     * <p>N11 exempted both from ONTOLOGY-GATE because a match names the file and the line, which is
+     * what locate returns -- but only file_search recorded its hits, so the very next get_method on a
+     * file grep had just found was refused (live 2026-09-22; WP5d read 14). Paths are normalised with
+     * pathService, the form the gate checks against. A file with no match is not evidence of anything,
+     * so it is not recorded. Never fails the read.</p>
+     */
+    private void recordGrepEvidence(McpResponse r, String singlePath) {
+        if (r == null || r.error != null || responseHelper == null) return
+        try {
+            Map<String, Object> payload = parseResponsePayload(r)
+            if (payload == null) return
+            List<String> found = []
+            if (singlePath != null) {
+                if (((payload.get('matchCount') ?: 0) as int) > 0) found << pathService.normalizePath(singlePath)
+            } else {
+                ((payload.get('results') ?: []) as List).each { Object o ->
+                    Map m = o as Map
+                    if (((m.get('matchCount') ?: 0) as int) > 0 && m.get('path')) {
+                        found << pathService.normalizePath(m.get('path') as String)
+                    }
+                }
+            }
+            if (found) responseHelper.recordLocateEvidence(found)
+        } catch (Exception e) {
+            log.debug('recordGrepEvidence failed (non-fatal): {}', e.message)
+        }
+    }
+
     private McpResponse servedMultiGrep(Map<String, Object> options, Object requestId) {
         List<String> paths = (options.get('paths') as List<String>) ?: []
         if (contextServerClient == null || !paths || !options.get('pattern')) return contentReader.doMultiGrep(options, requestId)

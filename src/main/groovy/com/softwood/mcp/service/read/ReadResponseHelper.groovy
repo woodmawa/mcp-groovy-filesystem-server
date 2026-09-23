@@ -418,6 +418,24 @@ class ReadResponseHelper extends AbstractFileService {
     }
 
     /**
+     * FS 0.9.54 -- record that a grep or multi_grep in this session found matches in these files.
+     *
+     * <p>N11 (0.9.43) exempted grep from the gate on the grounds that its hits are locate evidence.
+     * Only file_search ever recorded them; file_read grep and multi_grep recorded nothing, so a grep
+     * that named the file and the line was followed by a refused get_method on that same file --
+     * live on 2026-09-22, and WP5d-gate-blocks-after-a-search-hit read 14. Recording lives HERE,
+     * beside the check, so both read the session from telemetryService.readActiveSessionId().</p>
+     */
+    void recordLocateEvidence(Collection<String> normalizedPaths) {
+        if (locateEvidenceRegistry == null || !normalizedPaths) return
+        try {
+            locateEvidenceRegistry.recordHits(telemetryService?.readActiveSessionId(), normalizedPaths)
+        } catch (Exception e) {
+            log.debug('recordLocateEvidence failed (non-fatal): {}', e.message)
+        }
+    }
+
+    /**
      * FS 0.9.30 -- the gate DECISION, with the response shape lifted off it.
      *
      * <p>Returns the blocked entry map, or {@code null} to allow. {@code checkOntologyGate} wraps it

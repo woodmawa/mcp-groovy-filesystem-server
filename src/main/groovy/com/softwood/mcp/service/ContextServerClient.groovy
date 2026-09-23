@@ -128,38 +128,19 @@ class ContextServerClient {
     // -----------------------------------------------------------------------
 
     /**
-     * Persist a file's structure to the context server asynchronously.
-     * Only fires when the StructureCache had a miss (wasCached=false).
+     * FS 0.9.54: a no-op, kept because FileReadService still calls it.
+     *
+     * <p>This wrote every file's structure into the CS practice corpus as a 'practice' in category
+     * file-structure (and persistDirectoryListingAsync did the same for listings). Measured
+     * 2026-09-22: ZERO rows of either category exist. CS has refused knowledge adds without a
+     * valence since that became mandatory, and these writes were fire-and-forget, so each one cost
+     * an HTTP call and was refused silently. The design was wrong as well as dead: had they landed,
+     * one row per file would have sat in the corpus that PLAN-GATE and for-action select from.
+     * Structure caching that works lives in the ontology (CS indexer) and the served ledger.</p>
      */
     void persistStructureAsync(String filePath, String fileHash, List<Map<String, Object>> entries) {
-        if (!structurePersistEnabled || !isCsReachable()) return
-        asyncWriter.submit {
-            try { doPersistStructure(filePath, fileHash, entries) }
-            catch (ConnectException e) {
-                onCsConnectFailure()
-            }
-            catch (Exception e) { log.debug('ContextServerClient: structure persist failed (non-fatal): {}', e.message) }
-        }
     }
 
-    private void doPersistStructure(String filePath, String fileHash, List<Map<String, Object>> entries) {
-        String filename = new File(filePath).name
-        String stem     = filename.contains('.') ? filename.tokenize('.').first() : filename
-
-        List<Map<String, Object>> compact = entries.take(MAX_PERSIST_ENTRIES).collect { Map<String, Object> e ->
-            Map<String, Object> m = [line: e.line, type: e.type] as Map<String, Object>
-            if (e.endLine) m.endLine = e.endLine
-            String c = e.content as String
-            if (c) m.content = c.length() > 120 ? c.substring(0, 120) : c
-            m
-        }
-
-        String description = JsonOutput.toJson([hash: fileHash, path: filePath, count: entries.size(), entries: compact])
-        if (description.length() > 4000) description = description.substring(0, 4000) + '...(truncated)'
-
-        postToContextServer('practice', 'add', structureGroupId, 'file-structure',
-            "${stem} [${fileHash}]" as String, description, ['file-structure', stem])
-    }
 
     // -----------------------------------------------------------------------
     // Directory listing cache (Addendum A)
@@ -178,17 +159,15 @@ class ContextServerClient {
         dirListingCache.put(normalizedPath, new CachedListing(
             listingHash: listingHash, dirMtime: dirMtime, entries: entries))
 
-        // Async persist to context server for cross-session recovery
-        asyncWriter.submit {
-            try { doPersistDirectoryListing(normalizedPath, entries, listingHash, dirMtime) }
-            catch (Exception e) { log.debug('ContextServerClient: directory listing persist failed (non-fatal): {}', e.message) }
-        }
+        // FS 0.9.54: the cross-session half is gone. It stored each listing in the CS practice corpus
+        // as a 'practice' in category directory-listing. Measured 2026-09-22: ZERO such rows exist --
+        // CS has refused knowledge adds without a valence since that became mandatory, and this
+        // write is fire-and-forget, so every one was refused silently. Had they landed they would
+        // have sat in the corpus PLAN-GATE and for-action select from. See getDirectoryListing.
     }
 
     /**
-     * Get a cached directory listing.
-     * Fast path: in-memory cache (zero I/O).
-     * Slow path: context server with 500ms timeout.
+     * Get a cached directory listing from the in-memory cache (zero I/O).
      * Returns null if not cached or stale — caller must list the filesystem.
      *
      * Staleness: dirMtime mismatch means a file was added/removed — invalidate.
@@ -209,77 +188,16 @@ class ContextServerClient {
             return null
         }
 
-        // Slow path: try context server with read timeout
-        try {
-            CachedListing fromServer = fetchDirectoryListingFromServer(normalizedPath, currentDirMtime)
-            if (fromServer != null) {
-                dirListingCache.put(normalizedPath, fromServer)  // warm in-memory cache
-                return fromServer
-            }
-        } catch (Exception e) {
-            log.debug('DirCache context server fetch failed (non-fatal): {}', e.message)
-        }
+        // FS 0.9.54: no server slow path. It read the ENTIRE mcp-servers practice list
+        // (context_read scope=project action=practices) and scanned it for a directory-listing row.
+        // With zero such rows (see persistDirectoryListingAsync) it could never hit, and every call
+        // cost an HTTP round trip and made CS ledger 20 practice 'shows' as group-practices that no
+        // one saw: 285 rows in the 30 days to 2026-09-22, none ever judged, all not_delivered.
+        // The value review found it as 'work computed and thrown away' (ARC-STATE 3.8, item 9).
         return null
     }
 
-    private CachedListing fetchDirectoryListingFromServer(String normalizedPath, long currentDirMtime) {
-        // Search context server practices for a directory-listing entry matching this path
-        Map<String, Object> requestBody = [
-            jsonrpc: '2.0', method: 'tools/call', id: 1,
-            params : [
-                name     : 'context_read',
-                arguments: [scope: 'project', action: 'practices', groupId: structureGroupId]
-            ]
-        ] as Map<String, Object>
 
-        String responseText = postWithTimeout(JsonOutput.toJson(requestBody), readTimeoutMs)
-        if (!responseText) return null
-
-        // Parse response and find matching directory-listing entry
-        Map parsed = (Map) new JsonSlurper().parseText(responseText)
-        List practices = extractPracticesFromResponse(parsed)
-        Map match = practices.find { Object p ->
-            (p as Map).category == 'directory-listing' && (p as Map).title == normalizedPath
-        } as Map
-        if (!match) return null
-
-        Map desc = (Map) new JsonSlurper().parseText(match.description as String ?: '{}')
-        long storedMtime = (desc.dirMtime as Long) ?: 0L
-        if (storedMtime != currentDirMtime) {
-            log.debug('DirCache context server entry stale for {}: stored mtime={} current={}',
-                normalizedPath, storedMtime, currentDirMtime)
-            return null
-        }
-
-        List<Map<String, Object>> entries = (desc.entries as List<Map<String, Object>>) ?: []
-        return new CachedListing(
-            listingHash: desc.hash as String,
-            dirMtime   : storedMtime,
-            entries    : entries
-        )
-    }
-
-    private void doPersistDirectoryListing(String normalizedPath, List<Map<String, Object>> entries,
-                                            String listingHash, long dirMtime) {
-        String lastSegments = normalizedPath.replace('\\', '/').tokenize('/').takeRight(2).join('/')
-
-        // Compact entries: keep name, type, size only
-        List<Map<String, Object>> compact = entries.take(500).collect { Map<String, Object> e ->
-            [name: e.name, type: e.type, size: e.size] as Map<String, Object>
-        }
-
-        String description = JsonOutput.toJson([
-            hash    : listingHash,
-            dirMtime: dirMtime,
-            path    : normalizedPath,
-            count   : entries.size(),
-            entries : compact
-        ])
-        if (description.length() > 8000) description = description.substring(0, 8000) + '...(truncated)'
-
-        postToContextServer('practice', 'add', structureGroupId, 'directory-listing',
-            normalizedPath, description, ['directory-listing', lastSegments])
-    }
 
     // -----------------------------------------------------------------------
     // Shared HTTP helpers

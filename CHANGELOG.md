@@ -2058,3 +2058,44 @@ cannot move the hash. The same change makes `is_repeat` honest for a retry that 
 options changed, still hash differently. Red-first was by construction rather than by mutation --
 `buildArgsHash` was private and the spec did not compile against 0.9.52 -- so HASH-1/2 are the ones to watch if
 this method is touched again.
+
+
+## [0.9.54]
+
+**Two things built and never on the path, found by asking who calls them** (value review items 9 and 13,
+session `2026-09-22-15-43`, finished 2026-09-23).
+
+### A file_read grep or multi_grep hit is locate evidence
+
+N11 (0.9.43) exempted grep from ONTOLOGY-GATE on the grounds that a match names the file and the line --
+exactly what locate returns -- and `LocateEvidenceRegistry` was built to remember it. Only `file_search` ever
+recorded into it. A `file_read grep` that found a method was followed by a refused `get_method` on that same
+file (live 2026-09-22; `WP5d-gate-blocks-after-a-search-hit` read 14). Found by grepping for a caller of
+`recordHit` (practice #3502): none on the file_read side.
+
+`ReadResponseHelper.recordLocateEvidence` sits beside the gate check so both read the session from
+`telemetryService.readActiveSessionId()`; `FileReadService.recordGrepEvidence` records every file a grep or
+multi_grep actually matched, normalised the way the gate normalises. A file with no match records nothing.
+`GrepLocateEvidenceSpec` GE-1..3 through `handleToolCall` on the Spring fixture, asserted on the registry the gate
+consults; GE-1 and GE-3 red under mutation, GE-2 the control.
+
+### The directory-listing and file-structure "CS persistence" was dead, and wrong
+
+`persistStructureAsync` and `persistDirectoryListingAsync` wrote every file's structure and every directory
+listing into the CS **practice corpus** as practices (categories `file-structure`, `directory-listing`).
+Measured: **zero** rows of either exist -- CS has refused knowledge adds without a valence since that became
+mandatory, and these were fire-and-forget, so every write was refused silently. Had they landed, one practice
+per file would have sat in the corpus PLAN-GATE and for-action select from.
+
+The read side was worse: on every directory-cache miss, `fetchDirectoryListingFromServer` read the whole
+mcp-servers practice list to look for a row that could not exist, and CS ledgered 20 practice "shows" per call
+under `group-practices` -- 285 rows in 30 days, none ever judged. (The 2026-09-22 value review listed this as
+"stop the group-practices pull on execute"; it was the directory cache, not execute.)
+
+Both server halves are removed; the in-memory directory cache, the only part that ever hit, stays.
+`persistStructureAsync` is a no-op kept for its caller. `DirectoryListingCacheSpec` DC-1..4 -- the first spec
+this cache has had.
+
+**Verify live after the restart:**
+`SELECT COUNT(*) FROM practice_use_events WHERE route='group-practices' AND used_at >= <restart time>` stays 0;
+and a `get_method` straight after a matching `grep` on an indexed file is not refused.
