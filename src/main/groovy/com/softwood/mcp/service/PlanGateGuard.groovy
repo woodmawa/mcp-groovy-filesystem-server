@@ -26,6 +26,19 @@ import java.util.regex.Pattern
 @CompileStatic
 class PlanGateGuard {
 
+    /**
+     * FS 0.9.56 -- the ONE planAck schema description, shown by every gated tool (execute, file_write,
+     * tools). It was three hand-copied strings and ToolsService's had already drifted. Names the three
+     * verdicts CS 1.1.17 accepts; CS's refusal text uses the same words so the two surfaces agree.
+     */
+    static final String PLAN_ACK_DESCRIPTION =
+        'Your verdict on the practices PLAN-GATE just showed, as "<id>:y|c|n,..." -- ' +
+        'y = applies and I am changing the call because of it; ' +
+        'c = applies and my call already complies; ' +
+        'n = not about what I am doing (recorded not_applicable, no weight change). ' +
+        'y and c both count as applicable; an unchanged retry after a y reads as advice set aside, so use c when nothing needed to change. ' +
+        'Pass it on the retry; a retry carrying an ack is never refused. Without one the retry is refused once more, then allowed and recorded unjudged. (FS 0.9.56 / CS 1.1.17)'
+
     @Autowired(required = false) ContextServerClient contextServerClient
     @Autowired(required = false) FilesystemTelemetryService telemetryService
 

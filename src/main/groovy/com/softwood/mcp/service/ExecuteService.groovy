@@ -110,7 +110,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                   async       : [type: 'boolean', description: 'FS-EXEC-2: run in the background and return a jobId immediately. Use for anything that may exceed the ~60s client deadline.'],
                                   jobId       : [type: 'string', description: 'Job id, for job_status / job_output / job_cancel.'],
                                   intent      : [type: 'string', description: 'FS 0.9.38: one sentence on what this build/git call is for. PLAN-GATE selects the practices it shows on the command plus this.'],
-                planAck     : [type: 'string', description: 'FS 0.9.44: your verdict on the practices PLAN-GATE just showed, as "<id>:y|n,..." -- y = applies to what I am doing, n = does not (recorded not_applicable, no weight change). Pass it on the retry; a retry carrying an ack is never refused. Without one the retry is refused once more, then allowed and recorded unjudged.'],
+                planAck     : [type: 'string', description: PlanGateGuard.PLAN_ACK_DESCRIPTION],
                                   sinceOffset : [type: 'integer', description: 'job_output: resume reading stdout from this character offset. Pass the nextOffset returned by the previous job_output call to tail without re-sending output you already have.']
                               ]]
                 ],

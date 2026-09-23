@@ -75,7 +75,7 @@ Developer toolchain. Actions:
                                      timeout   : [type: 'integer'],
                                      message   : [type: 'string'],
                                      intent    : [type: 'string', description: 'FS 0.9.40: one sentence on what this git/gradle call is for; PLAN-GATE selects on it'],
-                                     planAck   : [type: 'string', description: 'FS 0.9.50: your verdict on the practices PLAN-GATE just showed, as "<id>:y|n,...". Pass it on the retry; a retry carrying an ack is never refused. Before 0.9.50 tools ignored this key and re-refused the acked retry.'],
+                                     planAck   : [type: 'string', description: PlanGateGuard.PLAN_ACK_DESCRIPTION],
                                      period    : [type: 'string', description: 'Stats period: today|week|month|all (default: today)']
                                  ]]
                 ],

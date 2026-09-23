@@ -2126,3 +2126,21 @@ The two `listing_hash` lengths come from two tools hashing different entry sets 
 directory itself), so a hash from one could never match the other; each is correct for its own repeat calls.
 And the empty `C`+U+F03A directory tree in the repo root (a WSL `mkdir -p C:/Users/...` from 31 May, the colon
 mapped to a private-use character) was removed.
+
+
+
+## [0.9.56]
+
+**The planAck schema description is one constant and names three verdicts** (with CS 1.1.17, 2026-09-23).
+
+CS 1.1.17 accepts a third plan-gate ack verdict: `y` = applies and I am changing the call because of it; `c` =
+applies and my call already complies; `n` = not about what I am doing. The split lets M3 tell a gate that changed the
+plan from one whose advice was already being followed (baseline 2026-09-23: 15 of 19 `y`-fires were unreadable).
+
+The `planAck` property description the model reads was three hand-copied strings (execute, file_write, tools), and
+the tools one had already drifted ("FS 0.9.50 ... Before 0.9.50 tools ignored this key"). All three now show
+`PlanGateGuard.PLAN_ACK_DESCRIPTION`, which uses the same words as CS's refusal text so the two surfaces agree.
+
+`PlanAckDescriptionSpec` PAD-1 (x3, one per tool) and PAD-2 (one description, not three): all four red on 0.9.55,
+asserted on the runtime `getToolDefinitions()` output in positive form. No behaviour change: FS forwards `planAck`
+verbatim and already excluded it from `args_hash` (0.9.53).
