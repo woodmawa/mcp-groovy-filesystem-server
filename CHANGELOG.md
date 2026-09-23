@@ -2099,3 +2099,30 @@ this cache has had.
 **Verify live after the restart:**
 `SELECT COUNT(*) FROM practice_use_events WHERE route='group-practices' AND used_at >= <restart time>` stays 0;
 and a `get_method` straight after a matching `grep` on an indexed file is not refused.
+
+
+## [0.9.55]
+
+**An edit that changes nothing is refused, not reported as success; `normalize` says where a path lands.**
+The FS small items from the value review (ARC-STATE section 5), 2026-09-23.
+
+- **`replace` with `newText` identical to `oldText`** returned `success:true` over an unchanged file. It happened
+  three times in two days, each time an intended edit whose new text had not been filled in, and each time
+  the caller believed the fix had landed. Now refused before anything is loaded. Same class as the empty append
+  (0.9.48) and the bash truncation (0.9.50).
+- **`multi_replace`** counted every entry as `applied`, including the branch that logs "became unfindable --
+  skipping". It now counts only entries that changed the text, reports `skipped`, and refuses when the file
+  would come out unchanged.
+- **`file_read action=normalize`** gains `resolved`: the path with dot-segments collapsed, lexically.
+  `normalizePath` is unchanged (the security check canonicalises on its own); `windows`/`wsl` derive from
+  `resolved`.
+
+`NoChangeEditSpec` NC-1..4 through `handleToolCall`, asserted on bytes on disk; NC-1/3/4 red under mutation, NC-2
+the control. Suite 488/0.
+
+Closed without a change, after measuring: `file_search action=project` does apply its default file filter -- the
+filter includes `md` and `txt`, which is why a probe saw `.txt` files; only the response label says `content`.
+The two `listing_hash` lengths come from two tools hashing different entry sets (`file_list` includes the
+directory itself), so a hash from one could never match the other; each is correct for its own repeat calls.
+And the empty `C`+U+F03A directory tree in the repo root (a WSL `mkdir -p C:/Users/...` from 31 May, the colon
+mapped to a private-use character) was removed.

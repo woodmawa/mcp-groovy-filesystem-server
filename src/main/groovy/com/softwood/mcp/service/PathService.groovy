@@ -206,11 +206,21 @@ class PathService {
     Map<String, String> getPathRepresentations(String path) {
         String normalized = normalizePath(path)
 
+        // FS 0.9.55: 'resolved' is where the path actually lands, dot-segments collapsed. normalizePath
+        // deliberately does not collapse them (the security check canonicalises on its own), so the
+        // normalize action used to echo 'x/../y' back unchanged -- a caller asking "where does this
+        // point?" got the question back. Lexical only: no filesystem access, no symlink resolution.
+        String resolved = normalized
+        try {
+            resolved = java.nio.file.Paths.get(normalized).normalize().toString().replace('\\', '/')
+        } catch (Exception ignored) { }
+
         return [
                 original: path,
                 normalized: normalized,
-                windows: convertWslToWindows(normalized),
-                wsl: convertWindowsToWsl(normalized)
+                resolved: resolved,
+                windows: convertWslToWindows(resolved),
+                wsl: convertWindowsToWsl(resolved)
         ]
     }
 

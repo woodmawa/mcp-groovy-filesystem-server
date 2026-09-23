@@ -78,6 +78,15 @@ class FileReplaceService extends AbstractFileService {
         if (!options.containsKey('newText')) return McpResponse.toolError(requestId,
             'options.newText missing for replace -- pass newText:\'\' explicitly if deletion is intended')
         String newText      = (options.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+        // FS 0.9.55: a replace that changes nothing is refused, not reported as success. Twice on
+        // 2026-09-22 an edit whose newText had been pasted over from oldText came back
+        // success:true with an unchanged content_hash -- the same 'success over nothing' class as the
+        // empty append (0.9.48) and the bash truncation (0.9.50). The caller believed a fix had landed.
+        if (newText == oldText.replace('\r\n', '\n').replace('\r', '\n')) {
+            return McpResponse.toolError(requestId,
+                'replace refused: newText is identical to oldText, so nothing would change. ' +
+                'If an edit was intended, the replacement text was not updated.')
+        }
         String expectedHash = options.expectedHash as String
         // CT-EH-1 (FS 0.8.73): expectedHash is mandatory for all mutating actions.
         // A replace without it means the caller hasn't read the file -- silent corruption risk.
@@ -285,11 +294,16 @@ class FileReplaceService extends AbstractFileService {
         // Apply in reverse position order
         String current = snapshot
         int applied = 0
+        int skipped = 0
         List<String> normsApplied = []
         for (Map<String, Object> item : workItems) {
             String oldText = item.oldText as String
             String newText = item.newText as String
             TextMatcher.MatchResult mr = item.mr as TextMatcher.MatchResult
+            // FS 0.9.55: 'applied' counts entries that CHANGED the text. It used to be incremented
+            // unconditionally, including on the 'became unfindable -- skipping' branch, so a skipped
+            // entry was reported as applied.
+            String before = current
             if (mr.normForm == null) {
                 current = current.replace(oldText, newText)
             } else {
@@ -308,9 +322,17 @@ class FileReplaceService extends AbstractFileService {
                     log.warn('multi_replace: entry became unfindable after prior replacements for {} -- skipping', normalized)
                 }
             }
-            applied++
+            if (current != before) applied++ else skipped++
         }
         if (normsApplied) log.debug('multi_replace: per-entry normalisation applied {} for {}', normsApplied.join(', '), normalized)
+
+        // FS 0.9.55: nothing changed -> refuse rather than report success over an unchanged file
+        // (every pair identical, or every entry skipped). Same class as replace newText == oldText.
+        if (current == snapshot) {
+            return McpResponse.toolError(requestId,
+                ('multi_replace refused: no replacement changed the file (' + skipped +
+                 ' of ' + workItems.size() + ' entries had newText identical to oldText or could not be applied). File NOT modified.') as String)
+        }
 
         // PR 1.3 (FS 0.9.0): StructuralGuard.checkAll() replaces inline per-entry brace check
         // and bare-box check. 'current' is the fully-applied LF-normalised result.
@@ -334,11 +356,13 @@ class FileReplaceService extends AbstractFileService {
 
         String hash = crMr.newHash
         if (isWriteCompact(options)) {
-            return textResponse(requestId, [success: true, applied: applied, content_hash: hash, file_content_hash: hash] as Map<String, Object>)
+            Map<String, Object> compactMr = [success: true, applied: applied, content_hash: hash, file_content_hash: hash] as Map<String, Object>
+            if (skipped) compactMr.put('skipped', skipped)
+            return textResponse(requestId, compactMr)
         }
         return textResponse(requestId, [
             action: 'multi_replace', path: normalized,
-            applied: applied, success: true,
+            applied: applied, skipped: skipped, success: true,
             content_hash: hash, file_content_hash: hash
         ] as Map<String, Object>)
     }
