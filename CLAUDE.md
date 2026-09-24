@@ -337,6 +337,11 @@ The client also caches directory listings in-memory after `file_list` calls.
 
 ## Build and deploy
 
+> **Tests must never reach the live CS (FS 0.9.61).** `src/test/resources/application.yml` sets
+> `mcp.context-server.url: http://127.0.0.1:1`. Without it the real `ContextServerClient` defaults to the live CS
+> companion on 8082 and every `@SpringBootTest` writes its temp files into the live store -- 20,247 rows by
+> 2026-09-24. Guarded by `TestsNeverReachLiveCsSpec` and CS contract `fs-tests-never-write-live-cs`. Do not remove it.
+
 ```
 # Build (canonical path)
 mcp-groovy-filesystem-server:tools action=gradle subcommand=compileGroovy options={workingDir:"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server"}
