@@ -72,6 +72,23 @@ class FilesystemTelemetryService {
     private final java.util.concurrent.atomic.AtomicReference<String> claimedGroupRef =
             new java.util.concurrent.atomic.AtomicReference<String>()
 
+    /**
+     * FS 0.9.63 -- test seam for {@link #isCompanionProcess()}. Null in production: the answer then
+     * comes from the Spring profile, which is how the launcher distinguishes the two (companions run
+     * with {@code -Dspring.profiles.active=http}; see the application class).
+     */
+    @groovy.transform.PackageScope Boolean companionOverride = null
+
+    /**
+     * True when this JVM is the shared HTTP companion rather than a chat's own stdio process. The
+     * companion serves every chat, so nothing it recorded is ever one session's to reclaim.
+     */
+    boolean isCompanionProcess() {
+        if (companionOverride != null) return companionOverride.booleanValue()
+        String profiles = (System.getProperty('spring.profiles.active') ?: '').toLowerCase()
+        return profiles.contains('http')
+    }
+
     // FIX-B: v0.7.43 session token accumulator
     // Tracks cumulative read tokens synchronously (not async) so callers can
     // include _session_read_tokens in their response before returning it.
@@ -393,6 +410,20 @@ class FilesystemTelemetryService {
         if (groupId) claimedGroupRef.set(groupId)
 
         boolean persisted = writeOwnClaimRow(sessionId, groupId)
+
+        // FS 0.9.63: what this chat's process recorded while unbound comes home with the claim (CS
+        // 1.1.34 reattribute_claim). Queued on the telemetry writer, not called inline: that thread
+        // is single, so every row recorded before this claim has been sent first, and the claim
+        // itself stays off the network (practice #260). A companion never asks -- it serves every
+        // chat. Fail-open: a lost request leaves rows in the pen, exactly as before.
+        if (!isCompanionProcess() && contextServerClient) {
+            final String claimed = sessionId
+            final ContextServerClient client = contextServerClient
+            asyncWriter.submit {
+                try { client.reattributeClaim(claimed, ProcessIdentity.OWNER_KEY) }
+                catch (Exception e) { log.debug('claimSession: reattribution request dropped: {}', e.message) }
+            }
+        }
 
         log.info('FilesystemTelemetryService: claimed session {} (was {}) owner_key={} group={}',
                  sessionId, previous ?: 'unset', ProcessIdentity.OWNER_KEY, groupId ?: 'none')

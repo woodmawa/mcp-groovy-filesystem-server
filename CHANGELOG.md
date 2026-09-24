@@ -2251,3 +2251,26 @@ no-session control. CH-1/CH-2 red first; `mutation-check` removing the header li
   mutation re-adding the method caught.
 
 514 tests, 0 failures.
+
+
+## [0.9.63]
+
+**A chat's FS process brings its own unbound telemetry home when it claims** (arc value-review-phase2, 3a(i);
+session 2026-09-24-15-06).
+
+- Measured first. `fs-telemetry-not-stranded-in-unknown` read 91. The 66 `tools/gradle` rows the brief blamed stop at
+  2026-09-23 13:37 -- 0.9.58's `X-Mcp-Caller-Session` had already fixed them, and they age out of the 7-day window by
+  2026-09-30. What still arrives is ~1-2 rows per session from the chat's own stdio process, made before
+  `claim_session` (reading the arc brief while bootstrap runs). 16 of the 93 were written after the session they
+  belonged to had started.
+- CS has repaired exactly that for its own process since 1.0.73; FS claims by writing its own `session_claims` row and
+  never reached the repair. `claimSession` now queues `ContextServerClient.reattributeClaim(sessionId, OWNER_KEY)`
+  (CS 1.1.34 `context_lifecycle action=reattribute_claim`) on the single telemetry-writer thread -- so every row
+  recorded before the claim is sent first -- and off the MCP hot path. Only a chat process asks:
+  `isCompanionProcess()` (Spring profile `http`) skips it, because the companion serves every chat.
+- Rows written before the session existed stay `unknown` by design (one stdio process served four sessions), so the
+  contract falls toward a floor, not to 0.
+- Spec `FsClaimReattributionSpec` FCR-1..3, asserted on what arrives over HTTP. Mutations caught: companion guard
+  removed (FCR-3), wrong owner key sent (FCR-1).
+
+517 tests, 0 failures.

@@ -1073,6 +1073,46 @@ class ContextServerClient {
     }
 
     /**
+     * FS 0.9.63 -- ask CS to bring THIS process's unbound telemetry home to the session it just
+     * claimed (context_lifecycle action=reattribute_claim, CS 1.1.34).
+     *
+     * <p>Same shape and the same trade as {@link #recordToolCall}: fire-and-forget, 500 ms, dropped
+     * if CS is down. The caller is FilesystemTelemetryService's single writer thread, which is what
+     * orders this AFTER every row this process queued before claiming. sessionId and ownerKey are
+     * data: the call lands in CS's shared companion, which is not this process.</p>
+     *
+     * @return true when CS accepted the request; false on any error, timeout or CS-down
+     */
+    boolean reattributeClaim(String sessionId, String ownerKey) {
+        if (!sessionId || !ownerKey || !isCsReachable()) return false
+        try {
+            Map<String, Object> arguments = [action: 'reattribute_claim', sessionId: sessionId,
+                                             ownerKey: ownerKey] as Map<String, Object>
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_lifecycle', arguments: arguments]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = openCs(url)
+            try {
+                conn.requestMethod  = 'POST'
+                conn.doOutput       = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                return conn.responseCode == 200
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('reattributeClaim failed (dropped) [{}]: {}', sessionId, e.message)
+        }
+        return false
+    }
+
+    /**
      * Increments the ONTOLOGY-GATE blocked-token counter in the CS {@code memory_policy}
      * {@code hard_gates} row via an async {@code context_lifecycle} call. Fire-and-forget.
      * Mirrors the CS-side {@code incrementHardGateBlockedToken('199', tokenKey)} behaviour.
