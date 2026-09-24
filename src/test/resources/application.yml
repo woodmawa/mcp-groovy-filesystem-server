@@ -9,6 +9,13 @@ spring:
 mcp:
   mode: http
 
+  # FS 0.9.61: a test run must NEVER reach the live context server. Unset, ContextServerClient took its
+  # @Value default (http://localhost:8082 -- the live CS HTTP companion) and every @SpringBootTest that
+  # read a file upserted its temp path into the live file_hash_registry: 20,247 of 22,504 rows by
+  # 2026-09-24. Port 1 refuses at once, so every call fails fast and fail-open. TestsNeverReachLiveCsSpec.
+  context-server:
+    url: http://127.0.0.1:1
+
   filesystem:
     allowed-directories: ${java.io.tmpdir},C:/Users/willw/IdeaProjects,C:/Users/willw/claude
     max-file-size-mb: 10

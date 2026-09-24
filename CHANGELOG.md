@@ -2208,3 +2208,23 @@ and invents nothing when none is. All 20 CS call sites go through it; the only r
 real `HttpServer` and asserts on the header that arrives -- a synchronous call, the async file-registry upsert, and the
 no-session control. CH-1/CH-2 red first; `mutation-check` removing the header line turned exactly those two red.
 503 tests, 0 failures.
+
+## [0.9.61]
+
+**An FS test run can no longer write into the live context server** (value-review-phase2; CS decision 255).
+
+- The test Spring context (`src/test/resources/application.yml`) never set `mcp.context-server.url`, so the real
+  `ContextServerClient` bean took its `@Value` default, `http://localhost:8082` -- the live CS HTTP companion. Every
+  `@SpringBootTest` that read a file (23 of the 31 use the real bean) upserted its temp path into the live store and
+  asked the live gate, locate and range-cache endpoints. Measured 2026-09-24: 20,247 of 22,504 rows in the live
+  `file_hash_registry` (90%) were Spock `@TempDir` paths, 5,008 in the last 7 days.
+- The test context now points at `http://127.0.0.1:1`: refused at once, so every call fails fast and fail-open. A full
+  suite run afterwards left the live table untouched. The rows were deleted in CS after a backup; CS contract
+  `fs-tests-never-write-live-cs` goes red if they ever return.
+- Also found: the 160 structure / directory-listing rows FS wrote into CS `project_group_practices` before 0.9.54 were
+  still there -- 0.9.54's comment said "ZERO rows exist", having measured `best_practices`. Deleted; CS contract
+  `group-practices-hold-no-fs-cache`.
+- Spec `TestsNeverReachLiveCsSpec` TNL-1, on the value Spring injected into the shared bean, not the YAML text. Red on
+  0.9.60 (`http://localhost:8082`); mutation removing the setting caught.
+
+504 tests, 0 failures.
