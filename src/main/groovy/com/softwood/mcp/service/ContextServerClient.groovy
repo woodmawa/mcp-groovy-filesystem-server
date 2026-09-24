@@ -36,9 +36,6 @@ class ContextServerClient {
     @Value('${mcp.context-server.url:http://localhost:8082}')
     String contextServerUrl
 
-    @Value('${mcp.context-server.structure-group-id:mcp-servers}')
-    String structureGroupId
-
     @Value('${mcp.context-server.structure-persist-enabled:true}')
     boolean structurePersistEnabled
 
@@ -127,19 +124,11 @@ class ContextServerClient {
     // Structure persistence (WI5)
     // -----------------------------------------------------------------------
 
-    /**
-     * FS 0.9.54: a no-op, kept because FileReadService still calls it.
-     *
-     * <p>This wrote every file's structure into the CS practice corpus as a 'practice' in category
-     * file-structure (and persistDirectoryListingAsync did the same for listings). Measured
-     * 2026-09-22: ZERO rows of either category exist. CS has refused knowledge adds without a
-     * valence since that became mandatory, and these writes were fire-and-forget, so each one cost
-     * an HTTP call and was refused silently. The design was wrong as well as dead: had they landed,
-     * one row per file would have sat in the corpus that PLAN-GATE and for-action select from.
-     * Structure caching that works lives in the ontology (CS indexer) and the served ledger.</p>
-     */
-    void persistStructureAsync(String filePath, String fileHash, List<Map<String, Object>> entries) {
-    }
+    // FS 0.9.62: persistStructureAsync is REMOVED. FS 0.9.54 made it a no-op; it had written every file's
+    // structure into CS as a 'practice' in category file-structure. 0.9.54's note said "ZERO rows of either
+    // category exist" -- measured in best_practices. They were in project_group_practices: 116 file-structure
+    // and 44 directory-listing rows, served FIRST by context_read action=practices, until deleted on
+    // 2026-09-24 (CS decision 255). Structure caching that works lives in the ontology and the served ledger.
 
 
     // -----------------------------------------------------------------------
@@ -147,23 +136,20 @@ class ContextServerClient {
     // -----------------------------------------------------------------------
 
     /**
-     * Persist a directory listing asynchronously (fire-and-forget).
-     * Also updates the in-memory cache immediately so the same-session read path
-     * hits the cache without any HTTP round-trip.
+     * Cache a directory listing in memory for this process (zero I/O). FS 0.9.62: renamed from
+     * persistDirectoryListingAsync, which has persisted nothing since 0.9.54.
      */
-    void persistDirectoryListingAsync(String normalizedPath, List<Map<String, Object>> entries,
-                                       String listingHash, long dirMtime) {
+    void cacheDirectoryListing(String normalizedPath, List<Map<String, Object>> entries,
+                               String listingHash, long dirMtime) {
         if (!directoryCacheEnabled) return
 
         // Update in-memory cache immediately (synchronous - O(1))
         dirListingCache.put(normalizedPath, new CachedListing(
             listingHash: listingHash, dirMtime: dirMtime, entries: entries))
 
-        // FS 0.9.54: the cross-session half is gone. It stored each listing in the CS practice corpus
-        // as a 'practice' in category directory-listing. Measured 2026-09-22: ZERO such rows exist --
-        // CS has refused knowledge adds without a valence since that became mandatory, and this
-        // write is fire-and-forget, so every one was refused silently. Had they landed they would
-        // have sat in the corpus PLAN-GATE and for-action select from. See getDirectoryListing.
+        // FS 0.9.54 removed the cross-session half, which stored each listing in CS as a 'practice' in
+        // category directory-listing. Those rows DID land -- 44 of them, in project_group_practices, not
+        // the best_practices table 0.9.54 counted -- and were deleted on 2026-09-24. See getDirectoryListing.
     }
 
     /**
@@ -189,10 +175,9 @@ class ContextServerClient {
         }
 
         // FS 0.9.54: no server slow path. It read the ENTIRE mcp-servers practice list
-        // (context_read scope=project action=practices) and scanned it for a directory-listing row.
-        // With zero such rows (see persistDirectoryListingAsync) it could never hit, and every call
-        // cost an HTTP round trip and made CS ledger 20 practice 'shows' as group-practices that no
-        // one saw: 285 rows in the 30 days to 2026-09-22, none ever judged, all not_delivered.
+        // (context_read scope=project action=practices) and scanned it for a directory-listing row,
+        // and every call made CS ledger up to 20 'shows' as route='group-practices' that no one saw:
+        // 285 rows, none ever judged. CS 1.1.30 stopped that route recording and deleted the rows.
         // The value review found it as 'work computed and thrown away' (ARC-STATE 3.8, item 9).
         return null
     }

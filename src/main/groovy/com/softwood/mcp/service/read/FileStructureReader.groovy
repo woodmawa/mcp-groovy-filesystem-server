@@ -84,11 +84,7 @@ class FileStructureReader extends AbstractFileService {
         int totalEntries = entries.size()
         String fileHash  = structureCache.getHash(normalized)
 
-        // WI5: async persist to context server after every scan (no-op if unavailable or cached)
-        boolean wasCached = result.cached as boolean ?: false
-        if (!wasCached && contextServerClient != null) {
-            contextServerClient.persistStructureAsync(normalized, fileHash, entries)
-        }
+        // FS 0.9.62: the WI5 persist-to-CS call is removed with the no-op it called (see ContextServerClient).
 
         // v0.8.1 Change 3: className filter — return only the named class subtree
         String filterClass = options['className'] as String

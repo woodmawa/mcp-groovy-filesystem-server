@@ -104,9 +104,13 @@ final class StructuralGuard {
         int diff = removedDelta - newDelta
         if (Math.abs(diff) < 1) return null
 
-        // String-strip heuristic NOT applied to paren checks -- too risky for
-        // triple-quote context spanning multiple lines (Phase 4: CodeDelimiterScanner).
-        // The paren guard fires whenever |delta| >= 1 on code files.
+        // FS 0.9.62: the same literal/comment strip the brace check uses. Until now the paren check
+        // stripped nothing ('too risky for triple-quote context'), so removing code that held a
+        // string like 'recordPracticeUse(practices,' was refused (CS chain 2eb2555e) and the only way
+        // through was allowStructuralEdit, which switches off the checks that are right as well.
+        // The strip is now comment-aware, which is what made it safe to share (SG-L4).
+        if (strippedDeltaBalanced(removedContent, newText, '(', ')')) return null
+
         String fname = filePath.tokenize('/\\').last()
         return ('paren structure mismatch on ' + fname + ': ' +
             'removed section has paren delta ' + removedDelta +
@@ -216,62 +220,91 @@ final class StructuralGuard {
     }
 
     /**
-     * Conservative string-strip heuristic.
+     * Strip-then-recount check.
      *
-     * Strips content between string delimiters (single-quoted, double-quoted,
-     * triple-quoted) from both removedContent and newText, then re-checks whether
-     * the delta of the given open/close chars is balanced in the stripped versions.
+     * Blanks string literals and comments in both removedContent and newText, then re-checks whether the
+     * delta of the given open/close chars is balanced in what remains.
      *
-     * Returns true if stripped delta is balanced (suppress the error).
-     * Returns false if stripped delta is still imbalanced (fire the error).
+     * Returns true if the stripped delta is balanced (suppress the error).
+     * Returns false if it is still imbalanced, OR if either snippet could not be stripped with confidence
+     * (fire the error on the raw counts).
      *
-     * This is not a full lexer -- it misses slashy strings and some nested quote
-     * patterns. Phase 4 will replace this with CodeDelimiterScanner.
+     * <p>FS 0.9.62: "could not be stripped with confidence" is the whole safety of sharing this with the
+     * paren check. A patched range can START or END inside a literal -- CT-80 replaces the line that
+     * closes a triple-quoted string opened three lines earlier. Read in isolation, that closing delimiter
+     * looks like an opener, and blanking "everything after it" hides the very paren the patch drops. So a
+     * snippet whose literals or block comments do not all close inside it is not stripped at all.</p>
+     *
+     * This is not a full lexer -- it misses slashy strings. Phase 4 will replace it with CodeDelimiterScanner.
      */
     private static boolean strippedDeltaBalanced(String removed, String newText,
                                                   String open, String close) {
-        String strippedRemoved = stripStringLiterals(removed)
-        String strippedNew     = stripStringLiterals(newText)
+        String strippedRemoved = stripLiteralsAndComments(removed)
+        String strippedNew     = stripLiteralsAndComments(newText)
+        if (strippedRemoved == null || strippedNew == null) return false
         int rDelta = strippedRemoved.count(open) - strippedRemoved.count(close)
         int nDelta = strippedNew.count(open)     - strippedNew.count(close)
         return rDelta == nDelta
     }
 
     /**
-     * Remove string literal content (between quotes) from a code snippet.
-     * Handles: '''...''', """...""", '...', "..." (not slashy strings).
-     * Replaces literal content with spaces to preserve string length and line structure.
+     * Blank out string-literal content AND comments, in one left-to-right pass, so what remains is code.
+     * Handles: '''...''', """...""", '...', "...", line comments and block comments (not slashy
+     * strings). Blanked text becomes spaces, newlines are kept, so length and line structure survive.
+     *
+     * <p>FS 0.9.62: comments are handled in the SAME pass as strings, because each can contain the other's
+     * opener. A string-only pass reads the apostrophe in {@code // don't} as an opening quote and blanks
+     * the real code after it (SG-L4); a comment-first pass reads the {@code //} in {@code "http://x"} as a
+     * comment and blanks the rest of the line (SG-L6). Whichever opener comes first wins.</p>
+     *
+     * @return the stripped text, or {@code null} when the snippet cannot be read with confidence: a
+     *         triple-quoted string or block comment that does not close inside it, or a single-line
+     *         string that meets a newline or the end first (the snippet began mid-literal, or a stray
+     *         quote was misread as one). The caller then falls back to raw counts.
      */
-    private static String stripStringLiterals(String code) {
+    private static String stripLiteralsAndComments(String code) {
         if (!code) return code
         StringBuilder sb = new StringBuilder(code.length())
         int i = 0
         int len = code.length()
         while (i < len) {
             char c = code.charAt(i)
+            // Comments, checked before strings at the same position: '//' or '/*' cannot start a string.
+            if (c == '/' && i + 1 < len) {
+                char n = code.charAt(i + 1)
+                if (n == '/') {
+                    while (i < len && code.charAt(i) != '\n') { sb.append(' '); i++ }
+                    continue
+                }
+                if (n == '*') {
+                    int end = code.indexOf('*/', i + 2)
+                    if (end < 0) return null
+                    int stop = end + 2
+                    while (i < stop) { sb.append(code.charAt(i) == '\n' ? '\n' : ' '); i++ }
+                    continue
+                }
+            }
             // Triple-quoted strings first (longer delimiter wins)
             if (i + 2 < len) {
                 String triple = code.substring(i, i + 3)
                 if (triple == "'''" || triple == '"""') {
                     String delim = triple
+                    int end = code.indexOf(delim, i + 3)
+                    if (end < 0) return null
                     sb.append(delim)
                     i += 3
-                    int end = code.indexOf(delim, i)
-                    if (end < 0) {
-                        // Unclosed -- consume to end, replacing with spaces
-                        while (i < len) { sb.append(' '); i++ }
-                    } else {
-                        while (i < end) { sb.append(code.charAt(i) == '\n' ? '\n' : ' '); i++ }
-                        sb.append(delim)
-                        i += 3
-                    }
+                    while (i < end) { sb.append(code.charAt(i) == '\n' ? '\n' : ' '); i++ }
+                    sb.append(delim)
+                    i += 3
                     continue
                 }
             }
-            // Single-quoted or double-quoted
+            // Single-quoted or double-quoted: single-line in Groovy, so a newline before the close
+            // means the snippet began mid-literal or a stray quote was misread -- not strippable.
             if (c == '\'' || c == '"') {
                 sb.append(c)
                 i++
+                boolean closed = false
                 while (i < len) {
                     char sc = code.charAt(i)
                     if (sc == '\\') {
@@ -279,10 +312,12 @@ final class StructuralGuard {
                         i += 2
                         continue
                     }
-                    if (sc == c) { sb.append(sc); i++; break }
-                    sb.append(sc == '\n' ? '\n' : ' ')
+                    if (sc == '\n') return null
+                    if (sc == c) { sb.append(sc); i++; closed = true; break }
+                    sb.append(' ')
                     i++
                 }
+                if (!closed) return null
                 continue
             }
             sb.append(c)

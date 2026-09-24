@@ -394,7 +394,6 @@ class FileHashAutoLookupSpec extends Specification {
         given: 'a fresh ContextServerClient (unit test - no Spring context needed)'
         def client = new ContextServerClient()
         client.contextServerUrl = 'http://localhost:8082'
-        client.structureGroupId = 'test'
         client.structurePersistEnabled = true
         client.directoryCacheEnabled = true
         client.readTimeoutMs = 300
@@ -424,7 +423,6 @@ class FileHashAutoLookupSpec extends Specification {
         given:
         def client = new ContextServerClient()
         client.contextServerUrl = 'http://localhost:8082'
-        client.structureGroupId = 'test'
         client.structurePersistEnabled = true
         client.directoryCacheEnabled = true
         client.readTimeoutMs = 300
@@ -448,7 +446,6 @@ class FileHashAutoLookupSpec extends Specification {
         given:
         def client = new ContextServerClient()
         client.contextServerUrl = 'http://localhost:8082'
-        client.structureGroupId = 'test'
         client.structurePersistEnabled = true
         client.directoryCacheEnabled = true
         client.readTimeoutMs = 300
@@ -475,7 +472,6 @@ class FileHashAutoLookupSpec extends Specification {
         given:
         def client = new ContextServerClient()
         client.contextServerUrl = 'http://localhost:8082'
-        client.structureGroupId = 'test'
         client.structurePersistEnabled = true
         client.directoryCacheEnabled = true
         client.readTimeoutMs = 300

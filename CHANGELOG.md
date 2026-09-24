@@ -2228,3 +2228,26 @@ no-session control. CH-1/CH-2 red first; `mutation-check` removing the header li
   0.9.60 (`http://localhost:8082`); mutation removing the setting caught.
 
 504 tests, 0 failures.
+
+## [0.9.62]
+
+**The structural guard counts code, not text; the dead CS cache persistence is gone** (CS decision 256).
+
+- **Brace/paren guard.** The paren check never applied the string strip the brace check had, so removing code that
+  held a string such as `'recordPracticeUse(practices,'` was refused as "paren structure mismatch" (CS chain
+  2eb2555e), and the only way through was `allowStructuralEdit`, which also switches off the checks that are right.
+  Both checks now blank string literals AND comments in one left-to-right pass (whichever opener comes first wins), and
+  the strip is trusted only when every literal and block comment closes inside the snippet -- a snippet that starts or
+  ends mid-literal falls back to raw counts. The first cut, a straight reuse of the brace strip, turned CT-80 red: a
+  patched line that closes a triple-quoted string opened three lines earlier read as an OPENER and hid the dropped `)`.
+  That case is now also SG-L8. The old comment ("too risky for triple-quote context") was right about a real risk.
+- Spec `GuardIgnoresLiteralsAndCommentsSpec` SG-L1..8: the live case, comments, triple quotes, and four controls (a
+  stray apostrophe in a comment, a real unclosed call, a URL in a string, a range starting mid-literal). Mutations
+  caught: paren strip removed (L1-L3), line-comment handling removed (L2, L7), unclosed-literal rule removed (L8).
+- **Dead cache persistence.** `persistStructureAsync` (a no-op since 0.9.54) and its caller in `FileStructureReader`,
+  the unused `structureGroupId` setting and `structure-group-id` key, and the comments that said "ZERO rows exist" --
+  160 did, in `project_group_practices` (deleted 2026-09-24). The in-memory directory cache is live and kept, renamed
+  `cacheDirectoryListing` (it has persisted nothing since 0.9.54). Spec `DeadCachePersistenceRemovedSpec` DCR-1..2;
+  mutation re-adding the method caught.
+
+514 tests, 0 failures.

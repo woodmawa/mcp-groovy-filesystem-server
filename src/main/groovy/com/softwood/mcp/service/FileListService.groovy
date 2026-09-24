@@ -135,7 +135,7 @@ action=list returns listing_hash. Pass as options.knownHash on repeat calls to g
             if (compiled == null && contextServerClient != null) {
                 long dirMtime = new File(path).lastModified()
                 String hash = ContextServerClient.computeListingHash(results)
-                contextServerClient.persistDirectoryListingAsync(path, results, hash, dirMtime)
+                contextServerClient.cacheDirectoryListing(path, results, hash, dirMtime)
             }
         }
 
@@ -209,7 +209,7 @@ action=list returns listing_hash. Pass as options.knownHash on repeat calls to g
             if (compiled == null && !recursive && contextServerClient != null) {
                 long dirMtime = new File(path).lastModified()
                 String hash = ContextServerClient.computeListingHash(results)
-                contextServerClient.persistDirectoryListingAsync(path, results, hash, dirMtime)
+                contextServerClient.cacheDirectoryListing(path, results, hash, dirMtime)
             }
         }
 
@@ -273,7 +273,7 @@ action=list returns listing_hash. Pass as options.knownHash on repeat calls to g
             List<Map<String, Object>> topChildren = tree.children as List<Map<String, Object>>
             long dirMtime = new File(path).lastModified()
             String hash = ContextServerClient.computeListingHash(topChildren)
-            contextServerClient.persistDirectoryListingAsync(path, topChildren, hash, dirMtime)
+            contextServerClient.cacheDirectoryListing(path, topChildren, hash, dirMtime)
         }
 
         log.debug('file_list tree: {} nodes from {}', count[0], path)

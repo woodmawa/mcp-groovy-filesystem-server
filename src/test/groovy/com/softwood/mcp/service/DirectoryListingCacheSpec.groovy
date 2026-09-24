@@ -34,7 +34,7 @@ class DirectoryListingCacheSpec extends Specification {
         long mtime = new File(p).lastModified()
 
         when:
-        c.persistDirectoryListingAsync(p, [[name: 'a.txt', type: 'file', size: 1] as Map<String, Object>], 'h1', mtime)
+        c.cacheDirectoryListing(p, [[name: 'a.txt', type: 'file', size: 1] as Map<String, Object>], 'h1', mtime)
         def hit = c.getDirectoryListing(p)
 
         then:
@@ -47,7 +47,7 @@ class DirectoryListingCacheSpec extends Specification {
         given:
         ContextServerClient c = client()
         String p = dir.toString().replace('\\', '/')
-        c.persistDirectoryListingAsync(p, [], 'h1', new File(p).lastModified() - 5000)
+        c.cacheDirectoryListing(p, [], 'h1', new File(p).lastModified() - 5000)
 
         expect: 'the stored mtime no longer matches, so the caller lists the filesystem'
         c.getDirectoryListing(p) == null
@@ -73,7 +73,7 @@ class DirectoryListingCacheSpec extends Specification {
         ContextServerClient c = new ContextServerClient()
         c.directoryCacheEnabled = false
         String p = dir.toString().replace('\\', '/')
-        c.persistDirectoryListingAsync(p, [], 'h1', new File(p).lastModified())
+        c.cacheDirectoryListing(p, [], 'h1', new File(p).lastModified())
 
         expect:
         c.getDirectoryListing(p) == null
