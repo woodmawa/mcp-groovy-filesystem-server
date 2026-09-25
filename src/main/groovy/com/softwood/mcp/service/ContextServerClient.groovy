@@ -1113,6 +1113,60 @@ class ContextServerClient {
     }
 
     /**
+     * Align kit (2026-09-25) -- tell CS which top-level tool descriptions THIS process is serving:
+     * context_lifecycle action=record_tool_descriptions with
+     * {server, owner_key, transport:'stdio'|'http', descriptions:[{tool, hash}]}, hash = 12-hex SHA-256
+     * of the exact description string. Called from ToolDescriptionRegistry's poll thread only, never
+     * from tools/list, so it never sits on a request path.
+     *
+     * <p>Returns true only when CS answered 200 AND the tool result is not an error. A CS that does not
+     * know the action yet answers with an error result: that is logged by the caller and ignored --
+     * it must never fail tools/list.</p>
+     */
+    boolean recordToolDescriptions(String server, String ownerKey, String transport,
+                                   List<Map<String, String>> descriptions) {
+        if (!server || descriptions == null || !isCsReachable()) return false
+        try {
+            Map<String, Object> arguments = [action      : 'record_tool_descriptions', server: server,
+                                             owner_key   : ownerKey, transport: transport,
+                                             descriptions: descriptions] as Map<String, Object>
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_lifecycle', arguments: arguments]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            URL url = new URL("${contextServerUrl}/mcp")
+            HttpURLConnection conn = openCs(url)
+            try {
+                conn.requestMethod  = 'POST'
+                conn.doOutput       = true
+                conn.connectTimeout = 1000
+                conn.readTimeout    = 2000
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode != 200) return false
+                String resp = conn.inputStream.getText('UTF-8')
+                Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
+                if (parsed?.get('error') != null) return false
+                Map result = parsed?.get('result') as Map
+                if (result == null || result.get('isError') == Boolean.TRUE) return false
+                List content = result.get('content') as List
+                String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                if (text && text.trim().startsWith('{')) {
+                    Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
+                    if (data?.get('error') != null || data?.get('success') == Boolean.FALSE) return false
+                }
+                return true
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('recordToolDescriptions failed (ignored): {}', e.message)
+        }
+        return false
+    }
+
+    /**
      * Increments the ONTOLOGY-GATE blocked-token counter in the CS {@code memory_policy}
      * {@code hard_gates} row via an async {@code context_lifecycle} call. Fire-and-forget.
      * Mirrors the CS-side {@code incrementHardGateBlockedToken('199', tokenKey)} behaviour.

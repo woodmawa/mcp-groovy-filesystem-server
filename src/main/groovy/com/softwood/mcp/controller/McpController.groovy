@@ -44,6 +44,24 @@ class McpController {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     FilesystemTelemetryService telemetryService
 
+    /** Align kit 2026-09-25: the live source of every top-level tool description (CS help_sections). */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    com.softwood.mcp.service.ToolDescriptionRegistry toolDescriptionRegistry
+
+    void setToolDescriptionRegistry(com.softwood.mcp.service.ToolDescriptionRegistry r) { this.toolDescriptionRegistry = r }
+
+    /**
+     * Hands the registry every tool's SOURCE description as its fallback DEFAULT. Runs after
+     * injection; specs call it directly. Handler text registered here is what a CS-less start serves.
+     */
+    @jakarta.annotation.PostConstruct
+    void registerDescriptionDefaults() {
+        if (toolDescriptionRegistry == null) return
+        for (Map<String, Object> toolDef : cachedToolDefinitions) {
+            toolDescriptionRegistry.registerDefault(toolDef.get('name') as String, toolDef.get('description') as String)
+        }
+    }
+
     // FIX-C: v0.7.43 global backstop - hard ceiling on any single tool response
     @org.springframework.beans.factory.annotation.Value('${mcp.filesystem.global-response-cap-chars:64000}')
     int globalResponseCapChars
@@ -213,7 +231,9 @@ class McpController {
 
         return McpResponse.success(request.id, [
             protocolVersion: negotiated,
-            capabilities   : [tools: [:]] as Map<String, Object>,
+            // Align kit 2026-09-25: descriptions are served live from CS, so the list CAN change
+            // without a restart. stdio announces it with notifications/tools/list_changed.
+            capabilities   : [tools: [listChanged: true] as Map<String, Object>] as Map<String, Object>,
             serverInfo     : [name: 'mcp-groovy-filesystem-server', version: SERVER_VERSION] as Map<String, Object>
         ] as Map<String, Object>)
     }
@@ -226,9 +246,19 @@ class McpController {
     }
 
     private McpResponse handleToolsList(McpRequest request) {
-        // Use cached definitions built at startup - no rebuild on every call
-        log.debug("tools/list returning {} tools (cached)", cachedToolDefinitions.size())
-        return McpResponse.success(request.id, [tools: cachedToolDefinitions] as Map<String, Object>)
+        // Definitions are built once at startup; only the top-level description is live (CS
+        // help_sections tool_desc_<tool>, TTL-cached, last-good then source DEFAULT on failure).
+        List<Map<String, Object>> tools = cachedToolDefinitions
+        if (toolDescriptionRegistry != null) {
+            try {
+                tools = toolDescriptionRegistry.applyTo(cachedToolDefinitions)
+            } catch (Exception e) {
+                log.warn('tools/list: live descriptions unavailable, serving source text: {}', e.message)
+                tools = cachedToolDefinitions
+            }
+        }
+        log.debug("tools/list returning {} tools", tools.size())
+        return McpResponse.success(request.id, [tools: tools] as Map<String, Object>)
     }
 
     private McpResponse handleToolsCall(McpRequest request) {

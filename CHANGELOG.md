@@ -2305,3 +2305,12 @@ session 2026-09-24-15-06).
 - `server_lifecycle stop` declares `force`, which it already read: without it, stop refuses a server this process did not
   start; with it, whatever holds the port is killed (companions are shared by other chats).
 
+## [0.9.66]
+
+**Every FS tool's description is served live from CS.** `ToolDescriptionRegistry` reads `tool_desc_<tool>` for all
+eight tools (file_write verbose -> `tool_desc_file_write_verbose`), 45 s TTL, poll every 60 s; last good, else the
+source text; tools/list never fails. McpController swaps in the live top-level description (parameter text untouched)
+for both transports. `initialize` declares `tools.listChanged=true`; stdio sends `notifications/tools/list_changed`
+after `notifications/initialized` and on a detected change; the GET /mcp SSE stream gets it too. Served hashes are
+reported to CS (`record_tool_descriptions`, server 'fs'). ToolDescriptionLiveSpec 8/10 red first, StdioToolListChangedSpec 2/2.
+

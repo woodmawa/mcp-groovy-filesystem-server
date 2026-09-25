@@ -65,6 +65,33 @@ class HttpMcpController {
 
     @Autowired McpController mcpController
 
+    /** Align kit 2026-09-25: this controller already has a server-to-client stream (GET /mcp), so a
+     *  description change is pushed on it. POST-only clients rely on capabilities.tools.listChanged. */
+    @Autowired(required = false)
+    com.softwood.mcp.service.ToolDescriptionRegistry toolDescriptionRegistry
+
+    @jakarta.annotation.PostConstruct
+    void registerListChanged() {
+        toolDescriptionRegistry?.addChangeListener({ -> broadcastListChanged() } as Runnable)
+    }
+
+    /** Sends notifications/tools/list_changed to every open SSE stream; drops dead ones. */
+    int broadcastListChanged() {
+        String json = '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}'
+        int sent = 0
+        List<String> dead = []
+        sseEmitters.each { String sid, SseEmitter emitter ->
+            try {
+                emitter.send(SseEmitter.event().name('message').data(json, MediaType.APPLICATION_JSON))
+                sent++
+            } catch (Exception ignored) {
+                dead << sid
+            }
+        }
+        dead.each { sseEmitters.remove(it) }
+        return sent
+    }
+
     /** All known Streamable HTTP session IDs (POST-only + SSE) */
     private final Set<String> knownSessions = Collections.newSetFromMap(new ConcurrentHashMap<>())
     /** Active SSE emitters for GET /mcp streaming clients: sessionId -> SseEmitter */

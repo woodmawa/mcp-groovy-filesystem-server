@@ -74,6 +74,20 @@ class StdioMcpServer implements CommandLineRunner {
         .setSerializationInclusion(JsonInclude.Include.NON_NULL)
     private final JsonRpcWriter writer = new JsonRpcWriter()
 
+    /** Align kit 2026-09-25: source of the tools/list_changed signal. Optional; null in the EOF spec. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    com.softwood.mcp.service.ToolDescriptionRegistry toolDescriptionRegistry
+
+    void setToolDescriptionRegistry(com.softwood.mcp.service.ToolDescriptionRegistry r) { this.toolDescriptionRegistry = r }
+
+    static final String LIST_CHANGED = 'notifications/tools/list_changed'
+    private final java.util.concurrent.atomic.AtomicBoolean startupNudgeSent = new java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** One JSON-RPC notification line on stdout: no id, so the client does not answer it. */
+    private void sendListChanged() {
+        writer.sendResponse([jsonrpc: '2.0', method: LIST_CHANGED] as Map<String, Object>)
+    }
+
     StdioMcpServer(McpController mcpController, ApplicationEventPublisher eventPublisher,
                    ApplicationContext applicationContext) {
         this.mcpController = mcpController
@@ -96,6 +110,9 @@ class StdioMcpServer implements CommandLineRunner {
         // FS 0.9.20: a server receiving nothing logs nothing, which is why the 2026-09-08
         // tool-list drops were invisible in every log we had. See McpHeartbeat.
         McpHeartbeat.start('filesystem', '0.9.23')
+
+        // Align kit 2026-09-25: a description change found by the registry poll is announced here.
+        toolDescriptionRegistry?.addChangeListener({ -> sendListChanged() } as Runnable)
 
         try {
             while (true) {
@@ -158,6 +175,10 @@ class StdioMcpServer implements CommandLineRunner {
 
                     if (response == null) {
                         debugLog("Notification, no response")
+                        // Startup nudge: a client that cached an older list re-fetches it now.
+                        if (method == 'notifications/initialized' && startupNudgeSent.compareAndSet(false, true)) {
+                            sendListChanged()
+                        }
                         continue
                     }
 

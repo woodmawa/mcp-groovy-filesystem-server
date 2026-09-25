@@ -16,6 +16,10 @@ mcp:
   context-server:
     url: http://127.0.0.1:1
 
+  # Align kit 2026-09-25: no background tool-description poll in test contexts; specs call pollOnce().
+  tool-descriptions:
+    poll-enabled: false
+
   filesystem:
     allowed-directories: ${java.io.tmpdir},C:/Users/willw/IdeaProjects,C:/Users/willw/claude
     max-file-size-mb: 10
