@@ -60,20 +60,20 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'file_search',
-            description: 'Search file contents or filenames. Actions:\n- content(path, options.contentPattern): grep-style regex search in file contents\n- name(path, options.filePattern): filename regex search\n- project(path): search within project root using default code file filter\nAll require a directory path.',
+            description: 'Search file contents or filenames. Actions:\n- content(path, options.contentPattern): grep-style regex search in file contents; without options.filePattern only the default code/text filter (groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts) is searched\n- name(path, options.filePattern): filename regex search\n- project(path): content search if options.contentPattern is given, else name search on options.filePattern\nAll require a directory path and always walk its subdirectories.',
             inputSchema: [
                 type      : 'object',
                 properties: [
                     action : [type: 'string', enum: ['content', 'name', 'project'],
                               description: 'Search mode'],
                     path   : [type: 'string', description: 'Root directory to search from'],
-                    options: [type: 'object', description: 'contentPattern (regex), filePattern (regex filename filter), maxResults (int), maxDepth (int), recursive (bool, default true)',
+                    options: [type: 'object', description: 'contentPattern (regex), filePattern (regex filename filter), maxResults (int, default 50), maxDepth (int, name search only, default 10). recursive is ignored.',
                               properties: [
                                   contentPattern: [type: 'string', description: 'Regex to search inside file content'],
                                   filePattern   : [type: 'string', description: 'Regex to filter filenames'],
                                   maxResults    : [type: 'integer'],
                                   maxDepth      : [type: 'integer'],
-                                  recursive     : [type: 'boolean']
+                                  recursive     : [type: 'boolean', description: 'Ignored -- every search walks subdirectories']
                               ]]
                 ],
                 required  : ['action', 'path']

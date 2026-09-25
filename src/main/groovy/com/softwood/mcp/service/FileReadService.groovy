@@ -97,7 +97,7 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     // Update via: context_lifecycle execute_sql UPDATE help_sections SET content=? WHERE section_key='tool_desc_file_read'
     private static final String DEFAULT_DESC = '''\
 Read files/directories.
-Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help
+Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|project_root|allowed_dirs|normalize|diff|checksum|list|structure|get_method|chunk_read|finalise_read|help|read_office
 
 REPEAT READS ARE DE-DUPLICATED FOR YOU. Every content action (read, head, tail, range, grep, multi,
 multi_grep, structure, get_method) checks what this chat was already sent: same file content, within
@@ -116,8 +116,8 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
 
 LARGE FILE, NEED ORIENTATION? Do not read it whole. Ask the local model instead (AW, WP-G G5):
   flow_management action=start mode=flow templateName=file-digest params={path:'<abs path>', question:'<what you need>'}
-then action=artifact runId=<id> stage=emit. You get outline_exact (pattern-matched, trustworthy), a digest_lossy citing
-line ranges, and verify_with range calls. The digest is a map, not the file: confirm with range before relying on it.
+then action=artifact runId=<id> stage=emit. You get one text block: OUTLINE (exact, pattern-matched), DIGEST (LOSSY)
+citing line ranges, and VERIFY BEFORE RELYING ON IT range calls. The digest is a map, not the file: confirm with range.
 For a long file, pass startLine=<next_startLine> to digest the next window.'''
 
     /**
@@ -224,7 +224,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   startLine   : [type: 'integer', description: 'Start line for range, 1-indexed (required for range)'],
                                   maxLines    : [type: 'integer', description: 'Max lines for range (default 100)'],
                                   pattern     : [type: 'string',  description: 'Regex for grep (required for grep)'],
-                                  maxMatches  : [type: 'integer', description: 'Max grep matches (default 10)'],
+                                  maxMatches  : [type: 'integer', description: 'Max grep matches (default 10; multi_grep: per file, default 5)'],
                                   contextLines: [type: 'integer', description: 'Lines of context before/after each grep match (default 0)'],
                                   method      : [type: 'string',  description: 'Method name for get_method (required for get_method)'],
                                   fuzzy       : [type: 'boolean', description: 'If true, match method name as substring (for get_method)'],
@@ -238,7 +238,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (methods only, no endLine)'],
                                   knownHash   : [type: 'string',  description: 'Optional. file_content_hash from a prior read, for action=read or get_method: unchanged file = {unchanged:true}. Repeats are de-duplicated without it. Do NOT pass to action=range.'],
                                   force       : [type: 'boolean', description: 'Re-send content this chat was already sent (after compaction, or when a subagent made the read). Also overrides the >200-line refusal on action=read.'],
-                                  allowNoLocate: [type: 'boolean', description: 'FS 0.9.50 (advertised): read an ontology-indexed file without a prior context_read scope=ontology action=locate. Use it when the read is itself navigation (grep, multi_grep, structure) or the file is small or non-code; the refusal named this key but the schema did not.'],
+                                  allowNoLocate: [type: 'boolean', description: 'Read an ontology-indexed file without a prior context_read scope=ontology action=locate (the override is counted in telemetry). Only content actions are gated (read, head, tail, range, get_method, summary, diff, multi, read_office); grep, multi_grep and structure never need it. Use it when the file is small or non-code.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
                                   toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.'],

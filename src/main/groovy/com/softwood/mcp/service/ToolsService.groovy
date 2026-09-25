@@ -55,9 +55,9 @@ class ToolsService extends AbstractFileService implements ToolHandler {
             description: '''\
 Developer toolchain. Actions:
 - git(subcommand, args[], options.workingDir, options.message): common git commands. IMPORTANT: commit requires options.message or process hangs.
-- gradle(subcommand, args[], options.workingDir, options.timeout): build|test|clean|compileGroovy|compileJava|bootRun|bootJar|jar|dependencies|tasks|check|assemble|publish|wrapper
-- mvn(subcommand, args[]): package|test|clean|install|verify|compile|dependency:tree
-- npm(subcommand, args[]): install|build|test|run|start|lint|audit
+- gradle(subcommand, args[], options.workingDir, options.timeout): build|test|clean|compileGroovy|compileJava|bootRun|bootJar|jar|dependencies|tasks|check|assemble|publish|wrapper|packageMcpbThin|installMcpbLocal|copyMcpbToSync|generateMcpbManifest|stageJarForMcpb (space-separated tasks allowed)
+- mvn(subcommand, args[]): package|test|clean|install|verify|compile|dependency:tree|dependency:resolve|help:effective-pom
+- npm(subcommand, args[]): install|build|test|run|start|lint|audit|outdated|list
 - project_scan(options.workingDir): structure + git + build system in one call
 - stats: JVM memory, chunk buffer, allowed dirs. options.period: today|week|month|all''',
             inputSchema: [

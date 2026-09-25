@@ -267,7 +267,7 @@ SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS proc
                                                      'claim_session', 'release_claim', 'claim_status'],
                               description: 'Lifecycle action'],
                     name   : [type: 'string',
-                              description: 'Server name (filesystem|context|orchestrator|agentic-workflow). Required for ensure/stop a specific server.'],
+                              description: 'Server name as configured (filesystem|context|orchestrator|agentic-workflow|ms-graph). Required for ensure; for stop, omit to stop all.'],
                     sessionId: [type: 'string',
                               description: 'claim_session: the session id session-bootstrap returned, to bind THIS process to.'],
                     groupId: [type: 'string',

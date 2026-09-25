@@ -2274,3 +2274,23 @@ session 2026-09-24-15-06).
   removed (FCR-3), wrong owner key sent (FCR-1).
 
 517 tests, 0 failures.
+
+## [0.9.64]
+
+**Tool text made to match the code** (session 2026-09-25-09-19). No behaviour change.
+
+- `execute`: the groovy sandbox DOES confine file access -- `PathConfinementCustomizer` / `SecureMcpScript.confine()`
+  refuse `new File` / `Paths.get` / `Path.of` outside the allowed dirs and resolve relative names against workingDir.
+  The description said the opposite. Timeout default (60) and `args` (groovy only) stated.
+- `file_read`: `read_office` in the action list; the file-digest paragraph describes the real output (one text block,
+  OUTLINE / DIGEST (LOSSY) / VERIFY BEFORE RELYING ON IT) instead of three keys it never returns; `allowNoLocate`
+  names the gated actions (grep, multi_grep, structure never are); `maxMatches` notes multi_grep's 5 per file.
+- `file_write`: `write_office` listed; expectedHash required for replace|patch|multi_replace|server_transform, not
+  write/append; `raw` applies to write only (append never unescapes). DB rows `tool_desc_file_read`,
+  `tool_desc_file_write`, `tool_desc_file_write_verbose` brought level with source -- two were missing whole paragraphs.
+- `file_search`: content search covers the default code/text types unless filePattern is given; `project` searches the
+  given path; `recursive` is ignored; maxDepth / maxResults defaults stated.
+- `server_lifecycle`: `ms-graph` in the name list; stop with no name stops all.
+- `tools`: allowed gradle / mvn / npm subcommand lists completed.
+- CLAUDE.md: "SQL -- no query before the manifest" block at the top.
+

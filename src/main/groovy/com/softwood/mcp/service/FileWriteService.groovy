@@ -60,8 +60,8 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 
     private static final String DEFAULT_DESC_COMPACT = '''\
 Write/modify files.
-Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
-Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (all mutating -- required).
+Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status|write_office
+Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (replace|patch|multi_replace|server_transform -- required).
 server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
 options.allowStructuralEdit=true -- bypass brace/paren delta guard on replace|patch|multi_replace (FS 0.9.6). Use to repair orphaned braces. checkBareBoxDrawing is never bypassed.
 append on .groovy/.java/.kt returns code_append_warning (suppressible via options.suppressCodeAppendWarning=true).
@@ -69,7 +69,7 @@ ESCAPES (action=write): backslash-n, backslash-t and backslash-r in content are 
 
     private static final String DEFAULT_DESC_VERBOSE = '''\
 Write/modify files.
-Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status
+Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status|write_office
 - write(path, content): overwrite entire file
 - append(path, content): append to end. WARNING: append on .groovy/.java/.kt/.kts files may corrupt brace structure -- response includes code_append_warning field. Prefer action=replace or server_transform add_method. Suppress with options.suppressCodeAppendWarning=true.
 - replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated -- check error detail.
@@ -175,11 +175,11 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                      'write_office']],
                     path   : [type: 'string', description: 'Target file path (required for all actions except abort_write and chunk_status)'],
                     content: [type: 'string', description: 'Content for write/append/chunk_write (not used for write_office)'],
-                    options: [type: 'object', description: 'Action-specific options. REQUIRED for replace: oldText (the unique string to find) and newText (the replacement; pass newText:\'\' to delete). For patch: replacements. For chunks: sessionId, chunkIndex, totalChunks. expectedHash mandatory for all mutating actions.',
+                    options: [type: 'object', description: 'Action-specific options. REQUIRED for replace: oldText (the unique string to find) and newText (the replacement; pass newText:\'\' to delete). For patch: replacements. For chunks: sessionId, chunkIndex, totalChunks. expectedHash mandatory for replace|patch|multi_replace|server_transform.',
                               properties: [
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
-                                  expectedHash: [type: 'string',  description: 'MANDATORY for replace|patch|multi_replace: 12-char SHA-256 prefix from prior read/write. Absent = hard error. Always read the file first and pass the returned file_content_hash.'],
+                                  expectedHash: [type: 'string',  description: 'MANDATORY for replace|patch|multi_replace|server_transform: 12-char SHA-256 prefix from prior read/write. Absent = hard error. Always read the file first and pass the returned file_content_hash.'],
                 planAck     : [type: 'string',  description: PlanGateGuard.PLAN_ACK_DESCRIPTION],
                                   intent      : [type: 'string',  description: 'FS 0.9.45: what this write is FOR, in your own words -- "adding the reinforced stamp to the success path", not "editing a file". PLAN-GATE selects practices on it; without one it selects on the class name alone, which is the part of the question you could not have got wrong. Also kept on the retrieval ledger, so what the gate showed you can be scored afterwards. Optional, and free text.'],
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
@@ -217,7 +217,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                   endAnchor   : [type: 'string', description: 'server_transform replace_between: text marking the end of the replaced region'],
                                   after       : [type: 'string', description: 'server_transform add_method: insert after this method (optional)'],
                                   before      : [type: 'string', description: 'server_transform add_method: insert before this method (optional)'],
-                                  raw         : [type: 'boolean', description: 'action=write/append: skip the escape pass entirely so backslash-n/t/r in content survive verbatim. USE THIS FOR SOURCE CODE -- a Groovy string literal containing \\n is otherwise converted to a real newline and will not compile. The response reports an `unescaped` block whenever the pass changed something.'],
+                                  raw         : [type: 'boolean', description: 'action=write only (append never unescapes): skip the escape pass entirely so backslash-n/t/r in content survive verbatim. USE THIS FOR SOURCE CODE -- a Groovy string literal containing \\n is otherwise converted to a real newline and will not compile. The response reports an `unescaped` block whenever the pass changed something.'],
                                   allowStructuralEdit: [type: 'boolean', description: 'replace|patch|multi_replace: bypass the brace/paren delta guard, e.g. to repair orphaned braces (FS 0.9.6)'],
                                   suppressCodeAppendWarning: [type: 'boolean', description: 'append on .groovy/.java/.kt: suppress the code_append_warning']
                               ]]
