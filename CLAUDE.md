@@ -1,5 +1,16 @@
 # mcp-groovy-filesystem-server — Claude Code Guide
 
+> **SQL -- NO QUERY BEFORE THE MANIFEST. Read this before your first execute_sql / execute_aw_sql.**
+> Guessing a table or column name is the most wasteful mistake on this platform. Every session:
+>
+> 1. After bootstrap and claims, read the live columns: `flow_management action=artifact runId=<bootstrap runId> stage=init-core fieldPath=sql_manifest`. Write SQL for those tables ONLY from it.
+> 2. Any table NOT in the manifest -- CS or AW -- the first call is `context_lifecycle action=execute_sql table=<name>` (CS) or `action=execute_aw_sql table=<name>` (AW). Then the SELECT. No exceptions for "obvious" names.
+> 3. A pre-flight refusal's `correct_columns` IS the manifest for that table: retry from it, never guess again, record a `fault=caller` observation.
+> 4. Briefing a subagent or another chat: give it the manifest and these rules. It does not inherit what you read.
+>
+> The same rule is the served project-instructions section `sql-column-names` (eager). This block is a copy for sessions that start from the repo.
+
+
 ## Project identity
 
 - **Language:** Groovy 5 / Spring Boot 4 / Java 25
