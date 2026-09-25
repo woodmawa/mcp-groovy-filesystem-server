@@ -149,7 +149,8 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
             if (isWriteCompact(options)) return textResponse(requestId, [success: true, type: 'directory'])
             return textResponse(requestId, [action: 'create', type: 'directory', path: normalized, success: true])
         } else {
-            if (target.parent) Files.createDirectories(target.parent)
+            // Audit 2026-09-25 F1: this ran unconditionally, so mkdirs=false was ignored on create.
+            ensureParent(target, mkdirs)
             if (!Files.exists(target)) Files.createFile(target)
             log.info("Created file: {}", normalized)
             if (isWriteCompact(options)) return textResponse(requestId, [success: true, type: 'file'])

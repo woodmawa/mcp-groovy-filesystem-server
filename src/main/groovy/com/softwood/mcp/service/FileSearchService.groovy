@@ -67,13 +67,12 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
                     action : [type: 'string', enum: ['content', 'name', 'project'],
                               description: 'Search mode'],
                     path   : [type: 'string', description: 'Root directory to search from'],
-                    options: [type: 'object', description: 'contentPattern (regex), filePattern (regex filename filter), maxResults (int, default 50), maxDepth (int, name search only, default 10). recursive is ignored.',
+                    options: [type: 'object', description: 'contentPattern (regex), filePattern (regex filename filter), maxResults (int, default 50), maxDepth (int, name search only, default 10).',
                               properties: [
                                   contentPattern: [type: 'string', description: 'Regex to search inside file content'],
                                   filePattern   : [type: 'string', description: 'Regex to filter filenames'],
                                   maxResults    : [type: 'integer'],
-                                  maxDepth      : [type: 'integer'],
-                                  recursive     : [type: 'boolean', description: 'Ignored -- every search walks subdirectories']
+                                  maxDepth      : [type: 'integer']
                               ]]
                 ],
                 required  : ['action', 'path']

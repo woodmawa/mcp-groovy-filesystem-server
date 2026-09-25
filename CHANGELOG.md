@@ -2294,3 +2294,14 @@ session 2026-09-24-15-06).
 - `tools`: allowed gradle / mvn / npm subcommand lists completed.
 - CLAUDE.md: "SQL -- no query before the manifest" block at the top.
 
+## [0.9.65]
+
+**The code defects the 0.9.64 tool-text audit found** (FsToolAuditDefectsSpec, 3 of 4 red first).
+
+- `file_lifecycle create` honours `mkdirs=false`: a missing parent is refused and nothing is created (it used to create
+  the parent unconditionally). The default (mkdirs omitted = true) is unchanged. Uses the same `ensureParent` as copy/move.
+- `file_search` no longer declares `recursive`, which nothing read (every search walks subdirectories). No caller passed it.
+  USAGE.md corrected.
+- `server_lifecycle stop` declares `force`, which it already read: without it, stop refuses a server this process did not
+  start; with it, whatever holds the port is killed (companions are shared by other chats).
+

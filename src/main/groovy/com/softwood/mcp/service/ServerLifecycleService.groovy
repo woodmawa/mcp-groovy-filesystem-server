@@ -268,6 +268,8 @@ SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS proc
                               description: 'Lifecycle action'],
                     name   : [type: 'string',
                               description: 'Server name as configured (filesystem|context|orchestrator|agentic-workflow|ms-graph). Required for ensure; for stop, omit to stop all.'],
+                    force  : [type: 'boolean',
+                              description: 'stop only (default false): also stop a server this process did not start -- one it adopted or merely found listening on its port -- by killing whatever holds the port. Without it such a stop is refused with stopped:false and a reason. For a controlled full shutdown; a companion started elsewhere is shared by other chats.'],
                     sessionId: [type: 'string',
                               description: 'claim_session: the session id session-bootstrap returned, to bind THIS process to.'],
                     groupId: [type: 'string',

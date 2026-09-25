@@ -131,7 +131,7 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 
 **project** — search within project root using default code file filter (groovy/java/gradle/yml/json/md/txt etc).
 
-Common options: `maxResults` (default 50), `maxDepth`, `recursive` (default true).
+Common options: `maxResults` (default 50), `maxDepth`. Every search walks subdirectories.
 
 ---
 
