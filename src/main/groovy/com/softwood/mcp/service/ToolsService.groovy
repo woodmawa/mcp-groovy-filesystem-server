@@ -3,6 +3,7 @@ package com.softwood.mcp.service
 import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.promise.Promise
 import com.softwood.mcp.promise.Promises
+import com.softwood.mcp.support.GradleArgs
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import org.springframework.beans.factory.annotation.Autowired
@@ -187,7 +188,9 @@ Developer toolchain. Actions:
         File wrapperFile  = new File(workingDir, isWindows ? 'gradlew.bat' : 'gradlew')
         String gradleCmd  = wrapperFile.exists() ? wrapperFile.absolutePath : 'gradle'
 
-        List<String> cmd = [gradleCmd] + tasks + ['--no-daemon'] + args
+        // FS 0.9.68 (chain 2e0ad21b): `--tests X` is folded to `--tests=X` -- the Windows java
+        // launcher behind gradlew.bat glob-expands a wildcard value against workingDir files.
+        List<String> cmd = [gradleCmd] + tasks + ['--no-daemon'] + GradleArgs.launcherSafe(args)
         return runTool(cmd, workingDir, timeout, "gradle ${subcommand}", requestId)
     }
 

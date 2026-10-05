@@ -1,6 +1,7 @@
 package com.softwood.mcp.script
 
 import com.softwood.mcp.service.PathService
+import com.softwood.mcp.support.GradleArgs
 import groovy.util.logging.Slf4j
 
 import java.util.concurrent.TimeUnit
@@ -181,7 +182,8 @@ abstract class SecureMcpScript extends Script {
         boolean windows = System.getProperty('os.name').toLowerCase().contains('windows')
         String wrapper  = new File(workingDir, windows ? 'gradlew.bat' : 'gradlew').exists()
             ? (windows ? 'gradlew.bat' : './gradlew') : 'gradle'
-        runCmd([wrapper] + args.toList() + ['--no-daemon'])
+        // FS 0.9.68 (chain 2e0ad21b): same launcher glob as ToolsService.doGradle
+        runCmd([wrapper] + GradleArgs.launcherSafe(args.toList()) + ['--no-daemon'])
     }
 
     /** Run a PowerShell command */

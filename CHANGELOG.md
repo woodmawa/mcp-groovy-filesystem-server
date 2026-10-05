@@ -2314,3 +2314,23 @@ for both transports. `initialize` declares `tools.listChanged=true`; stdio sends
 after `notifications/initialized` and on a detected change; the GET /mcp SSE stream gets it too. Served hashes are
 reported to CS (`record_tool_descriptions`, server 'fs'). ToolDescriptionLiveSpec 8/10 red first, StdioToolListChangedSpec 2/2.
 
+
+## [0.9.67]
+
+(Entry backfilled 2026-10-05 -- the release shipped without one.) Range-read telemetry for value-review-phase3
+item 3 (decision 272): `file_read action=range` records the requested window (`req_start_line`, `req_max_lines`)
+and `lines_returned` on its `tool_call_telemetry` row (`RangeTelemetry`, `FsRangeTelemetrySpec`).
+
+## [0.9.68]
+
+**`--tests` wildcards are no longer glob-expanded on Windows (chain 2e0ad21b).** `gradle-test-summary`
+tests=`*Telemetry*` in the CS repo failed "No tests found for given includes: [ontology-telemetry-dashboard-brief.md]".
+Measured, not guessed: cmd and the gradlew.bat hop pass the pattern literally; the java launcher, starting
+GradleWrapperMain as a main class, expands any argument containing `*`/`?` against its working directory --
+case-insensitively, quoted or not -- whenever a file matches, and leaves it alone when none does (hence silent and
+input-dependent). Gradle 9.3 accepts `--tests=<pattern>` as the filter and no file is named `--tests=...`, so
+`GradleArgs.launcherSafe` folds `--tests X` into `--tests=X`; used by `ToolsService.doGradle` and the script DSL
+`SecureMcpScript.gradle(...)`. `ToolsServiceGradleGlobSpec` GG-1..4 drives the real doGradle -> gradlew.bat -> java
+route against a wrapper whose main prints its argv (red first: `[test, --no-daemon, --tests, x-Telemetry-y.md]`);
+`GradleArgsSpec` GA-1..3 pins the fold's edges. Mutation (fold removed) -> exactly GG-1 and GG-4 red. Suite 546/0
+before the version bump.
