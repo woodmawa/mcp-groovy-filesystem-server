@@ -71,7 +71,7 @@ class HttpCallerSessionSpec extends Specification {
         hc.handleRequest(toolsCall(), sid, servlet('2026-09-23-13-21'))
 
         then:
-        1 * t.recordToolCall('2026-09-23-13-21', 'tools', _, _, _, _, _)
+        1 * t.recordToolCall('2026-09-23-13-21', 'tools', _, _, _, _, _, _)
     }
 
     def 'HC-2 CONTROL: no header on POST /mcp still files unknown'() {
@@ -89,6 +89,6 @@ class HttpCallerSessionSpec extends Specification {
         hc.handleRequest(toolsCall(), sid, servlet(null))
 
         then:
-        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _)
+        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _, _)
     }
 }

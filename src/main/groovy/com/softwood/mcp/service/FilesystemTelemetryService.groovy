@@ -211,7 +211,7 @@ class FilesystemTelemetryService {
     void recordToolCall(String sessionId, String toolName,
                          int responseChars, Map<String, Object> args,
                          String action = null, String pathHash = null,
-                         String outcome = 'success') {
+                         String outcome = 'success', Map<String, Object> detail = null) {
         if (!dbPath) return   // persistence not configured  silent no-op
 
         // v0.8.39: resolve real session ID lazily on first call -- one JDBC read per session, cached thereafter
@@ -271,6 +271,9 @@ class FilesystemTelemetryService {
                     outcome    : outcome ?: 'success',
                     owner_key  : ProcessIdentity.OWNER_KEY
                 ] as Map<String, Object>
+                // FS 0.9.67 item 3: a range call's requested window and lines returned
+                // (RangeTelemetry.detail). Extra keys; CS stores the ones it knows.
+                if (detail) row.putAll(detail)
 
                 if (contextServerClient) {
                     contextServerClient.recordToolCall(resolvedId, row)

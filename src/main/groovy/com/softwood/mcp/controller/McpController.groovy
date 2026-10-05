@@ -4,6 +4,7 @@ import com.softwood.mcp.model.McpRequest
 import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.service.FilesystemTelemetryService
 import com.softwood.mcp.service.ToolHandler
+import com.softwood.mcp.service.read.RangeTelemetry
 import com.softwood.mcp.support.Sanitizer
 import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
@@ -298,8 +299,10 @@ class McpController {
                 String resolved  = declared ?: telemetryService.readActiveSessionId()
                 unbound = (resolved == null)
                 String sessionId = resolved ?: 'unknown'
+                // FS 0.9.67 item 3: requested window + lines returned, for range calls only.
+                Map<String, Object> detail = RangeTelemetry.detail(toolName, arguments, responseText(response))
                 telemetryService.recordToolCall(sessionId, toolName, charCount, arguments,
-                    action, pathHash, outcome)
+                    action, pathHash, outcome, detail)
             }
         } catch (Exception e) {
             log.debug('Telemetry hook failed (non-fatal): {}', e.message)
@@ -398,6 +401,15 @@ class McpController {
             if (text.contains('_truncated')) return 'truncated'
         } catch (Exception ignored) {}
         return 'success'
+    }
+
+    private static String responseText(McpResponse response) {
+        try {
+            List content = response?.result?.content as List
+            return (content?.first() as Map)?.get('text') as String
+        } catch (Exception ignored) {
+            return null
+        }
     }
 
     private static int estimateResponseSize(McpResponse response) {

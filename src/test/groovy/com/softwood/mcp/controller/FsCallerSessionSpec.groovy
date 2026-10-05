@@ -68,7 +68,7 @@ class FsCallerSessionSpec extends Specification {
         McpResponse r = c.handleRequest(call(), '2026-09-23-13-21')
 
         then:
-        1 * t.recordToolCall('2026-09-23-13-21', 'tools', _, _, _, _, _)
+        1 * t.recordToolCall('2026-09-23-13-21', 'tools', _, _, _, _, _, _)
         contentCount(r) == 1
     }
 
@@ -82,7 +82,7 @@ class FsCallerSessionSpec extends Specification {
         McpResponse r = c.handleRequest(call(), null)
 
         then:
-        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _)
+        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _, _)
         contentCount(r) == 2
     }
 
@@ -96,7 +96,7 @@ class FsCallerSessionSpec extends Specification {
         c.handleRequest(call(), 'declared-by-caller')
 
         then:
-        1 * t.recordToolCall('declared-by-caller', 'tools', _, _, _, _, _)
+        1 * t.recordToolCall('declared-by-caller', 'tools', _, _, _, _, _, _)
     }
 
     def 'CS-4 a blank header is no header'() {
@@ -109,7 +109,7 @@ class FsCallerSessionSpec extends Specification {
         c.handleRequest(call(), '   ')
 
         then:
-        1 * t.recordToolCall('own-claim', 'tools', _, _, _, _, _)
+        1 * t.recordToolCall('own-claim', 'tools', _, _, _, _, _, _)
     }
 
     def 'CS-5 the declared session does not leak into the next request'() {
@@ -123,7 +123,7 @@ class FsCallerSessionSpec extends Specification {
         c.handleRequest(call(), null)
 
         then:
-        1 * t.recordToolCall('first', 'tools', _, _, _, _, _)
-        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _)
+        1 * t.recordToolCall('first', 'tools', _, _, _, _, _, _)
+        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _, _)
     }
 }
