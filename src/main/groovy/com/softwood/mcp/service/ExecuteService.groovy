@@ -60,6 +60,17 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     @Value('${mcp.script.max-execution-time-seconds:60}')
     int maxExecutionTimeSeconds
 
+    /**
+     * Chain 18eb7c8d (FS 0.9.69): the default bound for an ASYNC job submitted without
+     * options.timeout. Before this, async jobs inherited the 60 s synchronous default, so a
+     * gradle suite submitted async -- the whole reason async exists -- was killed at the very
+     * ceiling it was meant to get out from under. An explicit options.timeout still wins.
+     * Not applied to action=groovy: it runs in-process and never goes async (practice 3506),
+     * so a 30-minute bound there would only let a blocking call outlive the bridge.
+     */
+    @Value('${mcp.script.max-async-execution-time-seconds:1800}')
+    int maxAsyncExecutionTimeSeconds
+
     @Value('${mcp.script.enable-bash:true}')
     boolean enableBash
 
@@ -90,7 +101,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     List<Map<String, Object>> getToolDefinitions() {
         return [[
             name       : 'execute',
-            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.\nGROOVY IS IN-PROCESS (FS 0.9.50, stated): action=groovy compiles and runs inside the FS JVM. options.workingDir is validated and handed to the script as the binding variable `workingDir` -- it is NOT a chdir, but the sandbox rewrites new File(..) / Paths.get(..) / Path.of(..) so relative names resolve against workingDir and a path outside the allowed directories throws SANDBOX. FileInputStream/FileWriter-style constructors and temp-file factories are refused at compile time. bash/powershell/cmd/python are child processes and DO run in workingDir.\nBASH (FS 0.9.50): the script never travels through argv -- double-quoted phrases with spaces and CRLF line endings are safe; before 0.9.50 `echo "one two"` silently truncated the script at the quote.\nMULTI-LINE: all actions run every line of a multi-line script. Lines execute in order and the LAST command\'s exit code is returned -- a mid-script failure does not abort the rest (same contract as bash -c, which has no set -e). Check state explicitly rather than trusting a single exitCode when a script mutates something. (cmd silently ran only the first line before FS 0.9.11.)\nASYNC: set options.async=true for work that may exceed the ~60s MCP client deadline (gradle builds, full test suites). It returns a jobId immediately instead of blocking -- the deadline is imposed by the client, not by FS, so options.timeout cannot extend it and a blocked call also serialises the calls behind it. Poll with action=job_status jobId=<id>; tail incrementally with action=job_output jobId=<id> sinceOffset=<nextOffset from the previous read>; stop with action=job_cancel; enumerate with action=job_list. Jobs are retained for 30 minutes after finishing.',
+            description: 'Execute scripts or shell commands. Actions: bash|powershell|groovy|cmd|python.\nScripts validated against dangerous patterns. Working directory must be in allowed directories.\nGROOVY IS IN-PROCESS (FS 0.9.50, stated): action=groovy compiles and runs inside the FS JVM. options.workingDir is validated and handed to the script as the binding variable `workingDir` -- it is NOT a chdir, but the sandbox rewrites new File(..) / Paths.get(..) / Path.of(..) so relative names resolve against workingDir and a path outside the allowed directories throws SANDBOX. FileInputStream/FileWriter-style constructors and temp-file factories are refused at compile time. bash/powershell/cmd/python are child processes and DO run in workingDir.\nBASH (FS 0.9.50): the script never travels through argv -- double-quoted phrases with spaces and CRLF line endings are safe; before 0.9.50 `echo "one two"` silently truncated the script at the quote.\nMULTI-LINE: all actions run every line of a multi-line script. Lines execute in order and the LAST command\'s exit code is returned -- a mid-script failure does not abort the rest (same contract as bash -c, which has no set -e). Check state explicitly rather than trusting a single exitCode when a script mutates something. (cmd silently ran only the first line before FS 0.9.11.)\nASYNC: set options.async=true for work that may exceed the ~60s MCP client deadline (gradle builds, full test suites). It returns a jobId immediately instead of blocking -- the deadline is imposed by the client, not by FS, so a longer options.timeout on a BLOCKING call cannot help, and a blocked call also serialises the calls behind it. An async job IS bounded by options.timeout; without one it gets the async default (1800 s), not the 60 s synchronous one (FS 0.9.69). Poll with action=job_status jobId=<id>; tail incrementally with action=job_output jobId=<id> sinceOffset=<nextOffset from the previous read>; stop with action=job_cancel; enumerate with action=job_list. Jobs are retained for 30 minutes after finishing.',
             inputSchema: [
                 type      : 'object',
                 properties: [
@@ -107,7 +118,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                   maxStdout   : [type: 'integer', description: 'Max chars of stdout to return (default 50000)'],
                                   maxStderr   : [type: 'integer', description: 'Max chars of stderr to return (default 5000)'],
                                   grepPattern : [type: 'string', description: 'Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including | alternation, e.g. "foo|bar", "RequestBuilder\\.class$".'],
-                                  async       : [type: 'boolean', description: 'FS-EXEC-2: run in the background and return a jobId immediately. Use for anything that may exceed the ~60s client deadline.'],
+                                  async       : [type: 'boolean', description: 'FS-EXEC-2: run in the background and return a jobId immediately. Use for anything that may exceed the ~60s client deadline. The job is still bounded by options.timeout; without one an async job gets the async default (1800 s, FS 0.9.69), not the 60 s synchronous one. Not for action=groovy, which always runs in-process.'],
                                   jobId       : [type: 'string', description: 'Job id, for job_status / job_output / job_cancel.'],
                                   intent      : [type: 'string', description: 'FS 0.9.38: one sentence on what this build/git call is for. PLAN-GATE selects the practices it shows on the command plus this.'],
                 planAck     : [type: 'string', description: PlanGateGuard.PLAN_ACK_DESCRIPTION],
@@ -148,7 +159,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             }
 
             String workingDir = options.workingDir as String ?: activeProjectRoot ?: allowedDirectories[0]
-            int timeout       = (options.timeout as Integer) ?: maxExecutionTimeSeconds
+            boolean goesAsync = options.async && action != 'groovy'
+            int timeout       = (options.timeout as Integer) ?:
+                                (goesAsync ? maxAsyncExecutionTimeSeconds : maxExecutionTimeSeconds)
 
             // Normalize and validate working dir
             workingDir = pathService.normalizePath(workingDir)

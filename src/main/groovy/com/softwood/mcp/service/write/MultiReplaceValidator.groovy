@@ -72,7 +72,12 @@ final class MultiReplaceValidator {
             Map<String, Object> rep = replacements.get(i)
             String ot = (rep.oldText as String)?.replace('\r\n', '\n')?.replace('\r', '\n')
             if (!ot) {
-                errors << ('Entry ' + i + ': missing oldText')
+                // Chain 3a03369a (FS 0.9.69): three states collapse to falsy here. Name the one
+                // seen and echo the keys received, so a refusal that 'cannot happen' explains itself.
+                String state = !rep.containsKey('oldText') ? 'key absent'
+                             : (rep.oldText == null ? 'value is null' : 'value is empty')
+                errors << ('Entry ' + i + ' (#' + (i + 1) + ' of ' + replacements.size() + '): missing oldText -- ' +
+                    state + '; received keys ' + rep.keySet().toList())
                 continue
             }
             if (!rep.containsKey('newText')) {

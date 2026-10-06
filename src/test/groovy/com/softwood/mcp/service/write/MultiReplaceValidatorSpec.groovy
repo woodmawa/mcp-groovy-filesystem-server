@@ -88,6 +88,43 @@ class MultiReplaceValidatorSpec extends Specification {
         vr.errors.any { it.contains('Entry 1') && it.contains('missing oldText') }
     }
 
+    // Chain 3a03369a: 'Entry 2: missing oldText' was reported for a payload that, as recalled,
+    // carried oldText. Three different states collapse to that one message under Groovy truth
+    // (key absent, value null, value '') and the index is 0-based, so 'Entry 2' is the THIRD
+    // entry. The refusal now says which state it saw, echoes the keys it actually received,
+    // and carries a 1-based ordinal -- so the next occurrence settles the chain by itself.
+    def "MR-ECHO-1: a mis-keyed entry names the keys it received and the 1-based ordinal"() {
+        when:
+        def vr = MultiReplaceValidator.validate('alpha\n', [[old_text: 'alpha', newText: 'A']])
+
+        then:
+        !vr.valid()
+        vr.errors.size() == 1
+        vr.errors[0].contains('Entry 0 (#1 of 1)')
+        vr.errors[0].contains('missing oldText')
+        vr.errors[0].contains('key absent')
+        vr.errors[0].contains('received keys [old_text, newText]')
+    }
+
+    def "MR-ECHO-2: an empty oldText is reported as empty, not as missing"() {
+        when:
+        def vr = MultiReplaceValidator.validate('alpha\n', [[oldText: 'alpha', newText: 'A'], [oldText: '', newText: 'B']])
+
+        then:
+        !vr.valid()
+        vr.errors[0].contains('Entry 1 (#2 of 2)')
+        vr.errors[0].contains('value is empty')
+    }
+
+    def "MR-ECHO-3: a null oldText is reported as null"() {
+        when:
+        def vr = MultiReplaceValidator.validate('alpha\n', [[oldText: null, newText: 'A']])
+
+        then:
+        !vr.valid()
+        vr.errors[0].contains('value is null')
+    }
+
     def "Phase A: missing newText key (not empty string) returns entry-level error"() {
         given:
         String snapshot = 'alpha\nbeta\n'

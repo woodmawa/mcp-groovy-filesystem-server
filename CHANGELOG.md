@@ -2334,3 +2334,23 @@ input-dependent). Gradle 9.3 accepts `--tests=<pattern>` as the filter and no fi
 route against a wrapper whose main prints its argv (red first: `[test, --no-daemon, --tests, x-Telemetry-y.md]`);
 `GradleArgsSpec` GA-1..3 pins the fold's edges. Mutation (fold removed) -> exactly GG-1 and GG-4 red. Suite 546/0
 before the version bump.
+
+## [0.9.69]
+
+**An async `execute` job is no longer killed at the synchronous default timeout (chain 18eb7c8d).** `options.async`
+exists so long work (gradle suites, builds) stops blocking under the ~60 s client deadline, but `handleToolCall`
+resolved one timeout for both paths -- `options.timeout ?: maxExecutionTimeSeconds` (60) -- so an async job submitted
+without a timeout was killed at the very ceiling it was meant to escape. Now an async job with no `options.timeout`
+gets `mcp.script.max-async-execution-time-seconds` (default 1800); an explicit timeout still wins on both paths.
+`action=groovy` is excluded: it always runs in-process and never goes async. The tool description no longer says
+`options.timeout` "cannot extend" anything -- it says what bounds an async job. `ExecuteServiceAsyncTimeoutSpec`
+AT-1..3 through the real route (`@SpringBootTest`, `handleToolCall`), asserting the job's final registry status:
+AT-1 red first (`timeoutSec` 2, job killed), AT-2 control green throughout, AT-3 mutation-checked (strip the timeout
+sentence -> AT-3 alone red, file restored to the same hash).
+
+**multi_replace's "missing oldText" refusal says what it actually received (chain 3a03369a).** Three states --
+key absent, value null, value `''` -- collapsed to one message under Groovy truth, with a 0-based index, so a refusal
+reported for a payload remembered as carrying oldText could not be explained. Phase A now reports which state,
+echoes the entry's received keys, and adds a 1-based ordinal: `Entry 1 (#2 of 2): missing oldText -- value is
+empty; received keys [oldText, newText]`. The 0-based index stays, so existing assertions hold.
+`MultiReplaceValidatorSpec` MR-ECHO-1..3, red first. Suite 552/0.
