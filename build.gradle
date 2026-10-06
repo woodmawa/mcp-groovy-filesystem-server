@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.69'
+version = '0.9.70'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -115,6 +115,10 @@ def claudeSyncDir    = file('C:/Users/willw/claude-sync')
 def fsJvmArgs = [
     '--enable-native-access=ALL-UNNAMED',
     '-XX:+IgnoreUnrecognizedVMOptions',
+    // 2026-10-06 (obs 11942): Desktop starts this extension twice, and with no sizing each JVM took the
+    // 128 GB-host defaults (2 GB initial, 30 GB max heap) and gave nothing back while idle. Measured
+    // heap in use 100-650 MB, live data 70-360 MB. Periodic GC returns idle memory to Windows.
+    '-Xms64m', '-Xmx1g', '-XX:G1PeriodicGCInterval=60000', '-XX:+ExitOnOutOfMemoryError',
     '-Dspring.profiles.active=stdio',
     '-Dmcp.filesystem.allowed-directories=C:/Users/willw/IdeaProjects, C:/Users/willw/claude, C:/Users/willw/AppData/Roaming/Claude, C:/Users/willw/claude-sync, C:/Users/willw/.claude, C:/Users/willw/alumniserve, C:/Users/willw/OneDrive',
     '-Dmcp.script.enable-python=true',

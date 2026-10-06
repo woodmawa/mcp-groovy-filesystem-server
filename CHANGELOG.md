@@ -2354,3 +2354,7 @@ reported for a payload remembered as carrying oldText could not be explained. Ph
 echoes the entry's received keys, and adds a 1-based ordinal: `Entry 1 (#2 of 2): missing oldText -- value is
 empty; received keys [oldText, newText]`. The 0-based index stays, so existing assertions hold.
 `MultiReplaceValidatorSpec` MR-ECHO-1..3, red first. Suite 552/0.
+
+## 0.9.70 — the stdio JVM is sized
+
+Memory flags for the FS stdio JVM (2026-10-06, obs 11942). The MCPB manifest args gain `-Xms64m -Xmx1g -XX:G1PeriodicGCInterval=60000 -XX:+ExitOnOutOfMemoryError`. Claude Desktop starts every extension twice, and with no sizing each JVM took this 128 GB host's defaults (2 GB initial, 30 GB max heap) and returned nothing while idle; FS heap in use measured 270-365 MB. The FS companion takes the same flags from `mcp-http-servers.json` (`jvmArgs`, placed before `-jar` since 0.9.31). No production code changed. The census of every CS/AW/FS process is in CS 1.1.53 `claim_status`, not here: CS owns the claims, the telemetry and the process reports it joins.
