@@ -977,35 +977,93 @@ SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS proc
      * Falls back to ProcessHandle enumeration on non-Windows or if netstat unavailable.
      * Returns true if the port is free after the kill attempt.
      */
-    private boolean killByPort(int port) {
-        try {
-            // Windows: netstat -ano | findstr :<port> | extract PID | taskkill
-            String findCmd = "netstat -ano"
-            Process findProc = ["cmd", "/c", findCmd].execute()
-            String netstatOut = findProc.text
-            findProc.waitFor(5, TimeUnit.SECONDS)
+    // Test seams (FS 0.9.71). Defaults are the production behaviour.
+    @groovy.transform.PackageScope
+    Closure<String> netstatRunner = { ->
+        Process findProc = ['cmd', '/c', 'netstat -ano'].execute()
+        String out = findProc.text
+        findProc.waitFor(5, TimeUnit.SECONDS)
+        return out
+    }
 
-            List<Long> pids = []
-            netstatOut.eachLine { String line ->
-                if (line.contains(":${port} ") && (line.contains('LISTENING') || line.contains('ESTABLISHED'))) {
-                    String[] parts = line.trim().split('\\s+')
-                    try { pids << Long.parseLong(parts[-1]) } catch (Exception ignored) {}
-                }
+    /** Full command line of a PID, or '' when it cannot be read. */
+    @groovy.transform.PackageScope
+    Closure<String> commandLineOf = { Long pid ->
+        try {
+            Process p = ['powershell', '-NoProfile', '-Command',
+                         "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine".toString()].execute()
+            String out = p.text
+            p.waitFor(10, TimeUnit.SECONDS)
+            return out?.trim() ?: ''
+        } catch (Exception ignored) {
+            return ''
+        }
+    }
+
+    /** Destroys one PID; true when a live process was told to die. */
+    @groovy.transform.PackageScope
+    Closure<Boolean> pidDestroyer = { Long pid ->
+        Optional<ProcessHandle> ph = ProcessHandle.of(pid)
+        if (ph.isPresent() && ph.get().isAlive()) {
+            ph.get().destroyForcibly()
+            return true
+        }
+        return false
+    }
+
+    @groovy.transform.PackageScope
+    long ownPid = ProcessHandle.current().pid()
+
+    /**
+     * PIDs LISTENING on the port: TCP rows whose LOCAL address (column 2) ends in {@code :<port>}.
+     * FS 0.9.71: never an ESTABLISHED row -- a client of the port, or a server whose FOREIGN address is the
+     * port, is not the server holding it. 2026-10-07 the old substring match killed a CS stdio JVM that was
+     * merely a client of the AW companion.
+     */
+    @groovy.transform.PackageScope
+    static List<Long> listenerPidsForPort(String netstatOut, int port) {
+        List<Long> pids = []
+        String suffix = ':' + port
+        (netstatOut ?: '').eachLine { String line ->
+            String[] parts = line.trim().split('\\s+')
+            if (parts.length < 5) return
+            if (parts[0] != 'TCP' || parts[3] != 'LISTENING' || !parts[1].endsWith(suffix)) return
+            try { pids << Long.parseLong(parts[4]) } catch (Exception ignored) {}
+        }
+        return pids.unique()
+    }
+
+    /** Removes PIDs that must never be killed. */
+    @groovy.transform.PackageScope
+    List<Long> killablePids(List<Long> pids, int port) {
+        return pids.findAll { Long pid ->
+            if (pid == ownPid) {
+                log.error('server_lifecycle: killByPort({}) REFUSING PID {} -- this process', port, pid)
+                return false
             }
-            pids = pids.unique()
+            String cmd = commandLineOf.call(pid) ?: ''
+            if (cmd.contains('-Dspring.profiles.active=stdio')) {
+                log.error('server_lifecycle: killByPort({}) REFUSING PID {} -- a stdio JVM', port, pid)
+                return false
+            }
+            return true
+        }
+    }
+
+    @groovy.transform.PackageScope
+    boolean killByPort(int port) {
+        try {
+            List<Long> pids = killablePids(listenerPidsForPort(netstatRunner.call(), port), port)
 
             if (!pids) {
-                log.warn('server_lifecycle: killByPort({}) — no PIDs found via netstat', port)
+                log.warn('server_lifecycle: killByPort({}) — no killable PIDs found via netstat', port)
                 return false
             }
 
-            pids.each { long pid ->
+            pids.each { Long pid ->
                 try {
-                    Optional<ProcessHandle> ph = ProcessHandle.of(pid)
-                    if (ph.isPresent() && ph.get().isAlive()) {
-                        log.info('server_lifecycle: killByPort({}) — destroying PID {}', port, pid)
-                        ph.get().destroyForcibly()
-                    }
+                    log.info('server_lifecycle: killByPort({}) — destroying PID {}', port, pid)
+                    pidDestroyer.call(pid)
                 } catch (Exception e) {
                     log.warn('server_lifecycle: killByPort({}) PID {} error: {}', port, pid, e.message)
                 }
