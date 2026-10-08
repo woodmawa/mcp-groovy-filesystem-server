@@ -280,12 +280,16 @@ class McpController {
         log.debug('Dispatching tool: {}', toolName)
         McpResponse response = handler.handleToolCall(toolName, arguments, request.id)
 
-        // v0.7.19: telemetry - fire-and-forget, never blocks response
+        // FS 0.9.77: measured for the global cap whether or not telemetry is wired. It was computed only inside the
+        // telemetry branch, so with no telemetry bean (absent whenever -Dmcp.usage.db-path is missing) the cap compared
+        // against 0 and never fired.
         int charCount = 0
+        try { charCount = estimateResponseSize(response) } catch (Exception e) { log.debug('response size estimate failed: {}', e.message) }
+
+        // v0.7.19: telemetry - fire-and-forget, never blocks response
         boolean unbound = false
         try {
             if (telemetryService != null) {
-                charCount = estimateResponseSize(response)
                 String action   = arguments.action as String
                 String rawPath  = arguments.path as String
                 String pathHash = rawPath ? sha256Prefix(rawPath) : null

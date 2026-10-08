@@ -2402,3 +2402,7 @@ Specs red first: `ExecuteServiceWedgeSpec` WEDGE-1 (held pipe: 29.4 s before, un
 - Mutations caught: coercion back in turns EI-1 red; the synthetic id back on parse errors turns EI-3 red.
 
 Also checked from the same grading, NOT changed: `McpController`'s global response cap is computed only inside `if (telemetryService != null)`, so it never fires without telemetry. This is latent, because the live server has telemetry.
+
+## [0.9.77]
+
+**The global response cap applies whether or not telemetry is wired** (Will 2026-10-08 19:32: "fix the known issues"). Found by the C5 review-sample graders, checked against the code. `McpController` computed `charCount` only inside `if (telemetryService != null)`. With no telemetry bean (absent whenever `-Dmcp.usage.db-path` is missing, practice #380), the 64,000-char backstop compared against 0 and never fired. The response is now measured first, independently of telemetry. `ResponseCapWithoutTelemetrySpec`: RC-1 (no telemetry, over the cap, so the backstop error) was red first with the oversize response passed through. RC-2: under the cap passes unchanged. Mutation (measure only with telemetry) turns RC-1 red.
