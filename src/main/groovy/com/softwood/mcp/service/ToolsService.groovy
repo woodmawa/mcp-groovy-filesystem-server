@@ -359,23 +359,22 @@ Developer toolchain. Actions:
                 }
             })
 
-            boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
-            // Join with remaining budget rather than hardcoded 2s to avoid truncating large output
-            long elapsedMs = System.currentTimeMillis() - start
-            long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
-            stdoutThread.join(remainingMs)
-            stderrThread.join(remainingMs)
-
+            // FS 0.9.73 (chain bacfc195): the same single deadline, post-exit drain and tree kill as execute. The
+            // old sequential full-budget joins let a Gradle daemon holding the pipe stretch a 300 s timeout to ~600 s.
+            ProcessWaits.Outcome waited = ProcessWaits.await(process, [stdoutThread, stderrThread] as List<Thread>,
+                    start + timeout * 1000L)
             long durationMs = System.currentTimeMillis() - start
 
-            if (!finished) {
-                process.destroyForcibly()
+            if (!waited.finished) {
                 return [exitCode: -1, stdout: '', stderr: "Timed out after ${timeout}s", durationMs: durationMs] as Map<String, Object>
             }
 
-            return [exitCode: process.exitValue(), stdout: stdout.toString(), stderr: stderr.toString(), durationMs: durationMs] as Map<String, Object>
+            Map<String, Object> out = [exitCode: process.exitValue(), stdout: stdout.toString(), stderr: stderr.toString(),
+                                       durationMs: durationMs] as Map<String, Object>
+            if (waited.heldOpen) { out.streamNote = ProcessWaits.HELD_OPEN_NOTE }
+            return out
         } catch (Exception e) {
-            process?.destroyForcibly()
+            ProcessWaits.killTree(process)
             long durationMs = System.currentTimeMillis() - start
             return [exitCode: -1, stdout: '', stderr: sanitize(e.message), durationMs: durationMs] as Map<String, Object>
         }

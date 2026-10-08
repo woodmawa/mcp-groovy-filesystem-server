@@ -71,6 +71,13 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     @Value('${mcp.script.max-async-execution-time-seconds:1800}')
     int maxAsyncExecutionTimeSeconds
 
+    /**
+     * FS 0.9.73 (chain bacfc195): how long a SYNCHRONOUS execute may hold the stdio main thread before it is
+     * moved to the background and answered with a job id. Below the ~60 s bridge deadline. SKELETON: unused.
+     */
+    @Value('${mcp.script.sync-wait-seconds:45}')
+    int syncWaitSeconds = 45
+
     @Value('${mcp.script.enable-bash:true}')
     boolean enableBash
 
@@ -435,9 +442,46 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             return submitAsyncJob(cmd, workingDir, timeout, action, requestId, envOverrides, options, tempScript)
         }
 
+        boolean handedOff = false
         try {
-            Map<String, Object> cap = runAndCapture(cmd, workingDir, timeout, action, envOverrides,
-                                                    maxStdout, maxStderr, grepPattern, null)
+            Map<String, Object> cap
+            // FS 0.9.73 (chain bacfc195): the stdio server reads requests on the thread that runs this call, so a
+            // synchronous execute that outlives the bridge's ~60 s deadline left every later request unread. It now
+            // runs as a job; if it is not done within syncWaitSeconds the caller gets the job id instead.
+            if (jobRegistry != null && syncWaitSeconds > 0 && timeout > syncWaitSeconds) {
+                String summary = sanitize(cmd.join(' ')).take(200)
+                ExecuteJob job = jobRegistry.submit(action, summary, workingDir, { ExecuteJob j ->
+                    runAndCapture(cmd, workingDir, timeout, action, envOverrides, maxStdout, maxStderr, grepPattern, j)
+                } as Closure<Map<String, Object>>)
+                // The job deletes the script when it finishes; this call deletes it only if it was never handed off.
+                job.tempScript = tempScript
+                long until = System.currentTimeMillis() + syncWaitSeconds * 1000L
+                while (!job.finished && System.currentTimeMillis() < until) { Thread.sleep(50L) }
+                if (!job.finished) {
+                    handedOff = true
+                    log.info('execute {}: still running after {}s -- moved to background job {}', action, syncWaitSeconds, job.jobId)
+                    return textResponse(requestId, [
+                        async              : true,
+                        moved_to_background: true,
+                        jobId              : job.jobId,
+                        status             : job.status,
+                        action             : action,
+                        command            : summary,
+                        workingDir         : workingDir,
+                        timeoutSec         : timeout,
+                        note               : ("still running after ${syncWaitSeconds}s -- moved to the background so this " +
+                                              'server keeps answering (the bridge gives up at about 60 s)') as String,
+                        hint               : 'Poll with action=job_status jobId=<id>; tail with action=job_output ' +
+                                             'jobId=<id> sinceOffset=<n>; stop with action=job_cancel.'
+                    ] as Map<String, Object>)
+                }
+                if (job.result == null) {
+                    throw new IllegalStateException(job.error ?: 'execute job ended without a result')
+                }
+                cap = job.result
+            } else {
+                cap = runAndCapture(cmd, workingDir, timeout, action, envOverrides, maxStdout, maxStderr, grepPattern, null)
+            }
             if (cap.timedOut) {
                 return textResponse(requestId, [
                     success: false,
@@ -459,7 +503,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             boolean stdoutTruncated = stdoutStr.length() > maxStdout
             if (stdoutTruncated) stdoutStr = stdoutStr.take(maxStdout)
             String stderrStr = cap.stderr as String
-            boolean stderrTruncated = capturedErr >= maxStderr
+            boolean stderrTruncated = capturedErr >= maxStderr || stderrStr.length() > maxStderr
+            if (stderrStr.length() > maxStderr) stderrStr = stderrStr.take(maxStderr)
+            String streamNote = cap.streamNote as String
 
             // FS 0.9.16: an unread stream is not an empty one. If a reader died or was abandoned
             // we cannot claim to know what the child printed, so success is withheld and the
@@ -478,6 +524,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 if (stdoutTruncated) cr.stdout_truncated = true
                 if (stderrTruncated) cr.stderr_truncated = true
                 if (streamError) cr.stream_error = streamError
+                if (streamNote) cr.stream_note = streamNote
                 return textResponse(requestId, cr)
             }
             Map<String, Object> er = [action: action, success: exitCode == 0 && streamsOk, exitCode: exitCode,
@@ -485,6 +532,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             if (stdoutTruncated) er.stdout_truncated = true
             if (stderrTruncated) er.stderr_truncated = true
             if (streamError) er.stream_error = streamError
+            if (streamNote) er.stream_note = streamNote
             return textResponse(requestId, er)
         } catch (Exception e) {
             log.error("execute {} failed: {}", action, sanitize(e.message))
@@ -494,7 +542,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 durationMs: 0
             ])
         } finally {
-            tempScript?.delete()
+            if (!handedOff) { tempScript?.delete() }
         }
     }
 
@@ -633,22 +681,22 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 }
             })
 
-            boolean finished = process.waitFor(timeout, TimeUnit.SECONDS)
-            long elapsedMs = System.currentTimeMillis() - start
-            long remainingMs = Math.max(500L, (timeout * 1000L) - elapsedMs)
-            stdoutThread.join(remainingMs)
-            stderrThread.join(remainingMs)
+            // FS 0.9.73 (chain bacfc195): ONE deadline for the child and its readers, a short drain once the child
+            // has exited, and the whole tree killed on timeout. Before this each reader was joined for the full
+            // remaining budget in turn, on the stdio thread: a Gradle daemon holding the pipe made a 300 s timeout
+            // last 494 s and wedged the server.
+            ProcessWaits.Outcome waited = ProcessWaits.await(process, [stdoutThread, stderrThread] as List<Thread>,
+                    start + timeout * 1000L)
+            boolean finished = waited.finished
 
-            // A join that times out leaves the thread alive and the buffer partially drained.
-            // Returning that as if it were the whole output is the second half of the same
-            // defect: we would be reporting a measurement we did not finish taking.
-            if (stdoutThread.isAlive()) outState.error = outState.error ?: 'stdout reader abandoned: join timed out after ' + remainingMs + 'ms'
-            if (stderrThread.isAlive()) errState.error = errState.error ?: 'stderr reader abandoned: join timed out after ' + remainingMs + 'ms'
+            // A reader still alive after the drain is held open by something the command started (the command
+            // itself has exited): stated, not counted as a failed read. A reader that THREW is still an error.
+            String streamNote = waited.heldOpen ? ProcessWaits.HELD_OPEN_NOTE : null
             List<String> streamErrors = [outState.error, errState.error].findAll { it } as List<String>
-            boolean streamsOk = streamErrors.isEmpty() && outState.complete && errState.complete
+            boolean streamsOk = streamErrors.isEmpty() &&
+                    (waited.heldOpen || (outState.complete && errState.complete))
 
             if (!finished) {
-                process.destroyForcibly()
                 return [timedOut: true, durationMs: System.currentTimeMillis() - start,
                         stdout: stdout.toString(), stderr: stderr.toString(),
                         capturedOut: capturedOut, capturedErr: capturedErr] as Map<String, Object>
@@ -661,13 +709,14 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                     success     : process.exitValue() == 0 && streamsOk,
                     streamsOk   : streamsOk,
                     streamError : streamErrors.isEmpty() ? null : streamErrors.join('; '),
+                    streamNote  : streamNote,
                     durationMs  : System.currentTimeMillis() - start,
                     stdout      : stdout.toString(),
                     stderr      : stderr.toString(),
                     capturedOut : capturedOut,
                     capturedErr : capturedErr] as Map<String, Object>
         } catch (Exception e) {
-            process?.destroyForcibly()
+            ProcessWaits.killTree(process)
             throw e
         }
     }

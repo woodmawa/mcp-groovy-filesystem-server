@@ -171,7 +171,15 @@ class StdioMcpServer implements CommandLineRunner {
                 try {
                     publishEvent(Stage.DISPATCHED, requestId, method, toolName, requestCount, startNanos, payloadSize, 0, null, toolArgs)
 
-                    McpResponse response = mcpController.handleRequest(request)
+                    // FS 0.9.73 (d): the heartbeat names what this thread is busy with -- while it is, nothing
+                    // else is read, and "client has sent nothing" was the wrong reading of that silence.
+                    McpHeartbeat.begin("req#${requestCount} ${method}" + (toolName ? "/${toolName}" : '') as String)
+                    McpResponse response
+                    try {
+                        response = mcpController.handleRequest(request)
+                    } finally {
+                        McpHeartbeat.end()
+                    }
 
                     if (response == null) {
                         debugLog("Notification, no response")

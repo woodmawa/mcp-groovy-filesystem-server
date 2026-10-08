@@ -81,6 +81,7 @@ class ExecuteJobRegistry {
         job.promise = getPromiseFactory().executeAsync({ ->
             try {
                 Map<String, Object> result = work.call(job)
+                job.result = result   // FS 0.9.73: set before status, so finished implies the result is there
                 job.exitCode = result?.exitCode as Integer
                 // A timed-out job is not a failed one: the distinction matters to the caller.
                 if (job.status == 'running') {
@@ -119,7 +120,8 @@ class ExecuteJobRegistry {
         ExecuteJob job = jobs.get(jobId)
         if (!job || job.finished) return false
         job.status = 'cancelled'
-        try { job.process?.destroyForcibly() } catch (Exception ignored) { }
+        // FS 0.9.73: the tree, not just the shell -- the shell's children kept running (and kept its pipes open).
+        try { ProcessWaits.killTree(job.process) } catch (Exception ignored) { }
         try { job.promise?.cancel(true) } catch (Exception ignored) { }
         try { job.tempScript?.delete() } catch (Exception ignored) { }
         job.finishedAt = System.currentTimeMillis()
@@ -158,6 +160,8 @@ class ExecuteJob {
     volatile Integer exitCode
     volatile String error
     volatile Process process
+    /** FS 0.9.73: what the work returned -- read by a synchronous call that waited for it. */
+    volatile Map<String, Object> result
 
     /** Temp script backing this job; deleted once the job finishes, not when submit returns. */
     volatile File tempScript

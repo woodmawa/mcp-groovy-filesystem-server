@@ -89,27 +89,47 @@ class McpHeartbeat {
         log.info('HEARTBEAT started server={} v={} pid={} interval={}s', serverName, version, pid, (INTERVAL_MS / 1000L))
     }
 
+    /** FS 0.9.73: what the stdio thread is handling now, and since when (0 = nothing in flight). */
+    private static volatile String inFlight = null
+    private static final AtomicLong IN_FLIGHT_SINCE = new AtomicLong(0L)
+
+    /** FS 0.9.73: a request is being handled. While it is, the stdio thread reads nothing else. */
+    static void begin(String label) {
+        IN_FLIGHT_SINCE.set(System.currentTimeMillis())
+        inFlight = label
+    }
+
+    /** FS 0.9.73: the request in flight has finished. */
+    static void end() {
+        inFlight = null
+        IN_FLIGHT_SINCE.set(0L)
+    }
+
+    /**
+     * FS 0.9.73: the heartbeat line for {@code now}. A request in flight is named -- "client has sent nothing"
+     * was what this said for 494 s on 2026-10-08 while two requests sat unread behind a wedged execute.
+     */
+    static String line(String serverName, String version, long pid, long now) {
+        long uptimeS = (now - STARTED_AT.get()).intdiv(1000L)
+        String busy = inFlight
+        if (busy != null) {
+            long busyS = (now - IN_FLIGHT_SINCE.get()).intdiv(1000L)
+            return ("HEARTBEAT server=${serverName} v=${version} pid=${pid} uptime=${uptimeS}s requests=${REQUESTS.get()} " +
+                    "busy: ${busy} for ${busyS}s -- requests behind it are not read until it returns") as String
+        }
+        long last = LAST_REQUEST_AT.get()
+        if (last == 0L) {
+            return "HEARTBEAT server=${serverName} v=${version} pid=${pid} uptime=${uptimeS}s requests=0 idle=never-any-request" as String
+        }
+        long idleS = (now - last).intdiv(1000L)
+        String base = "HEARTBEAT server=${serverName} v=${version} pid=${pid} uptime=${uptimeS}s requests=${REQUESTS.get()} idle=${idleS}s" as String
+        ((now - last) >= IDLE_WARN_MS) ? base + " -- client has sent nothing for over ${(IDLE_WARN_MS / 1000L)}s" : base
+    }
+
     private static void emit(String serverName, String version, long pid) {
         long now = System.currentTimeMillis()
-        long uptimeS = (now - STARTED_AT.get()).intdiv(1000L)
-        long requests = REQUESTS.get()
-        long last = LAST_REQUEST_AT.get()
-
-        if (last == 0L) {
-            // No request has EVER arrived. Reporting an idle age measured from startup would
-            // suggest a gap that is really just a server nobody has spoken to yet.
-            log.info('HEARTBEAT server={} v={} pid={} uptime={}s requests=0 idle=never-any-request',
-                     serverName, version, pid, uptimeS)
-            return
-        }
-
-        long idleS = (now - last).intdiv(1000L)
-        if ((now - last) >= IDLE_WARN_MS) {
-            log.warn('HEARTBEAT server={} v={} pid={} uptime={}s requests={} idle={}s -- client has sent nothing for over {}s',
-                     serverName, version, pid, uptimeS, requests, idleS, (IDLE_WARN_MS / 1000L))
-        } else {
-            log.info('HEARTBEAT server={} v={} pid={} uptime={}s requests={} idle={}s',
-                     serverName, version, pid, uptimeS, requests, idleS)
-        }
+        String text = line(serverName, version, pid, now)
+        boolean warn = text.contains('busy: ') ? (now - IN_FLIGHT_SINCE.get()) >= IDLE_WARN_MS : text.contains('client has sent nothing')
+        if (warn) { log.warn(text) } else { log.info(text) }
     }
 }
