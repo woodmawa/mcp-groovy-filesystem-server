@@ -412,7 +412,9 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
             case 'patch':
             case 'multi_replace':
                 if (!options.replacements && arguments.replacements instanceof List) {
-                    merged = new HashMap<String, Object>(options)
+                    // FS 0.9.75: seed from merged, as replace does (CT-EH-1) -- seeding from options dropped a
+                    // top-level expectedHash promoted above, so the call was refused 'expectedHash required'.
+                    merged = new HashMap<String, Object>(merged ?: options)
                     merged.replacements = arguments.replacements
                     log.debug('{}: promoted top-level replacements into options', action)
                 }
