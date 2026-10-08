@@ -267,7 +267,7 @@ SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS proc
                                                      'claim_session', 'release_claim', 'claim_status'],
                               description: 'Lifecycle action'],
                     name   : [type: 'string',
-                              description: 'Server name as configured (filesystem|context|orchestrator|agentic-workflow|ms-graph). Required for ensure; for stop, omit to stop all.'],
+                              description: 'Server name as configured (filesystem|context|agentic-workflow|ms-graph). Required for ensure; for stop, omit to stop all.'],
                     force  : [type: 'boolean',
                               description: 'stop only (default false): also stop a server this process did not start -- one it adopted or merely found listening on its port -- by killing whatever holds the port. Without it such a stop is refused with stopped:false and a reason. For a controlled full shutdown; a companion started elsewhere is shared by other chats.'],
                     sessionId: [type: 'string',
@@ -370,7 +370,7 @@ SESSION CLAIM (FS 0.9.17): claim_session (sessionId, groupId) binds THIS FS proc
             // Stop all — force=true means DT is doing a controlled full shutdown
             Map<String, Object> config = loadConfig()
             List<String> allNames = (config.servers as List<Map>)*.name as List<String>
-            // Reverse order: agentic -> orchestrator -> context -> filesystem
+            // Reverse order: agentic -> context -> filesystem
             allNames.reverse().each { String n -> results << stopOneServer(n, force) }
         }
 

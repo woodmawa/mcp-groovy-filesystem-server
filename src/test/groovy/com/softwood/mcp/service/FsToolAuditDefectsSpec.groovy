@@ -95,4 +95,16 @@ class FsToolAuditDefectsSpec extends Specification {
         props.containsKey('force')
         (props.get('force') as Map).get('type') == 'boolean'
     }
+
+    // agent-orchestration WP6 S3 (BUILD BRIEF 8D.5): the llm-orchestrator was retired (decision 310) and its registry
+    // row deleted; the served name text must stop offering it. Absence in RUNTIME output (practice 3256 allows it),
+    // with the positive half asserted too, so deleting the whole line cannot pass.
+    def 'S3: the served server_lifecycle name lists the live servers and not the retired orchestrator'() {
+        when:
+        String nameText = (schemaProps(serverLifecycle.getToolDefinitions(), 'server_lifecycle').get('name') as Map).get('description') as String
+
+        then:
+        nameText.contains('filesystem|context|agentic-workflow|ms-graph')
+        !nameText.contains('orchestrator')
+    }
 }

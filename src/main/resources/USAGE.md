@@ -268,4 +268,4 @@ process from the stdio JVM talking to you — so the claim is issued by the call
 An unclaimed process resolves to **UNBOUND** (null), never to whichever session started most
 recently.
 
-Server names: `filesystem` | `context` | `orchestrator` | `agentic-workflow`
+Server names: `filesystem` | `context` | `agentic-workflow` | `ms-graph`
