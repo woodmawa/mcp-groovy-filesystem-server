@@ -152,14 +152,17 @@ class StdioMcpServer implements CommandLineRunner {
 
                 try {
                     request = objectMapper.readValue(line, McpRequest.class)
-                    requestId = request.id ?: requestId
+                    // FS 0.9.76: != null, not Groovy truth -- id 0 is a valid JSON-RPC id.
+                    requestId = request.id != null ? request.id : requestId
                     method = request.method
                     toolName = request.params?.name as String
                     publishEvent(Stage.PARSED, requestId, method, toolName, requestCount, startNanos, payloadSize)
                 } catch (Exception e) {
                     debugLog("Parse error: ${Sanitizer.sanitize(e.message)}")
                     publishEvent(Stage.ERROR, requestId, null, null, requestCount, startNanos, payloadSize, 0, Sanitizer.sanitize(e.message))
-                    writer.sendError(requestId as String, -32700, "Parse error: ${Sanitizer.sanitize(e.message)}")
+                    // FS 0.9.76: JSON-RPC answers a request it could not parse with id null; requestId here is only
+                    // the synthetic telemetry label "unknown-<n>", which no client sent.
+                    writer.sendError(null, -32700, "Parse error: ${Sanitizer.sanitize(e.message)}")
                     continue
                 }
 
@@ -199,13 +202,13 @@ class StdioMcpServer implements CommandLineRunner {
                     debugLog("Request ${requestCount} done in ${elapsedMs}ms (in=${payloadSize}B out=${responseSize}B)")
 
                 } catch (SecurityException e) {
-                    handleError(e, requestId, method, toolName, requestCount, startNanos, payloadSize, -32001, "Security error")
+                    handleError(e, requestId, request?.id, method, toolName, requestCount, startNanos, payloadSize, -32001, "Security error")
                 } catch (FileNotFoundException e) {
-                    handleError(e, requestId, method, toolName, requestCount, startNanos, payloadSize, -32002, "File not found")
+                    handleError(e, requestId, request?.id, method, toolName, requestCount, startNanos, payloadSize, -32002, "File not found")
                 } catch (IllegalArgumentException e) {
-                    handleError(e, requestId, method, toolName, requestCount, startNanos, payloadSize, -32602, "Invalid params")
+                    handleError(e, requestId, request?.id, method, toolName, requestCount, startNanos, payloadSize, -32602, "Invalid params")
                 } catch (Throwable t) {
-                    handleError(t, requestId, method, toolName, requestCount, startNanos, payloadSize, -32603, t.class.simpleName)
+                    handleError(t, requestId, request?.id, method, toolName, requestCount, startNanos, payloadSize, -32603, t.class.simpleName)
                 }
             }
         } catch (Throwable t) {
@@ -242,12 +245,18 @@ class StdioMcpServer implements CommandLineRunner {
         }
     }
 
-    private void handleError(Throwable error, Object requestId, String method, String toolName,
+    /**
+     * @param requestId the telemetry label (the request id, or "unknown-<n>")
+     * @param wireId    the id exactly as the client sent it -- what the response must echo (FS 0.9.76: it was the
+     *                  label cast to String, so a numeric id survived only through JsonRpcWriter's digit coercion and a
+     *                  string id that looked numeric came back as a number)
+     */
+    private void handleError(Throwable error, Object requestId, Object wireId, String method, String toolName,
                              int requestNumber, long startNanos, int payloadSize, int code, String prefix) {
         String msg = Sanitizer.sanitize(error.message ?: 'Unknown error')
         debugLog("${prefix}: ${msg}")
         publishEvent(Stage.ERROR, requestId, method, toolName, requestNumber, startNanos, payloadSize, 0, msg)
-        writer.sendError(requestId as String, code, "${prefix}: ${msg}")
+        writer.sendError(wireId, code, "${prefix}: ${msg}")
     }
 
     private void publishEvent(Stage stage, Object requestId, String method, String toolName,

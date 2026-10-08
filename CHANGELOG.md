@@ -2384,3 +2384,21 @@ Specs red first: `ExecuteServiceWedgeSpec` WEDGE-1 (held pipe: 29.4 s before, un
 ## [0.9.75]
 
 **`patch` and `multi_replace` keep a top-level `expectedHash` when `replacements` is also at top level.** Found by the C5 review-sample blind graders (local-model-reliability arc, 2026-10-08) in a file a local reviewer had passed; checked against the file. `promoteTopLevelParams` promoted a top-level `expectedHash` into `merged`, then the patch/multi_replace branch re-seeded `merged` from `options` to promote top-level `replacements`, dropping the hash -- the call was refused "options.expectedHash required" although the caller had sent one. `replace` got exactly this fix as CT-EH-1 (seed from `merged ?: options`); the other two never did. `TopLevelReplacementsHashSpec` TLH-1 (multi_replace) and TLH-2 (patch) red first on 0.9.74 with that refusal; TLH-3 confirms the promoted hash is still enforced (a stale one is refused, file unchanged). Mutation (seed from `options` again) turns TLH-1/2 red. Suite 566/0.
+
+## [0.9.76]
+
+**stdio error responses echo the request id as the client sent it** (local-model-reliability C5, decision 328 item 3). Found by the C5 review-holdout blind graders in `JsonRpcWriter`, which two local reviewers had passed; checked against the code.
+
+`StdioMcpServer` passed `requestId as String` to `JsonRpcWriter.sendError`, and the writer turned any all-digit string back into a number. That compensated for numeric ids, but it also meant a client's STRING id `"123"` came back as the NUMBER 123, which a client keyed on `"123"` never matches. Now:
+- `handleError` takes the id exactly as sent (`request?.id`) and the writer no longer coerces;
+- a request that cannot be parsed is answered with `"id": null` (it was the synthetic telemetry label `unknown-<n>`). The error writer keeps null members (`errorMapper`), because JSON-RPC requires the id member and `NON_NULL` dropped it;
+- the serialization fallback quotes a string id, where unquoted it was invalid JSON;
+- the telemetry label uses `!= null`, so id 0 is not "unknown".
+
+`StdioErrorIdSpec` drives the real `run()` loop:
+- EI-1 (string "123" stays a string) and EI-3 (parse error answers null) were red first on 0.9.75.
+- EI-2: number and non-numeric string ids.
+- EI-4: id 0. It was added with the fix, so it is guarded by the `wireId` change, not shown red. A mutation of the `?:` line survives, because that line now only labels telemetry.
+- Mutations caught: coercion back in turns EI-1 red; the synthetic id back on parse errors turns EI-3 red.
+
+Also checked from the same grading, NOT changed: `McpController`'s global response cap is computed only inside `if (telemetryService != null)`, so it never fires without telemetry. This is latent, because the live server has telemetry.

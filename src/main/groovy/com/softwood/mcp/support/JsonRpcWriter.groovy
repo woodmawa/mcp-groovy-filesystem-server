@@ -22,6 +22,12 @@ class JsonRpcWriter {
         .setSerializationInclusion(JsonInclude.Include.NON_NULL)
 
     /**
+     * FS 0.9.76: error responses keep nulls. JSON-RPC 2.0 requires the id member on every response, null when the
+     * request id could not be read; NON_NULL dropped it. The error map holds no other null.
+     */
+    private final ObjectMapper errorMapper = new ObjectMapper()
+
+    /**
      * Send a successful response. Returns response size in bytes.
      */
     int sendResponse(Object response) {
@@ -71,13 +77,9 @@ class JsonRpcWriter {
             } else if (requestId instanceof Number) {
                 idValue = requestId
             } else {
-                String sid = requestId.toString()
-                // If it looks like an integer, coerce so the JSON encodes as number
-                if (sid.matches(/\d+/)) {
-                    idValue = sid.toLong()
-                } else {
-                    idValue = Sanitizer.sanitize(sid)
-                }
+                // FS 0.9.76: a string id stays a string. The digit coercion that was here compensated for callers
+                // passing `requestId as String`; they now pass the id as sent, so "123" no longer comes back as 123.
+                idValue = Sanitizer.sanitize(requestId.toString())
             }
 
             def errorResponse = [
@@ -91,10 +93,13 @@ class JsonRpcWriter {
 
             String json
             try {
-                json = objectMapper.writeValueAsString(errorResponse)
+                json = errorMapper.writeValueAsString(errorResponse)
             } catch (Exception jsonError) {
                 log.debug("Error response serialization failed")
-                String fallbackId = idValue != null ? idValue.toString().replaceAll('"', '\\\\"') : "null"
+                // FS 0.9.76: a string id is quoted -- unquoted it made the fallback itself invalid JSON.
+                String fallbackId = idValue == null ? 'null'
+                        : (idValue instanceof Number ? idValue.toString()
+                           : '"' + idValue.toString().replace('\\', '\\\\').replace('"', '\\"') + '"')
                 json = """{"jsonrpc":"2.0","id":${fallbackId},"error":{"code":${code},"message":"Error serialization failed"}}"""
             }
 
