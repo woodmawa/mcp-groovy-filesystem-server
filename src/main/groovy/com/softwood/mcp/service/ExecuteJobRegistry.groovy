@@ -90,7 +90,8 @@ class ExecuteJobRegistry {
                 }
                 return result
             } catch (Throwable t) {
-                job.status = 'failed'
+                // FS 0.9.74: cancel() kills the tree, which usually makes the work throw -- a cancelled job stays cancelled.
+                if (job.status == 'running') job.status = 'failed'
                 job.error = t.message ?: t.class.simpleName
                 log.warn('ExecuteJobRegistry: job {} failed - {}', job.jobId, job.error)
                 throw t
