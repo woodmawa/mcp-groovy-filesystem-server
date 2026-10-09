@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.77'
+version = '0.9.78'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -199,7 +199,8 @@ tasks.register('generateMcpbManifest') {
                 [name: 'file_lifecycle',   description: 'File and directory operations — create, delete, copy, move, rename, touch'],
                 [name: 'execute',          description: 'Execute scripts and shell commands — bash, powershell, cmd, groovy, python, with background jobs'],
                 [name: 'server_lifecycle', description: 'Manage HTTP MCP server processes — start, stop, status, ensure, reload'],
-                [name: 'tools',            description: 'Project tooling entry point — gradle and related build actions']
+                [name: 'tools',            description: 'Project tooling entry point — gradle and related build actions'],
+                [name: 'worktree',         description: 'A private git worktree for an agent code harness — create, read, edit, diff, hashes, apply, remove']
             ]
         ]
 

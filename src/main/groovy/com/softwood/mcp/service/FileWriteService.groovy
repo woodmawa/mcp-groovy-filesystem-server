@@ -46,6 +46,7 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
     @Autowired StructureCache     structureCache
     @Autowired(required = false) ContextServerClient contextServerClient
     @Autowired(required = false) PlanGateGuard planGateGuard
+    @Autowired(required = false) WorktreeRoots worktreeRoots
     @Autowired com.softwood.mcp.service.office.OfficeDocumentHandler officeHandler
 
     private static final Set<String> MUTATING_ACTIONS =
@@ -327,21 +328,8 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
             // even for error paths. Check result.isError to prevent spurious cache/registry updates.
             boolean isToolError = (response.result as Map)?.get('isError') == true
             if (path && MUTATING_ACTIONS.contains(action) && response.error == null && !isToolError) {
-                try { structureCache.invalidate(pathService.normalizePath(path)) } catch (Exception ignored) {}
-                // Fire-and-forget registry upsert so context server tracks the new hash
                 try {
-                    String hash = extractFileHash(response)
-                    if (hash && contextServerClient != null) {
-                        String np = pathService.normalizePath(path)
-                        contextServerClient.upsertFileRegistryAsync(np, hash, 0, new File(np).lastModified())
-                        // Re-index ontology for source files so symbols stay current after writes
-                        if (np.endsWith('.groovy') || np.endsWith('.java')) {
-                            contextServerClient.reindexFileAsync(np)
-                            // Fix F (v0.8.54): queue pending_reindex so stale_warning fires
-                            // during the brief window before async reindex completes
-                            contextServerClient.invalidateFileAsync(np)
-                        }
-                    }
+                    afterWrite(pathService.normalizePath(path), extractFileHash(response))
                 } catch (Exception ignored) {}
             }
             return response
@@ -359,6 +347,32 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
             String safeMsg = sanitize(e.message ?: e.class.simpleName)
             return McpResponse.toolError(requestId,
                 new groovy.json.JsonBuilder([success: false, error: safeMsg, action: (arguments?.action ?: 'unknown') as String]).toString())
+        }
+    }
+
+    /**
+     * What follows every successful write to a file: the structure cache forgets it, the CS file registry learns
+     * the new hash, and a source file is re-indexed in the ontology so its symbols stay current.
+     *
+     * <p>FS 0.9.78: extracted from the dispatcher so {@code worktree apply} -- the other way a file in a real
+     * repository changes -- runs the same step. And a file INSIDE an agent worktree gets the cache step only: it is
+     * a private copy carrying the same class names as the real sources, and indexing it would give every class it
+     * touches a second node ({@link WorktreeRoots}).</p>
+     */
+    void afterWrite(String normalizedPath, String hash) {
+        if (!normalizedPath) return
+        try { structureCache?.invalidate(normalizedPath) } catch (Exception ignored) {}
+        if (worktreeRoots?.contains(normalizedPath)) return
+        // Fire-and-forget registry upsert so context server tracks the new hash
+        if (hash && contextServerClient != null) {
+            contextServerClient.upsertFileRegistryAsync(normalizedPath, hash, 0, new File(normalizedPath).lastModified())
+            // Re-index ontology for source files so symbols stay current after writes
+            if (normalizedPath.endsWith('.groovy') || normalizedPath.endsWith('.java')) {
+                contextServerClient.reindexFileAsync(normalizedPath)
+                // Fix F (v0.8.54): queue pending_reindex so stale_warning fires
+                // during the brief window before async reindex completes
+                contextServerClient.invalidateFileAsync(normalizedPath)
+            }
         }
     }
 

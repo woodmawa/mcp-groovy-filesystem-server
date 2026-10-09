@@ -23,12 +23,12 @@ class McpControllerSmokeSpec extends Specification {
     @Autowired McpController controller
     @Autowired List<ToolHandler> toolHandlers
 
-    def "All 8 ToolHandlers are registered"() {
-        expect: "exactly 8 handlers injected"
-        toolHandlers.size() == 8
+    def "All 9 ToolHandlers are registered"() {
+        expect: "exactly 9 handlers injected (WorktreeService joined in FS 0.9.78)"
+        toolHandlers.size() == 9
     }
 
-    def "Controller registers exactly 8 tools"() {
+    def "Controller registers exactly 9 tools"() {
         when:
         McpRequest req = new McpRequest(id: 'list-1', method: 'tools/list', params: [:])
         McpResponse response = controller.handleRequest(req)
@@ -37,12 +37,12 @@ class McpControllerSmokeSpec extends Specification {
         response.result != null
         response.error == null
         List tools = response.result.tools as List
-        tools.size() == 8
+        tools.size() == 9
 
-        and: "all 8 expected tool names are present"
+        and: "all 9 expected tool names are present (worktree joined in FS 0.9.78)"
         def names = tools.collect { (it as Map).name } as Set
         names == ['file_lifecycle', 'file_list', 'file_search', 'file_read',
-                  'file_write', 'execute', 'tools', 'server_lifecycle'] as Set
+                  'file_write', 'execute', 'tools', 'server_lifecycle', 'worktree'] as Set
     }
 
     def "initialize handshake returns correct protocol version and server info"() {

@@ -2406,3 +2406,25 @@ Also checked from the same grading, NOT changed: `McpController`'s global respon
 ## [0.9.77]
 
 **The global response cap applies whether or not telemetry is wired** (Will 2026-10-08 19:32: "fix the known issues"). Found by the C5 review-sample graders, checked against the code. `McpController` computed `charCount` only inside `if (telemetryService != null)`. With no telemetry bean (absent whenever `-Dmcp.usage.db-path` is missing, practice #380), the 64,000-char backstop compared against 0 and never fired. The response is now measured first, independently of telemetry. `ResponseCapWithoutTelemetrySpec`: RC-1 (no telemetry, over the cap, so the backstop error) was red first with the oversize response passed through. RC-2: under the cap passes unchanged. Mutation (measure only with telemetry) turns RC-1 red.
+
+
+## [0.9.78]
+
+**A ninth tool, `worktree`: a private copy of a repository for a local coding agent** (agents-working-together WP3; Will 2026-10-09 12:52: have FS do the file work rather than AW writing in a worktree itself). AW 1.30.73's code harness is the caller.
+
+- `WorktreeService`, actions `create | read | edit | diff | hashes | apply | remove`. A worktree is `git worktree add --detach` under one root outside the repositories (`WorktreeRoots`, `mcp.filesystem.worktree-root`). `create` copies the named spec files in from the main working tree and returns their hashes, so the caller can prove later that the spec it was judged by is the one it was given.
+- `edit` is FS's own replace (`FileReplaceService.doReplace`): one match exactly, hash check, structural guard, line-ending policy. The expected hash is computed here from the bytes about to be replaced; the caller is a model and holds none. Refusals are returned as data (`WORKTREE_FIND_NOT_FOUND`, `FIND_AMBIGUOUS`, `FIND_REQUIRED`, `EDIT_REFUSED`); a path that leaves the worktree is a tool error.
+- `apply` is the only action that writes to a real repository. It is a guarded copy, not a patch: a file is copied only if the main tree's copy is still what the worktree started from, every file is checked before any is written (`WORKTREE_APPLY_CONFLICT`), and each written file gets the after-write step. It does not commit.
+- `FileWriteService.afterWrite` is that step, extracted (structure cache, registry upsert, ontology re-index) so `apply` runs the same one a write does.
+- Three mechanisms stand down for paths under the worktree root, and only there: the ontology re-index (a copy would become a second node for the same class), ONTOLOGY-GATE (it decides on the file stem, so a read of the copy would be refused for want of a locate on the original) and PLAN-GATE (a worktree has a `.git`, so every file in it reads as a planned artefact).
+
+`WorktreeServiceSpec` WT-1..11 runs against a real temporary git repository. WT-9, WT-10 and WT-11 each carry a control outside the root. The specs were written with the code, not before it; the mutation checks below are the evidence that they bite. Tool surface: manifest list, `ToolSurfaceContractSpec`, `McpControllerSmokeSpec` (nine tools).
+
+Mutation checks (`mutation-check` flow, each restored), all caught:
+- the re-index exemption in `afterWrite` removed: WT-9 red;
+- the PLAN-GATE exemption removed in `checkWrite`, and separately in `checkExecute`: WT-10 red both times;
+- the ONTOLOGY-GATE exemption removed: WT-11 red;
+- `inside()` returning the path whether or not it is in the worktree: WT-2 and WT-4 red;
+- the main-tree hash comparison in `apply` removed: WT-7b red.
+
+Suite 587: 586 green in the release run. `ExecuteServiceAsyncSpec` FS-EXEC-2c (job_cancel kills the process) failed in two of three full runs (the last with the AW suite running beside it) and passed in the third and alone (5/5): a process-kill timing check, not touched by this release. It is intermittent under load and is not fixed here.

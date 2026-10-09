@@ -58,6 +58,7 @@ class ToolSurfaceContractSpec extends Specification {
         execute         : 9,
         tools           : 6,
         server_lifecycle: 8,
+        worktree        : 7,   // FS 0.9.78
     ]
 
     private static String payloadOf(McpResponse r) {
@@ -127,7 +128,7 @@ class ToolSurfaceContractSpec extends Specification {
     }
 
     def 'FS-SURF-0: Spring discovered the whole tool surface'() {
-        expect: 'eight handlers, eight tools -- practice #368 still says five'
+        expect: 'nine handlers, nine tools (worktree joined in FS 0.9.78) -- practice #368 still says five'
         handlers.collectMany { it.toolDefinitions*.name }.toSet() == MIN_ACTIONS.keySet()
     }
 

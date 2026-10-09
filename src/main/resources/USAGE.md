@@ -234,6 +234,30 @@ Do NOT use `execute action=cmd script='gradlew.bat ...'` — that is the depreca
 
 ---
 
+## worktree (FS 0.9.78)
+
+A private copy of a repository for a local coding agent: a git worktree under one root outside the repositories
+(`mcp.filesystem.worktree-root`, default `C:/Users/willw/claude-sync/aw-worktrees`). AW's code harness is the caller;
+Claude does not normally call this tool. Every path is relative to the worktree and a path that leaves it is a tool error.
+
+### Actions
+- `create` repoDir, name, [baseRef=HEAD], [specFiles] -- `git worktree add --detach <root>/<repo>-<name>`; each spec
+  file is copied in from the main working tree (uncommitted work arrives this way). Returns `worktree`, `specHashes`.
+- `read` worktree, file, [startLine, endLine] -- at most 200 lines.
+- `edit` worktree, file, find, replace -- FS's own replace: `find` must match exactly once; an empty `find` creates the
+  file. Hash check, structural guard and the line-ending policy apply as for `file_write replace`. Refusals are data,
+  not errors: `WORKTREE_FIND_NOT_FOUND | FIND_AMBIGUOUS | FIND_REQUIRED | EDIT_REFUSED`.
+- `diff` worktree, [files] -- `git diff` of the worktree against its base, new files included.
+- `hashes` worktree, files -- content hash per file (`new` for a file the base does not have).
+- `apply` worktree, repoDir, edited {file: original hash | `new`} -- copies each changed file onto the main working tree, only if the main tree's copy is
+  still what the worktree started from; all files are checked before any is written (`WORKTREE_APPLY_CONFLICT`
+  names the ones that moved). Each written file gets the normal after-write step. Never commits.
+- `remove` worktree, repoDir -- `git worktree remove --force`, then prune.
+
+### What is different inside a worktree
+The ontology re-index after a write, ONTOLOGY-GATE on reads and PLAN-GATE on writes and executes stand down for
+paths under the worktree root (`WorktreeRoots`). Allowed directories, hashes, the structural guard and telemetry do not.
+
 ## server_lifecycle
 
 **v0.8.29 fix:** The filesystem stdio process no longer self-spawns as an HTTP companion.

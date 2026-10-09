@@ -66,6 +66,8 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     // FIX-KH-RANGE-AUTO (FS 0.8.81): in-memory cache of current file hashes.
     // required=false so unit/integration tests without a live StructureCache bean can run.
     @Autowired(required = false) StructureCache structureCache
+    /** FS 0.9.78: a worktree copy shares its stem with the indexed source; the gate is about the source. */
+    @Autowired(required = false) WorktreeRoots worktreeRoots
 
     /** Setter for test injection without ReflectionTestUtils (field is @CompileStatic). */
     void setContextServerClient(ContextServerClient c) { this.contextServerClient = c }
@@ -352,7 +354,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
             // through the same ReadResponseHelper decision this guard calls. They are named here
             // because dispatch has no single `path` to ask about, which is a different thing from
             // being exempt; until 0.9.30 multi_grep really was exempt, and that was the last hole.
-            if (responseHelper != null && path &&
+            if (responseHelper != null && path && !(worktreeRoots?.contains(path)) &&
                 // FS 0.9.43 N11: 'grep' joins the exempt set. It is the navigation primitive the
                 // gate should be sending people TO -- it returns matching lines with their numbers,
                 // which is what locate returns -- and gating it made the cheapest way to find a

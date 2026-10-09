@@ -41,6 +41,8 @@ class PlanGateGuard {
 
     @Autowired(required = false) ContextServerClient contextServerClient
     @Autowired(required = false) FilesystemTelemetryService telemetryService
+    /** FS 0.9.78: an agent's worktree is a private copy under a test harness, not a plan of Claude's. */
+    @Autowired(required = false) WorktreeRoots worktreeRoots
 
     @Value('${mcp.filesystem.plan-gate.enforced:true}')
     boolean enforced = true
@@ -89,6 +91,7 @@ class PlanGateGuard {
         // wrong half was almost entirely files that are not part of any codebase. A plan lives in
         // a repository; a note, a probe file or a brief does not.
         if (!isPlannedArtefact(path)) return null
+        if (worktreeRoots?.contains(path)) return null
         Map<String, Object> args = [tool: 'file_write', path: path] as Map<String, Object>
         // FS 0.9.44 WP-2a: the judgement DT gives at the retry, passed straight through to CS.
         if (planAck) args.put('planAck', planAck)
@@ -145,6 +148,7 @@ class PlanGateGuard {
         Set<String> seen = new LinkedHashSet<String>()
         List<String> refusals = []
         for (GatedCommand g : found) {
+            if (worktreeRoots?.contains(g.dir)) continue   // FS 0.9.78: the judge's test run in a worktree
             if (!seen.add(g.kind + '|' + g.dir)) continue
             Map<String, Object> args = [tool: 'execute', workingDir: g.dir, kind: g.kind, command: g.command,
                                         script: script.take(200)] as Map<String, Object>
