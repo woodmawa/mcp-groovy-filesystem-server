@@ -305,6 +305,48 @@ class WorktreeServiceSpec extends Specification {
         afterWrites.isEmpty()
     }
 
+    /** The main tree's copy with its line endings the other way round -- what git autocrlf does between two checkouts. */
+    private void flipLineEndings(String file) {
+        String t = new String(repo.resolve(file).bytes, 'ISO-8859-1')
+        repo.resolve(file).bytes = (t.contains('\r\n') ? t.replace('\r\n', '\n') : t.replace('\n', '\r\n')).getBytes('ISO-8859-1')
+    }
+
+    def 'WT-7c: a main-tree file that differs from the worktree start only in its line endings is not a conflict'() {
+        given: 'live, 2026-10-09: core.autocrlf=true checked the worktree out CRLF; the main tree, written by FS, held LF'
+        String wt = create()
+        Map e1 = call(action: 'edit', worktree: wt, file: FOO, find: 'return x + x', replace: 'return x + x + 1')
+        String before = repo.resolve(FOO).text
+        flipLineEndings(FOO)
+
+        expect: 'the bytes really differ now'
+        repo.resolve(FOO).text != before
+
+        when:
+        Map r = call(action: 'apply', worktree: wt, repoDir: repo.toString(), edited: [(FOO): e1.originalSha])
+
+        then:
+        r.success == true
+        r.applied == [FOO]
+        repo.resolve(FOO).text.contains('return x + x + 1')
+    }
+
+    def 'WT-7d: different line endings do not hide a change in the text -- still a conflict, nothing applied'() {
+        given:
+        String wt = create()
+        Map e1 = call(action: 'edit', worktree: wt, file: FOO, find: 'return x + x', replace: 'return x + x + 1')
+        repo.resolve(FOO).text = repo.resolve(FOO).text.replace('class Foo', 'class Foo /* touched */')
+        flipLineEndings(FOO)
+        byte[] mainNow = repo.resolve(FOO).bytes
+
+        when:
+        Map r = call(action: 'apply', worktree: wt, repoDir: repo.toString(), edited: [(FOO): e1.originalSha])
+
+        then:
+        r.refused == WorktreeService.APPLY_CONFLICT
+        repo.resolve(FOO).bytes == mainNow
+        afterWrites.isEmpty()
+    }
+
     // ---------------------------------------------------------------- remove
 
     def 'WT-8: remove deletes the worktree and git forgets it; only a worktree under the root can be named'() {

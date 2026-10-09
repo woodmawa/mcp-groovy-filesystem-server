@@ -2428,3 +2428,12 @@ Mutation checks (`mutation-check` flow, each restored), all caught:
 - the main-tree hash comparison in `apply` removed: WT-7b red.
 
 Suite 587: 586 green in the release run. `ExecuteServiceAsyncSpec` FS-EXEC-2c (job_cancel kills the process) failed in two of three full runs (the last with the AW suite running beside it) and passed in the third and alone (5/5): a process-kill timing check, not touched by this release. It is intermittent under load and is not fixed here.
+
+
+## [0.9.79]
+
+**`worktree apply` forgives a difference in line endings, and only that.** Found on the first change a local model got past the judge (AW task 5d3f1edc, qwen3.8:27b, `WorktreeRoots.nameOf`, 2026-10-09): `apply` refused it `WORKTREE_APPLY_CONFLICT` although nobody had touched the file. `core.autocrlf=true` on this machine, so git checked the worktree out CRLF, while the main tree's copy -- written by FS, whose policy for source files is LF -- held LF. `apply` compared the hash of the worktree's starting bytes with the main tree's bytes: same text, different bytes, a conflict for every source file FS had ever written. The 0.9.78 brief said line endings never come into the comparison; they did. `sameText` now accepts the main tree's copy if its bytes, or its bytes with the line endings the other way, hash to what the worktree started from. A change in the text is a conflict as before.
+
+`WorktreeServiceSpec` WT-7c (only the line endings differ: applied) and WT-7d (line endings differ and the text changed: conflict, nothing written). WT-7 passed on 0.9.78 because the test's temporary repository has no autocrlf. Not red first -- the live refusal was the red; the mutation (the byte comparison back) turns WT-7c red.
+
+Not in this release: `WorktreeRoots.nameOf(path)` itself. The passed change waits in its worktree until 0.9.79 is installed and `apply` can take it; it and `WorktreeRootsNameSpec` (written by Claude, the judge) are committed then, and ship with the next FS build. Until that commit the FS suite is red on that spec's 14 cases, on purpose.

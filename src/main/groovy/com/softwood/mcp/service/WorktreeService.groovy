@@ -299,7 +299,7 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
                 if (Files.exists(dst)) { conflicts << (rel + ': the main tree now has a file of that name') }
             } else if (!Files.isRegularFile(dst)) {
                 conflicts << (rel + ': gone from the main tree')
-            } else if (sha(dst) != (original as String)) {
+            } else if (!sameText(Files.readAllBytes(dst), original as String)) {
                 conflicts << (rel + ': differs in the main tree from what the worktree started with (changed since, or uncommitted work)')
             }
         }
@@ -423,6 +423,23 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
     }
 
     static String sha(Path p) { shaOf(Files.readAllBytes(p)) }
+
+    /**
+     * FS 0.9.79: is this the text whose hash is {@code original}, whatever its line endings? {@code original} is the
+     * hash of a worktree file as git checked it out, and with core.autocrlf=true git checks out CRLF where the main
+     * tree, written by FS, holds LF -- the same text, different bytes. 0.9.78 compared bytes, so on this machine the
+     * first passed change could not be applied: every source file was a conflict. A change in the text is still a
+     * conflict; only the line ending is forgiven, in either direction.
+     */
+    static boolean sameText(byte[] now, String original) {
+        if (original == null) { return false }
+        if (shaOf(now) == original) { return true }
+        String text = new String(now, java.nio.charset.StandardCharsets.ISO_8859_1)   // byte-preserving
+        String lf = text.replace('\r\n', '\n')
+        String crlf = lf.replace('\n', '\r\n')
+        shaOf(lf.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)) == original ||
+                shaOf(crlf.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)) == original
+    }
 
     static String shaOf(byte[] bytes) {
         MessageDigest.getInstance('SHA-256').digest(bytes).encodeHex().toString()
