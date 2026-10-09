@@ -2437,3 +2437,8 @@ Suite 587: 586 green in the release run. `ExecuteServiceAsyncSpec` FS-EXEC-2c (j
 `WorktreeServiceSpec` WT-7c (only the line endings differ: applied) and WT-7d (line endings differ and the text changed: conflict, nothing written). WT-7 passed on 0.9.78 because the test's temporary repository has no autocrlf. Not red first -- the live refusal was the red; the mutation (the byte comparison back) turns WT-7c red.
 
 Not in this release: `WorktreeRoots.nameOf(path)` itself. The passed change waits in its worktree until 0.9.79 is installed and `apply` can take it; it and `WorktreeRootsNameSpec` (written by Claude, the judge) are committed then, and ship with the next FS build. Until that commit the FS suite is red on that spec's 14 cases, on purpose.
+
+
+## [unreleased, after 0.9.79]
+
+**`WorktreeRoots.nameOf(path)`** -- which worktree a path belongs to (the directory name directly under the worktree root, in the caller's case), or null. Not yet called by anything; it is for tagging telemetry rows by worktree. `WorktreeRootsNameSpec` (14 cases) was written by Claude as the judge. The method was written by qwen3.8:27b in AW's code harness (task 5d3f1edc, 2026-10-09): four edits, each judged, 14/14 on the last; read by Claude; applied with `worktree apply` on 0.9.79. It is the first change to reach a repository that way. Ships with the next FS build.

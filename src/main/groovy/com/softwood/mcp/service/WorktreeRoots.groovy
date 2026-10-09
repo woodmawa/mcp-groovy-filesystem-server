@@ -45,5 +45,28 @@ class WorktreeRoots {
         }
     }
 
+    /**
+     * The name of the worktree a path belongs to: the single directory name directly under the worktree root,
+     * in the case the caller wrote it. Null when the path is blank, is the root itself, is outside the root, or
+     * cannot be parsed. Never throws.
+     */
+    String nameOf(String path) {
+        if (!path?.trim() || !root?.trim()) { return null }
+        try {
+            String p = norm(Paths.get(path.trim().replace('\\', '/')).toAbsolutePath().normalize().toString())
+            String r = norm(rootPath().toString())
+            if (p == r) { return null }
+            if (!p.startsWith(r + '/')) { return null }
+            String rest = Paths.get(path.trim().replace('\\', '/')).toAbsolutePath().normalize().toString().replace('\\', '/')
+            String rRaw = rootPath().toString().replace('\\', '/')
+            if (rest.length() <= rRaw.length() + 1) { return null }
+            String name = rest.substring(rRaw.length() + 1)
+            int slash = name.indexOf('/')
+            return slash == -1 ? name : name.substring(0, slash)
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
     private static String norm(String s) { s.replace('\\', '/').toLowerCase() }
 }
