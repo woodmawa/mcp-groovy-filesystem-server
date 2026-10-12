@@ -45,6 +45,37 @@ class McpController {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     FilesystemTelemetryService telemetryService
 
+    /** FS 0.9.80 SB-1: asked once, while unbound, whom this restarted process replaced. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    com.softwood.mcp.service.ContextServerClient contextServerClient
+
+    /** FS 0.9.80 SB-1: CS's answer, kept once it has one -- an unreachable CS is asked again next time. */
+    private final java.util.concurrent.atomic.AtomicReference<Map<String, Object>> predecessorRef =
+        new java.util.concurrent.atomic.AtomicReference<Map<String, Object>>()
+
+    /** FS 0.9.80 SB-1: only a chat's own stdio process is anybody's successor; the shared companion never is. */
+    static boolean isStdioProcess() {
+        return (System.getProperty('spring.profiles.active') ?: '').split(',')*.trim().contains('stdio')
+    }
+
+    /**
+     * FS 0.9.80 SB-1 (chain d45c51cf) -- the restart notice for this process, or null. Asked of CS on the first
+     * unbound call; the answer (even "no predecessor") is kept, a failed ask is not. Never adopts anything (D1).
+     */
+    String restartNotice() {
+        if (!isStdioProcess() || contextServerClient == null) return null
+        Map<String, Object> known = predecessorRef.get()
+        if (known == null) {
+            Map<String, Object> asked = contextServerClient.claimPredecessor(
+                com.softwood.mcp.ProcessIdentity.SERVER, com.softwood.mcp.ProcessIdentity.PID,
+                com.softwood.mcp.ProcessIdentity.JVM_STARTED_AT)
+            if (asked == null) return null
+            predecessorRef.compareAndSet(null, asked)
+            known = predecessorRef.get()
+        }
+        return known?.get('notice') as String
+    }
+
     /** Align kit 2026-09-25: the live source of every top-level tool description (CS help_sections). */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     com.softwood.mcp.service.ToolDescriptionRegistry toolDescriptionRegistry
@@ -84,7 +115,13 @@ class McpController {
      * transcribe one (CT-UBW-4). A key added here then fails the spec instead of vanishing.</p>
      */
     static Map<String, Object> unboundWarningMap(String ownerKey) {
+        return unboundWarningMap(ownerKey, null)
+    }
+
+    /** FS 0.9.80 SB-1: plus {@code restart_notice} when this process replaced one that held a session. */
+    static Map<String, Object> unboundWarningMap(String ownerKey, String restartNotice) {
         Map<String, Object> out = new LinkedHashMap<String, Object>()
+        if (restartNotice) out.put('restart_notice', restartNotice)
         out.put('unbound', true)
         out.put('unbound_warning',
             'This FS process holds no session claim, so this call is filed as unattributed ' +
@@ -112,6 +149,10 @@ class McpController {
      * </ol>
      */
     static McpResponse withUnboundWarning(McpResponse response, String ownerKey) {
+        return withUnboundWarning(response, ownerKey, null)
+    }
+
+    static McpResponse withUnboundWarning(McpResponse response, String ownerKey, String restartNotice) {
         if (response == null) return null
         Map<String, Object> result = response.result
         if (result == null) return response
@@ -121,7 +162,7 @@ class McpController {
         List<Object> content = new ArrayList<Object>((List<Object>) rawContent)
         Map<String, Object> note = new LinkedHashMap<String, Object>()
         note.put('type', 'text')
-        note.put('text', JsonOutput.toJson(unboundWarningMap(ownerKey)))
+        note.put('text', JsonOutput.toJson(unboundWarningMap(ownerKey, restartNotice)))
         content.add(note)
 
         Map<String, Object> copied = new LinkedHashMap<String, Object>(result)
@@ -336,7 +377,10 @@ class McpController {
         // FS 0.9.27 W11.1: applied to whatever is actually being returned, backstop error included.
         // Being unbound is orthogonal to the call having failed, and a session whose response was
         // just refused is precisely the one that needs telling why its telemetry will not count.
-        return unbound ? withUnboundWarning(out, com.softwood.mcp.ProcessIdentity.OWNER_KEY) : out
+        if (!unbound) return out
+        String notice = null
+        try { notice = restartNotice() } catch (Exception e) { log.debug('restart notice failed (non-fatal): {}', e.message) }
+        return withUnboundWarning(out, com.softwood.mcp.ProcessIdentity.OWNER_KEY, notice)
     }
 
     // FIX-7: zero-copy size estimate - read text field directly instead of serialising whole result Map

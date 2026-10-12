@@ -977,6 +977,44 @@ class ContextServerClient {
      *
      * @return CS's answer, or {@code null} on any error/timeout/CS-down (the caller passes through)
      */
+    /**
+     * FS 0.9.80 SB-1 (chain d45c51cf) -- the claim this restarted FS process replaced, asked of CS, which holds
+     * session_claim_log. This process's own identity goes as data: the call lands in the CS companion.
+     *
+     * @return CS's answer ({@code predecessor}, {@code notice}, {@code cause}), or null when CS cannot be asked
+     */
+    Map<String, Object> claimPredecessor(String server, long pid, String jvmStartedAt) {
+        if (!isCsReachable()) return null
+        try {
+            Map<String, Object> callBody = [
+                jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params : [name: 'context_lifecycle',
+                          arguments: [action: 'claim_predecessor', server: server, pid: pid, jvmStartedAt: jvmStartedAt]]
+            ] as Map<String, Object>
+            String json = groovy.json.JsonOutput.toJson(callBody)
+            HttpURLConnection conn = openCs(new URL("${contextServerUrl}/mcp"))
+            try {
+                conn.requestMethod  = 'POST'
+                conn.doOutput       = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = 3000
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(conn.inputStream.getText('UTF-8'))
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) return (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('claimPredecessor failed: {}', e.message)
+        }
+        return null
+    }
+
     Map<String, Object> planGateCheck(Map<String, Object> gateArgs, String sessionId) {
         if (!isCsReachable() || !sessionId) return null
         try {

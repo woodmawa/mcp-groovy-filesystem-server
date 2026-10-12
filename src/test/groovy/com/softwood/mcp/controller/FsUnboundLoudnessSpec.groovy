@@ -211,4 +211,88 @@ class FsUnboundLoudnessSpec extends Specification {
         contentOf(bound).size() == 1
         !(((contentOf(bound).first() as Map).get('text') as String).contains('unbound'))
     }
+
+    // =========================================================================
+    // FS 0.9.80 SB-1 (chain d45c51cf) -- a restarted process names the session to claim
+    // =========================================================================
+
+    private static final String NOTICE = 'RESTART: this fs process (pid 50960) is new ... server_lifecycle action=claim_session sessionId=2026-10-09-10-20'
+
+    def 'RN-1: end to end, an unclaimed restarted stdio FS process carries restart_notice; CS is asked once'() {
+        given:
+        String prior = System.getProperty('spring.profiles.active')
+        System.setProperty('spring.profiles.active', 'stdio')
+        McpController c = controllerWith(payloadResponse([ok: true]), null)
+        c.contextServerClient = Mock(com.softwood.mcp.service.ContextServerClient)
+
+        when:
+        McpResponse first  = c.handleRequest(readRequest())
+        McpResponse second = c.handleRequest(readRequest())
+
+        then: 'asked once, and the answer is kept'
+        1 * c.contextServerClient.claimPredecessor('fs', com.softwood.mcp.ProcessIdentity.PID,
+                com.softwood.mcp.ProcessIdentity.JVM_STARTED_AT) >> [predecessor: [session_id: '2026-10-09-10-20'], notice: NOTICE]
+        lastElementAsMap(first).get('restart_notice') == NOTICE
+        lastElementAsMap(second).get('restart_notice') == NOTICE
+        lastElementAsMap(first).get('unbound') == true
+
+        cleanup:
+        if (prior == null) System.clearProperty('spring.profiles.active') else System.setProperty('spring.profiles.active', prior)
+    }
+
+    def 'RN-2: CS unreachable -- no notice now, asked again on the next call'() {
+        given:
+        String prior = System.getProperty('spring.profiles.active')
+        System.setProperty('spring.profiles.active', 'stdio')
+        McpController c = controllerWith(payloadResponse([ok: true]), null)
+        c.contextServerClient = Mock(com.softwood.mcp.service.ContextServerClient)
+
+        when:
+        McpResponse first  = c.handleRequest(readRequest())
+        McpResponse second = c.handleRequest(readRequest())
+
+        then:
+        2 * c.contextServerClient.claimPredecessor(_, _, _) >>> [null, [predecessor: null, notice: null]]
+        !lastElementAsMap(first).containsKey('restart_notice')
+        !lastElementAsMap(second).containsKey('restart_notice')
+
+        cleanup:
+        if (prior == null) System.clearProperty('spring.profiles.active') else System.setProperty('spring.profiles.active', prior)
+    }
+
+    def 'RN-3: the shared HTTP companion never says it, and never asks'() {
+        given:
+        String prior = System.getProperty('spring.profiles.active')
+        System.setProperty('spring.profiles.active', 'http')
+        McpController c = controllerWith(payloadResponse([ok: true]), null)
+        c.contextServerClient = Mock(com.softwood.mcp.service.ContextServerClient)
+
+        when:
+        McpResponse out = c.handleRequest(readRequest())
+
+        then:
+        0 * c.contextServerClient.claimPredecessor(_, _, _)
+        !lastElementAsMap(out).containsKey('restart_notice')
+
+        cleanup:
+        if (prior == null) System.clearProperty('spring.profiles.active') else System.setProperty('spring.profiles.active', prior)
+    }
+
+    def 'RN-4: a claimed process neither says it nor asks'() {
+        given:
+        String prior = System.getProperty('spring.profiles.active')
+        System.setProperty('spring.profiles.active', 'stdio')
+        McpController c = controllerWith(payloadResponse([ok: true]), '2026-10-09-10-20')
+        c.contextServerClient = Mock(com.softwood.mcp.service.ContextServerClient)
+
+        when:
+        McpResponse out = c.handleRequest(readRequest())
+
+        then:
+        0 * c.contextServerClient.claimPredecessor(_, _, _)
+        contentOf(out).size() == 1
+
+        cleanup:
+        if (prior == null) System.clearProperty('spring.profiles.active') else System.setProperty('spring.profiles.active', prior)
+    }
 }
