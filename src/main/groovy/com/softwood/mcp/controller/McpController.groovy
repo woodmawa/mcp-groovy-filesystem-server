@@ -343,7 +343,8 @@ class McpController {
                 String declared  = CALLER_SESSION.get()
                 String resolved  = declared ?: telemetryService.readActiveSessionId()
                 unbound = (resolved == null)
-                String sessionId = resolved ?: 'unknown'
+                // FS 0.9.80 SB-2: unbound still warns (above), but the row names who made it rather than 'unknown'.
+                String sessionId = resolved ?: 'system:fs-unclaimed'
                 // FS 0.9.67 item 3: requested window + lines returned, for range calls only.
                 Map<String, Object> detail = RangeTelemetry.detail(toolName, arguments, responseText(response))
                 telemetryService.recordToolCall(sessionId, toolName, charCount, arguments,

@@ -60,7 +60,7 @@ class ToolsServicePlanGateSpec extends Specification {
         String m = tools.planGateRefusal('mvn', 'install', [], 'C:/repo', null)
         String s = tools.planGateRefusal('stats', '', [], 'C:/repo', null)
         then:
-        1 * client.planGateCheck(_, 'sid-1') >> [allow: false, component: 'repo:git', practices: []]
+        1 * client.planGateCheck(_, 'sid-1') >> [allow: false, component: 'repo:git', practices: [[id: 9, title: 't']]]   // a CS fire always names a practice (FS 0.9.80 SB-3)
         r.startsWith("PLAN-GATE: first mutating call on 'repo:git'")
         m == null
         s == null

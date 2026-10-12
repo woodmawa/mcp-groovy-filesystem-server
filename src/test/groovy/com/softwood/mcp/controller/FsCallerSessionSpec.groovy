@@ -28,7 +28,7 @@ import spock.lang.Specification
  * <ul>
  *   <li>CS-1 an unclaimed process attributes a call carrying the header to that session, and does
  *       not append the unbound warning</li>
- *   <li>CS-2 CONTROL: unclaimed and no header -- 'unknown' and the warning, as before</li>
+ *   <li>CS-2 CONTROL: unclaimed and no header -- system:fs-unclaimed (FS 0.9.80 SB-2; 'unknown' before) and the warning</li>
  *   <li>CS-3 the header wins over this process's own claim: the caller says whose work it is</li>
  *   <li>CS-4 a blank header is no header</li>
  *   <li>CS-5 the declared session does not leak into the NEXT request on the same thread</li>
@@ -82,7 +82,7 @@ class FsCallerSessionSpec extends Specification {
         McpResponse r = c.handleRequest(call(), null)
 
         then:
-        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _, _)
+        1 * t.recordToolCall('system:fs-unclaimed', 'tools', _, _, _, _, _, _)   // FS 0.9.80 SB-2 (D2/D3): named, not 'unknown'
         contentCount(r) == 2
     }
 
@@ -124,6 +124,6 @@ class FsCallerSessionSpec extends Specification {
 
         then:
         1 * t.recordToolCall('first', 'tools', _, _, _, _, _, _)
-        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _, _)
+        1 * t.recordToolCall('system:fs-unclaimed', 'tools', _, _, _, _, _, _)   // FS 0.9.80 SB-2 (D2/D3): named, not 'unknown'
     }
 }

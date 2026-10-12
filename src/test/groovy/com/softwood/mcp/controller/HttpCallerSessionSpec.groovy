@@ -26,7 +26,7 @@ import spock.lang.Specification
  *
  * CONTRACT:
  *   HC-1  a tools/call on POST /mcp carrying X-Mcp-Caller-Session is attributed to that session
- *   HC-2  CONTROL: without the header, an unclaimed process still files 'unknown'
+ *   HC-2  CONTROL: without the header, an unclaimed process files system:fs-unclaimed (FS 0.9.80 SB-2; 'unknown' before)
  */
 @CompileDynamic
 class HttpCallerSessionSpec extends Specification {
@@ -89,6 +89,6 @@ class HttpCallerSessionSpec extends Specification {
         hc.handleRequest(toolsCall(), sid, servlet(null))
 
         then:
-        1 * t.recordToolCall('unknown', 'tools', _, _, _, _, _, _)
+        1 * t.recordToolCall('system:fs-unclaimed', 'tools', _, _, _, _, _, _)   // FS 0.9.80 SB-2 (D2/D3): named, not 'unknown'
     }
 }

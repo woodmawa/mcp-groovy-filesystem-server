@@ -331,9 +331,22 @@ class ContextServerClient {
      */
     private HttpURLConnection openCs(URL url) {
         HttpURLConnection conn = (HttpURLConnection) url.openConnection()
-        String sid = resolveSessionId()
-        if (sid) conn.setRequestProperty(CALLER_SESSION_HEADER, sid)
+        applyCaller(conn, resolveSessionId())
         return conn
+    }
+
+    /** FS 0.9.80 SB-2: the header CS reads (CallerIdentity.ACTOR_HEADER) for work no session asked for. */
+    static final String ACTOR_HEADER = 'X-Mcp-Actor'
+
+    /**
+     * FS 0.9.80 SB-2 -- who a call to CS is for. Claimed: the session (FS 0.9.58). Unclaimed: no session is
+     * invented, but the call names itself {@code system:fs-unclaimed} instead of sending nothing, so CS files it
+     * under a name rather than 'unknown'.
+     */
+    static void applyCaller(URLConnection conn, String sid) {
+        if (conn == null) return
+        if (sid?.trim()) conn.setRequestProperty(CALLER_SESSION_HEADER, sid.trim())
+        else conn.setRequestProperty(ACTOR_HEADER, 'system:fs-unclaimed')
     }
 
     /** Same header CS (HttpMcpController) and FS's own McpController read. */
