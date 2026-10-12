@@ -473,6 +473,15 @@ class FileContentReader extends AbstractFileService {
         String patternStr = options.pattern as String
         if (!patternStr) return McpResponse.toolError(requestId, 'options.pattern required for multi_grep')
 
+        // FS 0.9.80 S6 item 1 (obs 12291): a directory is refused BY NAME. It used to throw inside the loop and land
+        // as a per-path error in a success envelope with totalMatches 0 -- which reads exactly like "no matches".
+        List<String> dirs = paths.findAll { String p -> p && new File(p).isDirectory() }
+        if (dirs) {
+            return McpResponse.toolError(requestId, ('MULTI_GREP_DIRECTORY: multi_grep searches FILES; these are ' +
+                'directories: ' + dirs.join(', ') + '. To search a directory use file_search action=content with ' +
+                'options.contentPattern; nothing was searched.').toString())
+        }
+
         int maxMatchesPerFile = (options.maxMatches as Integer) ?: 5
         int contextLines      = (options.contextLines as Integer) ?: 0
         String encoding       = options.encoding as String ?: 'UTF-8'
