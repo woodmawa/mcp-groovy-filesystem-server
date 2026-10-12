@@ -138,6 +138,31 @@ class PlanGateGuardSpec extends Specification {
         guard.emptyRefusals.get() == 1
     }
 
+    def 'PGG-18: FS 0.9.83 (chain fd3f3867) -- a passed empty refusal is reported to CS under its own outcome'() {
+        // PGG-17 passes it, but only an in-process AtomicInteger knew: the CS telemetry row said
+        // plan_gate_answered, so CS (which records the fire) and FS (which passed it) could not be reconciled.
+        given:
+        client.planGateCheck([tool: 'file_write', path: repoFile], 'sid-1') >> [
+            allow: false, component: 'Foo', reason: 'ack-required', practices: [], retry: 'x']
+        when:
+        String msg = guard.checkWrite('write', repoFile)
+        then:
+        msg == null
+        1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'file_write', null, 'plan_gate_empty_refusal', _)
+        0 * telemetry.recordToolCall(_, _, _, _, _, _, 'plan_gate_answered', _)
+    }
+
+    def 'PGG-19: FS 0.9.83 -- an ordinary answer is still reported plan_gate_answered'() {
+        given:
+        client.planGateCheck(_, 'sid-1') >> [allow: false, component: 'Foo',
+            practices: [[id: 7, valence: 'proscriptive', title: 't', summary: 's']]]
+        when:
+        String msg = guard.checkWrite('write', repoFile)
+        then:
+        msg != null
+        1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'file_write', null, 'plan_gate_answered', _)
+    }
+
     def 'PGG-2: allow passes'() {
         given:
         client.planGateCheck(_, _) >> [allow: true, reason: 'already-gated']

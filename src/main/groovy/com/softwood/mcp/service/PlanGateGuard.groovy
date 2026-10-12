@@ -319,8 +319,12 @@ class PlanGateGuard {
             t0 = System.nanoTime()
             Map<String, Object> answer = (contextServerClient != null && sid) ?
                 contextServerClient.planGateCheck(args, sid) : null
+            // FS 0.9.83 (chain fd3f3867): a refusal with nothing to judge is passed below; say so in the row CS
+            // keeps, so a fire CS recorded and FS passed can be reconciled -- the AtomicInteger is unreadable outside.
+            boolean emptyRefusal = answer != null && answer.get('allow') == false && !(answer.get('practices') as List)
             if (contextServerClient != null && sid) {
-                reportAsk(sid, args, answer == null ? 'plan_gate_unavailable' : 'plan_gate_answered', t0)
+                reportAsk(sid, args, answer == null ? 'plan_gate_unavailable' :
+                    emptyRefusal ? 'plan_gate_empty_refusal' : 'plan_gate_answered', t0)
                 reported = true
             }
             if (answer == null) {
