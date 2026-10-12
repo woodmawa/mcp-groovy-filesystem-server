@@ -95,7 +95,25 @@ class ToolDescriptionRegistry {
         return SECTION_PREFIX + tool
     }
 
-    /** 12-hex SHA-256 of the exact description string (UTF-8) -- the unit CS stores and compares. */
+    /**
+     * FS 0.9.82 R3-3 (Will 2026-10-12): the hash reported to CS is over the PROSE -- the text up to a trailing
+     * generated 'Registered actions:' segment, trailing whitespace removed. Byte-for-byte the algorithm of CS
+     * SqliteToolDescriptionStore.prose and AW ToolDescriptionSource; the three specs pin one GOLDEN value.
+     */
+    static final String REGISTERED_TAIL = 'Registered actions:'
+
+    static String prose(String s) {
+        String t = s ?: ''
+        int i = t.lastIndexOf(REGISTERED_TAIL)
+        if (i >= 0) t = t.substring(0, i)
+        return t.replaceAll(/\s+$/, '')
+    }
+
+    static String alignHash12(String s) {
+        return hash12(prose(s))
+    }
+
+    /** 12-hex SHA-256 of the exact string (UTF-8). */
     static String hash12(String s) {
         byte[] d = MessageDigest.getInstance('SHA-256').digest((s ?: '').getBytes(StandardCharsets.UTF_8))
         StringBuilder sb = new StringBuilder()
@@ -150,7 +168,7 @@ class ToolDescriptionRegistry {
         Map<String, String> out = new LinkedHashMap<String, String>()
         List<String> tools
         synchronized (defaults) { tools = new ArrayList<String>(defaults.keySet()) }
-        for (String tool : tools) out.put(tool, hash12(describe(tool, defaults.get(tool))))
+        for (String tool : tools) out.put(tool, alignHash12(describe(tool, defaults.get(tool))))
         return out
     }
 
