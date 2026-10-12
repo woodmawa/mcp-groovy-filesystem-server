@@ -2469,3 +2469,11 @@ Red first; mutation (servedHashes hashing full text) caught by TDP-3 only.
 ## [0.9.83] (2026-10-12) -- stabilisation round 3b
 
 - **A passed empty PLAN-GATE refusal is reported as one** (chain fd3f3867). SB-3 (0.9.80) already lets a refusal that names no practice through, but CS telemetry recorded it as `plan_gate_answered` and only an in-process `AtomicInteger` knew -- so a fire CS recorded and FS passed could not be reconciled. `PlanGateGuard.ask` now reports outcome `plan_gate_empty_refusal` for it. `PlanGateGuardSpec` PGG-18 (red on 0.9.82: one `plan_gate_answered` row too many), PGG-19 pins the ordinary `plan_gate_answered`. CS has recorded no refusal with empty ids since 2026-10-05, so this should stay at zero; now it can be seen if it does not.
+
+
+
+## [0.9.84] (2026-10-12) -- stabilisation round 4
+
+- **`multi_replace` judges a boundary overlap by where each entry matched** (chain 60dcb53a). RCA-2b compared the entry strings, so two entries hundreds of lines apart whose texts shared a seam word were refused (live: AW ch14, 39 entries, `... A local agent` / `agents are judged by`). Every entry has already matched exactly once, so a real overlap is two matched regions that intersect (`origStart`/`origEnd`); the string comparison survives only as the fail-closed fallback for a pair whose position is unknown. `MultiReplaceValidatorSpec` CT-MR-VAL-4 (red with the live message); CT-4 and CT-MR-VAL-2, genuine intersections, stay refused.
+
+Mutations: disjoint pairs falling through to the string check -> VAL-4 only; intersection never true -> VAL-2 only; both restored by hash. MultiReplace* 15/0, FileContractSpec 85/0.
