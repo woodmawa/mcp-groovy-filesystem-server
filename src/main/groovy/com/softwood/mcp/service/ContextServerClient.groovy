@@ -1028,6 +1028,13 @@ class ContextServerClient {
         return null
     }
 
+    /**
+     * How long FS waits for CS's PLAN-GATE answer before it fails open (the write goes through, reported unavailable).
+     * FS R5c (decision 356, Will 2026-10-12): 1500 -> 2000. Measured first, as R2-2 asked: 26 of 138 asks in 7 days hit
+     * 1500 ms; a first ask took 1.0-1.8 s. CS R5c removed the main cost on its side (neverApplicablePractices).
+     */
+    static final int PLAN_GATE_READ_TIMEOUT_MS = 2000
+
     Map<String, Object> planGateCheck(Map<String, Object> gateArgs, String sessionId) {
         if (!isCsReachable() || !sessionId) return null
         try {
@@ -1044,7 +1051,7 @@ class ContextServerClient {
                 conn.requestMethod  = 'POST'
                 conn.doOutput       = true
                 conn.connectTimeout = 500
-                conn.readTimeout    = 1500
+                conn.readTimeout    = PLAN_GATE_READ_TIMEOUT_MS
                 conn.setRequestProperty('Content-Type', 'application/json')
                 conn.outputStream.withWriter('UTF-8') { it << json }
                 if (conn.responseCode == 200) {

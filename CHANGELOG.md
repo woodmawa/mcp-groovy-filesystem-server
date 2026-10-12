@@ -2477,3 +2477,8 @@ Red first; mutation (servedHashes hashing full text) caught by TDP-3 only.
 - **`multi_replace` judges a boundary overlap by where each entry matched** (chain 60dcb53a). RCA-2b compared the entry strings, so two entries hundreds of lines apart whose texts shared a seam word were refused (live: AW ch14, 39 entries, `... A local agent` / `agents are judged by`). Every entry has already matched exactly once, so a real overlap is two matched regions that intersect (`origStart`/`origEnd`); the string comparison survives only as the fail-closed fallback for a pair whose position is unknown. `MultiReplaceValidatorSpec` CT-MR-VAL-4 (red with the live message); CT-4 and CT-MR-VAL-2, genuine intersections, stay refused.
 
 Mutations: disjoint pairs falling through to the string check -> VAL-4 only; intersection never true -> VAL-2 only; both restored by hash. MultiReplace* 15/0, FileContractSpec 85/0.
+
+
+## [0.9.85] (2026-10-12) -- R5c: PLAN-GATE waits two seconds
+
+- **`ContextServerClient.PLAN_GATE_READ_TIMEOUT_MS` = 2000** (decision 356, Will 2026-10-12; was a bare 1500). R2-2 (0.9.81) said to measure before touching it, and the measurement came in: 26 of 138 plan-gate asks in 7 days hit 1,500 ms and failed open, a first ask taking 1.0-1.8 s on the live store. CS 1.1.77 removes most of that cost on its side; the longer wait is the margin. A gate that cannot answer still fails open -- CS is never a dependency. `PlanGateTimeoutSpec` through a real HTTP stub: PGT-1 a 1.7 s answer is answered (red on 0.9.84: `null`), PGT-2 CONTROL a 2.6 s answer still fails open inside 2.5 s. `*PlanGate*` 35/0. AW book ch11 (FS part, PLAN-GATE) edited in place.
