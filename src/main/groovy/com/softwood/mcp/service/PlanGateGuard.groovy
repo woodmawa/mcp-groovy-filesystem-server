@@ -70,6 +70,8 @@ class PlanGateGuard {
     static final Set<String> NON_MUTATING_WRITE_ACTIONS = (['abort_write', 'chunk_status'] as Set<String>).asImmutable()
 
     final AtomicInteger unavailable = new AtomicInteger()
+    /** FS 0.9.80 SB-3: refusals CS sent with nothing to judge -- passed, never shown. Should stay 0 from CS 1.1.68. */
+    final AtomicInteger emptyRefusals = new AtomicInteger()
 
     /**
      * @param intent  FS 0.9.45 WP-2b -- what this write is FOR, in the caller's own words.
@@ -319,6 +321,13 @@ class PlanGateGuard {
                 return null
             }
             if (answer.get('allow') != false) return null
+            // FS 0.9.80 SB-3 (chains f2e7f616, ebbe59f1): a refusal that names no practice cannot be answered --
+            // there is nothing to ack -- so it is not shown. Defence in depth; CS 1.1.68 no longer sends one.
+            if (!(answer.get('practices') as List)) {
+                emptyRefusals.incrementAndGet()
+                log.warn('plan-gate: CS refused {} with no practices (reason {}) -- passing', answer.get('component'), answer.get('reason'))
+                return null
+            }
             return refusal(answer)
         } catch (Exception e) {
             unavailable.incrementAndGet()
@@ -329,8 +338,18 @@ class PlanGateGuard {
 
     static String refusal(Map<String, Object> answer) {
         StringBuilder sb = new StringBuilder()
-        sb.append("PLAN-GATE: first mutating call on '").append(answer.get('component'))
-          .append("' this session. The corpus already holds this for it:\n")
+        String reason = answer.get('reason') as String
+        // FS 0.9.80 SB-3: the header says which rung of the ladder this is. A second ask used to read as a first call.
+        if (reason == 'ack-required') {
+            sb.append("PLAN-GATE (second ask) on '").append(answer.get('component'))
+              .append("'. These were shown on your previous call to it, which may not have reached you:\n")
+        } else if (reason == 'refired') {
+            sb.append("PLAN-GATE (shown again) on '").append(answer.get('component'))
+              .append("'. An earlier refusal went unanswered; the corpus still holds this for it:\n")
+        } else {
+            sb.append("PLAN-GATE: first mutating call on '").append(answer.get('component'))
+              .append("' this session. The corpus already holds this for it:\n")
+        }
         ((answer.get('practices') ?: []) as List).each { Object o ->
             Map p = o as Map
             sb.append('  #').append(p.get('id')).append(' [').append(p.get('valence') ?: '').append('] ')

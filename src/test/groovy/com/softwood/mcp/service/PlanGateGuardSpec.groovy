@@ -95,6 +95,49 @@ class PlanGateGuardSpec extends Specification {
         msg.contains('never refused')
     }
 
+    def 'PGG-15: FS 0.9.80 SB-3 -- a second ask is worded as one and still lists what it asks about'() {
+        // Chains f2e7f616 / ebbe59f1: the second ask came back as "first mutating call ... The corpus already
+        // holds this for it:" over an EMPTY list. CS 1.1.68 re-sends the practices; FS must not call it a first call.
+        given:
+        client.planGateCheck([tool: 'file_write', path: repoFile], 'sid-1') >> [
+            allow: false, component: 'Foo', reason: 'ack-required',
+            practices: [[id: 7, valence: 'proscriptive', title: 'never do X to Foo', summary: 'because Y']],
+            retry: 'Answer with options.planAck="7:y|c|n". (Second ask.)']
+        when:
+        String msg = guard.checkWrite('write', repoFile)
+        then:
+        msg.startsWith("PLAN-GATE (second ask) on 'Foo'")
+        !msg.contains('first mutating call')
+        msg.contains('may not have reached you')
+        msg.contains('#7 [proscriptive] never do X to Foo -- because Y')
+    }
+
+    def 'PGG-16: FS 0.9.80 SB-3 -- a refire says the earlier refusal went unanswered and is shown again'() {
+        given:
+        client.planGateCheck([tool: 'file_write', path: repoFile], 'sid-1') >> [
+            allow: false, component: 'Foo', reason: 'refired',
+            practices: [[id: 7, valence: 'proscriptive', title: 'never do X to Foo', summary: 'because Y']],
+            retry: 'Answer with options.planAck="7:y|c|n".']
+        when:
+        String msg = guard.checkWrite('write', repoFile)
+        then:
+        msg.startsWith("PLAN-GATE (shown again) on 'Foo'")
+        !msg.contains('first mutating call')
+        msg.contains('#7 [proscriptive]')
+    }
+
+    def 'PGG-17: FS 0.9.80 SB-3 -- a refusal with no practices is never shown as one; the call passes'() {
+        // Defence in depth: whatever CS sends, a refusal that names nothing to judge cannot be answered.
+        given:
+        client.planGateCheck([tool: 'file_write', path: repoFile], 'sid-1') >> [
+            allow: false, component: 'Foo', reason: 'ack-required', practices: [], retry: 'x']
+        when:
+        String msg = guard.checkWrite('write', repoFile)
+        then:
+        msg == null
+        guard.emptyRefusals.get() == 1
+    }
+
     def 'PGG-2: allow passes'() {
         given:
         client.planGateCheck(_, _) >> [allow: true, reason: 'already-gated']
@@ -131,7 +174,7 @@ class PlanGateGuardSpec extends Specification {
         then:
         a == null
         1 * client.planGateCheck({ it.tool == 'execute' && it.workingDir == 'C:/r' && it.script.contains('gradlew') }, 'sid-1') >> [allow: true]
-        1 * client.planGateCheck({ it.script.startsWith('git ') }, 'sid-1') >> [allow: false, component: 'r:git', practices: []]
+        1 * client.planGateCheck({ it.script.startsWith('git ') }, 'sid-1') >> [allow: false, component: 'r:git', practices: [[id: 9, title: 't']]]
         b == null
         c.contains("'r:git'")
     }
@@ -172,8 +215,8 @@ class PlanGateGuardSpec extends Specification {
         when:
         String msg = guard.checkExecute('cd C:/a; git commit -am x; cd C:/b; git commit -am y', 'C:/r')
         then:
-        1 * client.planGateCheck({ it.workingDir == 'C:/a' }, 'sid-1') >> [allow: false, component: 'a:git', practices: []]
-        1 * client.planGateCheck({ it.workingDir == 'C:/b' }, 'sid-1') >> [allow: false, component: 'b:git', practices: []]
+        1 * client.planGateCheck({ it.workingDir == 'C:/a' }, 'sid-1') >> [allow: false, component: 'a:git', practices: [[id: 9, title: 't']]]
+        1 * client.planGateCheck({ it.workingDir == 'C:/b' }, 'sid-1') >> [allow: false, component: 'b:git', practices: [[id: 9, title: 't']]]
         msg.contains("'a:git'") && msg.contains("'b:git'")
     }
 
