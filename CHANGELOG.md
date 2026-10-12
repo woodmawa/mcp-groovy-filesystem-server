@@ -2458,3 +2458,9 @@ Every new case red first except RN-1..4 (written after the code; a mutation chec
 - **A PLAN-GATE fail-open is reported** (R2-2; chain e05a071a). On 2026-10-12 CS recorded a fire that FS let through on a slow answer, and nothing showed it. `PlanGateGuard.reportAsk`: every ask that reaches for CS is sent to CS telemetry as `tool_name plan_gate`, `action` = the gated tool, outcome `plan_gate_answered` or `plan_gate_unavailable`, with `duration_ms`; no claimed session -> nothing written. The 1500 ms timeout is unchanged until the latency is measured. `PlanGateFailOpenSpec` PGF-1..6. Needs CS 1.1.70 for the `duration_ms` column.
 
 Red first; mutation caught (eb34ef92, 4/6). AW book ch11 (FS part, PLAN-GATE) edited in place.
+
+## [0.9.82] (2026-10-12) -- stabilisation round 3
+
+- **Tool-description alignment hashes prose only** (R3-3; Will 2026-10-12). `ToolDescriptionRegistry.prose` / `alignHash12` strip a trailing generated "Registered actions:" line and trailing whitespace before hashing; `servedHashes` reports it. Same algorithm and GOLDEN value (`83b0094c7df4`) as CS 1.1.71 and AW 1.30.80 -- ship together. `ToolDescriptionProseHashSpec` TDP-1..3.
+
+Red first; mutation (servedHashes hashing full text) caught by TDP-3 only.
