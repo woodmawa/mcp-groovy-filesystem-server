@@ -135,6 +135,23 @@ final class MultiReplaceValidator {
                 for (int j = 0; j < oldTexts.size(); j++) {
                     if (i2 == j) continue
                     String tj = oldTexts.get(j)
+                    // R4c chain 60dcb53a (FS 0.9.84): every entry matched exactly once (Phase B), so a real
+                    // overlap is two matched REGIONS that intersect. Comparing the strings refused entries
+                    // hundreds of lines apart whose texts merely shared a seam word. The string check below
+                    // survives only as the fail-closed fallback for a pair whose position is unknown (a
+                    // normalised match that shifted length reports origStart -1).
+                    TextMatcher.MatchResult mi = matchResults.get(i2)
+                    TextMatcher.MatchResult mj = matchResults.get(j)
+                    if (mi.origStart >= 0 && mi.origEnd >= 0 && mj.origStart >= 0 && mj.origEnd >= 0) {
+                        if (mi.origStart < mj.origEnd && mj.origStart < mi.origEnd) {
+                            int first  = mi.origStart <= mj.origStart ? i2 : j
+                            int second = first == i2 ? j : i2
+                            errors << ('Entry ' + first + ' ends with text that starts entry ' + second +
+                                ' -- boundary overlap: they match intersecting regions of the file. Fix: merge or use separate calls.')
+                            break outerBoundary
+                        }
+                        continue
+                    }
                     boolean foundOverlap = false
                     int maxLen = Math.min(ti.length(), tj.length())
                     // Only check overlaps of meaningful length (>=4 chars) to avoid

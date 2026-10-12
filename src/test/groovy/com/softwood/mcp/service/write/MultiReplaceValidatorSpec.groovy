@@ -286,6 +286,37 @@ class MultiReplaceValidatorSpec extends Specification {
     }
 
     // -----------------------------------------------------------------------
+    // CT-MR-VAL-4 (R4c chain 60dcb53a, 2026-10-12): the overlap is judged by WHERE each entry matched,
+    // not by comparing the entry strings. Live: a 39-entry multi_replace on AW ch14 was refused 'Entry 19
+    // ends with text that starts entry 1 -- boundary overlap' -- entry 19 ended '... A local agent',
+    // entry 1 began 'agents are judged by', and the two regions were hundreds of lines apart.
+    // CT-4 and CT-MR-VAL-2 are the controls: their regions really do intersect and stay refused.
+    // -----------------------------------------------------------------------
+    def "CT-MR-VAL-4: entries that share a seam word but match far-apart regions are accepted and both applied"() {
+        given:
+        String filler = (1..40).collect { int i -> "filler line ${i}".toString() }.join('\n')
+        def f = writeFile('ct-mr-val-4.txt',
+            "agents are judged by their output\n${filler}\nthe work is done by A local agent\n".toString())
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace',
+            path   : f.path,
+            options: [
+                expectedHash: f.hash,
+                replacements: [
+                    [oldText: 'agents are judged by', newText: 'agents are graded by'],
+                    [oldText: 'done by A local agent', newText: 'done by a local agent']
+                ]
+            ]
+        ], 'test')
+
+        then: 'no overlap is claimed and both edits land'
+        r.result.isError != true
+        readContent(f.path) == "agents are graded by their output\n${filler}\nthe work is done by a local agent\n".toString()
+    }
+
+    // -----------------------------------------------------------------------
     // CT-MR-VAL-3: max replacements guard
     // -----------------------------------------------------------------------
     def "CT-MR-VAL-3: multi_replace with too many entries is rejected before file is read"() {
