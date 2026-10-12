@@ -2464,3 +2464,8 @@ Red first; mutation caught (eb34ef92, 4/6). AW book ch11 (FS part, PLAN-GATE) ed
 - **Tool-description alignment hashes prose only** (R3-3; Will 2026-10-12). `ToolDescriptionRegistry.prose` / `alignHash12` strip a trailing generated "Registered actions:" line and trailing whitespace before hashing; `servedHashes` reports it. Same algorithm and GOLDEN value (`83b0094c7df4`) as CS 1.1.71 and AW 1.30.80 -- ship together. `ToolDescriptionProseHashSpec` TDP-1..3.
 
 Red first; mutation (servedHashes hashing full text) caught by TDP-3 only.
+
+
+## [0.9.83] (2026-10-12) -- stabilisation round 3b
+
+- **A passed empty PLAN-GATE refusal is reported as one** (chain fd3f3867). SB-3 (0.9.80) already lets a refusal that names no practice through, but CS telemetry recorded it as `plan_gate_answered` and only an in-process `AtomicInteger` knew -- so a fire CS recorded and FS passed could not be reconciled. `PlanGateGuard.ask` now reports outcome `plan_gate_empty_refusal` for it. `PlanGateGuardSpec` PGG-18 (red on 0.9.82: one `plan_gate_answered` row too many), PGG-19 pins the ordinary `plan_gate_answered`. CS has recorded no refusal with empty ids since 2026-10-05, so this should stay at zero; now it can be seen if it does not.
