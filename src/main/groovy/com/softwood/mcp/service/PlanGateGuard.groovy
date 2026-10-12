@@ -311,11 +311,18 @@ class PlanGateGuard {
     }
 
     protected String ask(Map<String, Object> args) {
+        String sid = null
+        long t0 = System.nanoTime()
+        boolean reported = false
         try {
-            String sid = null
             try { sid = telemetryService?.readActiveSessionId() } catch (Exception ignored) { }
+            t0 = System.nanoTime()
             Map<String, Object> answer = (contextServerClient != null && sid) ?
                 contextServerClient.planGateCheck(args, sid) : null
+            if (contextServerClient != null && sid) {
+                reportAsk(sid, args, answer == null ? 'plan_gate_unavailable' : 'plan_gate_answered', t0)
+                reported = true
+            }
             if (answer == null) {
                 unavailable.incrementAndGet()
                 return null
@@ -331,9 +338,25 @@ class PlanGateGuard {
             return refusal(answer)
         } catch (Exception e) {
             unavailable.incrementAndGet()
+            if (!reported && contextServerClient != null && sid) reportAsk(sid, args, 'plan_gate_unavailable', t0)
             log.debug('plan-gate ask failed (pass-through): {}', e.message)
             return null
         }
+    }
+
+    /**
+     * FS 0.9.81 R2-2 (chain e05a071a): every ask that reached for CS leaves a telemetry row there -- outcome
+     * plan_gate_answered or plan_gate_unavailable, action = the gated tool, duration_ms = how long FS waited. On
+     * 2026-10-12 CS recorded a fire (plan_gate_events 1737) that FS had already passed on a slow answer; the pass was
+     * counted only in this process's AtomicInteger, which nothing outside it can read. Fire-and-forget like every
+     * telemetry row: it never affects the call it describes.
+     */
+    protected void reportAsk(String sid, Map<String, Object> args, String outcome, long startedNanos) {
+        try {
+            long ms = Math.max(0L, ((System.nanoTime() - startedNanos) / 1_000_000L) as long)
+            telemetryService?.recordToolCall(sid, 'plan_gate', 0, args, args?.get('tool') as String, null, outcome,
+                [duration_ms: (Object) ms] as Map<String, Object>)
+        } catch (Exception ignored) { }
     }
 
     static String refusal(Map<String, Object> answer) {
