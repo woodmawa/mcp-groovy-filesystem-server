@@ -85,7 +85,8 @@ class FilePatchService extends AbstractFileService {
         int patchAddedLen = (replacements.collect { Map rep ->
             (rep.newText as String ?: '').length()
         } as List<Integer>).sum() as int
-        String drPatchError = DestructiveChangeGuard.check('patch', patchRemovedLen, patchAddedLen, forcePatch, path)
+        String drPatchError = DestructiveChangeGuard.check('patch', patchRemovedLen, patchAddedLen, forcePatch, path,
+            ctxPatch.content.length())
         if (drPatchError) return McpResponse.toolError(requestId, drPatchError)
 
         boolean hasCrLf            = ctxPatch.hasCrLf

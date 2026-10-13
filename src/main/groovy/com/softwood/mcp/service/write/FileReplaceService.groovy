@@ -100,10 +100,8 @@ class FileReplaceService extends AbstractFileService {
 
         // CT-DR-1/CT-DR-2: Destructive-replace ratio guard (FS 0.8.67 / centralised 0.9.0).
         // Delegated to DestructiveChangeGuard.check() (D10 fix -- uniform across all write actions).
+        // FS 0.9.88: checked after the load (below), so the guard knows the file's length.
         boolean forceReplace = options.containsKey('force') ? (options.force as boolean) : false
-        String drError = DestructiveChangeGuard.check('replace',
-            (oldText as String).length(), (newText as String).length(), forceReplace, path)
-        if (drError) return McpResponse.toolError(requestId, drError)
 
         // PR 1.4 (FS 0.9.0): WriteContext.load() replaces duplicated 7-line load sequence (D1/D3/D4/D13).
         // Handles: write-enabled, path validation, size cap, encoding check, binary guard, CRLF detect.
@@ -120,6 +118,10 @@ class FileReplaceService extends AbstractFileService {
 
         boolean hasCrLf = ctx.hasCrLf
         String  current = ctx.content
+
+        String drError = DestructiveChangeGuard.check('replace',
+            (oldText as String).length(), (newText as String).length(), forceReplace, path, current.length())
+        if (drError) return McpResponse.toolError(requestId, drError)
 
 
         // Normalize oldText line endings (same as file content)
@@ -261,7 +263,8 @@ class FileReplaceService extends AbstractFileService {
         int totalNewLen = (replacements.collect { Map<String, Object> rep ->
             (rep.containsKey('newText') ? (rep.newText as String ?: '') : '').length()
         } as List<Integer>).sum() as int
-        String drMrError = DestructiveChangeGuard.check('multi_replace', totalOldLen, totalNewLen, forceMr, path)
+        String drMrError = DestructiveChangeGuard.check('multi_replace', totalOldLen, totalNewLen, forceMr, path,
+            snapshot.length())
         if (drMrError) return McpResponse.toolError(requestId, drMrError)
         // PR 1.2 (FS 0.9.0): delegate Unicode match resolution to TextMatcher.findAll() (D2 fix).
         // findAll() resolves NFC/NFKC/box-drawing for each entry and returns MatchResults

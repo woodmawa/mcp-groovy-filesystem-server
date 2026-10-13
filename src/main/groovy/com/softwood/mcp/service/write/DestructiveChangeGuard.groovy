@@ -26,6 +26,13 @@ final class DestructiveChangeGuard {
     static final int  DEFAULT_NON_CODE_THRESHOLD = 500   // same as code for now; can be loosened in Phase 4
     static final double DEFAULT_RATIO            = 0.20d
     static final int  LRU_CAP                    = 200
+    /**
+     * FS 0.9.88: a removal under this share of the file is never a truncated full-file rewrite, which is the
+     * one failure this guard exists for. The patcher agent (task 98c53eda, 2026-10-13) was refused twice for
+     * deleting one dead method from a large class: 684 chars out, 0 in, so 0% < 20%, though the method was a
+     * small part of the file.
+     */
+    static final double SMALL_SHARE              = 0.50d
 
     /**
      * Check for a destructive-ratio violation.
@@ -45,12 +52,23 @@ final class DestructiveChangeGuard {
      */
     static String check(String action, int removedLength, int addedLength,
                         boolean force, String filePath) {
+        check(action, removedLength, addedLength, force, filePath, -1)
+    }
+
+    /**
+     * As above, knowing the length of the file being changed. When {@code fileLength > 0} and the removal is
+     * under {@link #SMALL_SHARE} of it, the change is allowed: removing under half a file is a deletion, not a
+     * truncated rewrite. {@code fileLength <= 0} (unknown) behaves exactly as the five-argument form.
+     */
+    static String check(String action, int removedLength, int addedLength,
+                        boolean force, String filePath, int fileLength) {
         if (force) return null
+        if (fileLength > 0 && removedLength < fileLength * SMALL_SHARE) return null
         int threshold = isCodeFile(filePath) ? DEFAULT_CODE_THRESHOLD : DEFAULT_NON_CODE_THRESHOLD
         if (removedLength > threshold && addedLength < (int)(removedLength * DEFAULT_RATIO)) {
             return (
                 "DESTRUCTIVE_REPLACE: newText (${addedLength} chars) is less than 20% of " +
-                "oldText (${removedLength} chars). " +
+                "oldText (${removedLength} chars) and removes at least half the file. " +
                 "This typically means a full-file ${action} with truncated newText, which destroys content. " +
                 "To rewrite the file use action=write with the full content. " +
                 "For a legitimate shrinking ${action}, reduce oldText scope to just the target block. " +

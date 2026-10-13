@@ -167,4 +167,92 @@ class DestructiveChangeGuardSpec extends Specification {
         !readFileContent(f.path).contains('remove this block')
         readFileContent(f.path).contains("this stays")
     }
+
+    // -----------------------------------------------------------------------
+    // CT-DR-8..11 (FS 0.9.88): a deletion that is a small share of the file is not a truncated rewrite
+    //
+    // The guard exists for one failure: a full-file replace whose newText was truncated. Measured on
+    // 2026-10-13 the patcher agent (task 98c53eda) was refused twice for deleting one dead method from a
+    // large class -- over 500 chars removed, nothing added, so 0% < 20% -- although the method was a small
+    // part of the file. Removing under half the file cannot be the truncation the guard is for.
+    // -----------------------------------------------------------------------
+
+    private static String smallShareFile() {
+        "class CT_DR8 {\n" + repeat('    def keepBefore = "content that stays in the file"', 40) +
+            repeat('    // obsolete helper line that the patcher removes now', 12) +
+            repeat('    def keepAfter = "content that also stays in the file"', 40) + "}\n"
+    }
+
+    private static String obsoleteBlock() { repeat('    // obsolete helper line that the patcher removes now', 12) }
+
+    def "CT-DR-8: replace deleting a block that is a small share of the file succeeds without force"() {
+        given:
+        String content = smallShareFile()
+        assert obsoleteBlock().length() > 500 && obsoleteBlock().length() < content.length() * 0.5
+        def f = writeFile('ct-dr8.groovy', content)
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace', path: f.path,
+            options: [expectedHash: f.hash, oldText: obsoleteBlock(), newText: '']
+        ], 'test')
+
+        then: 'RED on 0.9.87 -- refused DESTRUCTIVE_REPLACE'
+        r.result != null
+        r.result.isError == null || r.result.isError == false
+        !readFileContent(f.path).contains('obsolete helper')
+        readFileContent(f.path).contains('keepBefore')
+        readFileContent(f.path).contains('keepAfter')
+    }
+
+    def "CT-DR-9: multi_replace deleting a small share of the file succeeds without force"() {
+        given:
+        def f = writeFile('ct-dr9.groovy', smallShareFile())
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'multi_replace', path: f.path,
+            options: [expectedHash: f.hash, replacements: [[oldText: obsoleteBlock(), newText: '']]]
+        ], 'test')
+
+        then:
+        r.result != null
+        r.result.isError == null || r.result.isError == false
+        !readFileContent(f.path).contains('obsolete helper')
+    }
+
+    def "CT-DR-10: patch deleting a small share of the file succeeds without force"() {
+        given: 'the obsolete block is lines 42..53'
+        def f = writeFile('ct-dr10.groovy', smallShareFile())
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'patch', path: f.path,
+            options: [expectedHash: f.hash, replacements: [[startLine: 42, endLine: 53, newText: '']]]
+        ], 'test')
+
+        then:
+        r.result != null
+        r.result.isError == null || r.result.isError == false
+        !readFileContent(f.path).contains('obsolete helper')
+        readFileContent(f.path).contains('keepAfter')
+    }
+
+    def "CT-DR-11: replace deleting most of the file is still refused"() {
+        given: '''GUARD -- the relaxation must be by share of the file, not a blanket. Removes ~60%.'''
+        String doomed = repeat('    // the majority of this file is about to go', 30)
+        String content = "class CT_DR11 {\n" + doomed + repeat('    def keep = 1', 25) + "}\n"
+        assert doomed.length() > content.length() * 0.5
+        def f = writeFile('ct-dr11.groovy', content)
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace', path: f.path,
+            options: [expectedHash: f.hash, oldText: doomed, newText: '']
+        ], 'test')
+
+        then:
+        assertToolError(r, 'DESTRUCTIVE_REPLACE')
+        readFileContent(f.path).contains('the majority of this file')
+    }
 }

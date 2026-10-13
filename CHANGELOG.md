@@ -2492,3 +2492,10 @@ Mutations: disjoint pairs falling through to the string check -> VAL-4 only; int
 ## [0.9.87] (2026-10-13) -- worktree outline
 
 - **`worktree action=outline(worktree, file)`** (decision 358, Will 2026-10-13). Where things are in a file without reading it: classes, methods and constructors with their start and end lines, from the same `AstStructureScanner` `file_read structure` uses (regex fallback for Java/Kotlin, no entries for a file with no code structure), at most 150 entries with `cut` reported. Same path rules and refusals as `read` (`WORKTREE_READ_REFUSED` outside the worktree or for a missing file). Why: the first harness eval (AW run d0dbe851) failed two of three cases with zero edits -- a local coder spent all 12 steps paging lines 1-200 of a 1,588- and a 552-line file; AW 1.30.84 now gives it an outline of each target on its first step, and AW does no file work, so FS answers it. `WorktreeOutlineSpec` WO-1..3 (red first: `Unknown worktree action: 'outline'`; WO-3 CONTROL). `Worktree*` 38/0.
+
+## [0.9.88] (2026-10-13) -- a deletion is not a truncated rewrite
+
+- `DestructiveChangeGuard.check(..., fileLength)`: a removal under half the file (`SMALL_SHARE = 0.50`) is allowed.
+  `replace` now checks after the load so the length is known; `multi_replace` and `patch` pass theirs. The patcher
+  agent (task 98c53eda) was refused twice for deleting one dead method.
+- Specs: DestructiveChangeGuardSpec CT-DR-8..11, mutation-checked (8..10 red without the share rule; 11 stays refused).
