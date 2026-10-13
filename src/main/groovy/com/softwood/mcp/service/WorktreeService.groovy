@@ -59,7 +59,7 @@ class WorktreeService extends AbstractFileService implements ToolHandler {
     static final String DESCRIPTION = '''\
 A private git worktree for an agent's code harness (AW runs a local coder in one while a test judges its change).
 Actions: create|read|edit|diff|hashes|apply|remove. A worktree is a direct child of the worktree root; paths inside it are relative.
-- create(repoDir, name, baseRef=HEAD, specFiles[]): git worktree add --detach, then copy the named files in from the main tree. Returns worktree, base, specHashes.
+- create(repoDir, name, baseRef=HEAD, specFiles[], specRef): git worktree add --detach, then put the named files in: from the main tree, or as they were at specRef when given. Returns worktree, base, specHashes.
 - read(worktree, file, startLine, endLine): exact lines, at most 200 a call. Returns file, startLine, endLine, totalLines, lines, cut.
 - edit(worktree, file, find, replace): one replacement; find must match exactly once. An empty find creates the file. Hash check and structural guard apply. Returns ok, file, created, originalSha -- or refused + reason.
 - diff(worktree, files[]): unified diff of those files, new files included.
@@ -96,7 +96,8 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
                     repoDir  : [type: 'string', description: '[create|apply|remove] The repository the worktree belongs to (absolute, an allowed directory)'],
                     name     : [type: 'string', description: '[create] Short name for the worktree directory: letters, digits, - and _ (e.g. the agent task id)'],
                     baseRef  : [type: 'string', description: '[create] Commit or ref to detach at (default HEAD)'],
-                    specFiles: [type: 'array', items: [type: 'string'], description: '[create] Files, relative to the repo, copied in from the main tree as they are now (committed or not)'],
+                    specFiles: [type: 'array', items: [type: 'string'], description: '[create] Files, relative to the repo, copied in from the main tree as they are now (committed or not) -- or, with specRef, as they were at that commit'],
+                    specRef  : [type: 'string', description: '[create] Commit to take specFiles from instead of the main tree (FS 0.9.86, WP4 gold cases: base before a fix, spec as the fix wrote it)'],
                     worktree : [type: 'string', description: '[read|edit|diff|hashes|apply|remove] The worktree path create returned'],
                     file     : [type: 'string', description: '[read|edit] File path relative to the worktree'],
                     startLine: [type: 'integer', description: '[read] First line, 1-indexed (default 1)'],
@@ -159,22 +160,32 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
         Path wt = root.resolve(repo.fileName.toString() + '-' + name)
         if (Files.exists(wt)) { throw new IllegalArgumentException('worktree directory already exists: ' + slash(wt.toString())) }
         // Every spec file is checked before anything is made, so a bad name leaves no worktree behind.
+        // FS 0.9.86 (WP4 slice B): with specRef the file must exist AT that commit, and is taken from there.
+        String specRef = str(a.get('specRef'))
         list(a.get('specFiles')).each { String rel ->
-            Path src = repo.resolve(rel).normalize()
-            if (!src.startsWith(repo) || !Files.isRegularFile(src)) {
-                throw new IllegalArgumentException('spec file not found in the main tree: ' + rel)
-            }
             if (!wt.resolve(rel).normalize().startsWith(wt)) { throw new SecurityException('spec file escapes the worktree: ' + rel) }
+            if (specRef) {
+                List<String> has = git(repo, ['cat-file', '-e', specRef + ':' + slash(rel)])
+                if (has[0] != '0') { throw new IllegalArgumentException('spec file not found at ' + specRef + ': ' + rel) }
+            } else {
+                Path src = repo.resolve(rel).normalize()
+                if (!src.startsWith(repo) || !Files.isRegularFile(src)) {
+                    throw new IllegalArgumentException('spec file not found in the main tree: ' + rel)
+                }
+            }
         }
         String base = str(a.get('baseRef')) ?: 'HEAD'
         List<String> add = git(repo, ['worktree', 'add', '--detach', wt.toString(), base])
         if (add[0] != '0') { throw new IllegalArgumentException('git worktree add failed: ' + (add[2] ?: add[1]).trim().take(300)) }
         Map<String, Object> hashes = new LinkedHashMap<String, Object>()
         list(a.get('specFiles')).each { String rel ->
-            Path src = repo.resolve(rel).normalize()
             Path dst = wt.resolve(rel).normalize()
             Files.createDirectories(dst.parent)
-            Files.copy(src, dst, StandardCopyOption.REPLACE_EXISTING)
+            if (specRef) {
+                Files.write(dst, gitShowBytes(repo, specRef + ':' + slash(rel)))
+            } else {
+                Files.copy(repo.resolve(rel).normalize(), dst, StandardCopyOption.REPLACE_EXISTING)
+            }
             hashes.put(slash(rel), (Object) sha(dst))
         }
         String head = git(wt, ['rev-parse', 'HEAD'])[1].trim()
@@ -462,6 +473,23 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
         if (v == null) { return null }
         if (v instanceof Number) { return ((Number) v).intValue() }
         try { return Integer.parseInt(v.toString().trim()) } catch (Exception ignored) { return null }
+    }
+
+    /**
+     * FS 0.9.86: a file's bytes as git holds them at a ref, untouched -- read as BYTES, not through the text helper
+     * below, whose platform charset could alter a spec's non-ASCII comments. Throws when git cannot produce it.
+     */
+    protected byte[] gitShowBytes(Path dir, String refPath) {
+        Process p = new ProcessBuilder(['git', '-C', dir.toString(), 'show', refPath]).start()
+        Thread drainErr = Thread.start { p.errorStream.bytes }
+        byte[] bytes = p.inputStream.readAllBytes()
+        if (!p.waitFor(gitTimeoutSeconds, TimeUnit.SECONDS)) {
+            p.destroyForcibly()
+            throw new IllegalArgumentException('git show did not finish in ' + gitTimeoutSeconds + ' s: ' + refPath)
+        }
+        drainErr.join(5000L)
+        if (p.exitValue() != 0) { throw new IllegalArgumentException('git show failed for ' + refPath) }
+        bytes
     }
 
     /** [exit code as text, stdout, stderr]. A git that cannot be started or does not finish is exit -1. */

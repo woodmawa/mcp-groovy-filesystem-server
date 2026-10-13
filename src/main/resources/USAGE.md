@@ -241,8 +241,10 @@ A private copy of a repository for a local coding agent: a git worktree under on
 Claude does not normally call this tool. Every path is relative to the worktree and a path that leaves it is a tool error.
 
 ### Actions
-- `create` repoDir, name, [baseRef=HEAD], [specFiles] -- `git worktree add --detach <root>/<repo>-<name>`; each spec
-  file is copied in from the main working tree (uncommitted work arrives this way). Returns `worktree`, `specHashes`.
+- `create` repoDir, name, [baseRef=HEAD], [specFiles], [specRef] -- `git worktree add --detach <root>/<repo>-<name>`;
+  each spec file is copied in from the main working tree (uncommitted work arrives this way), or, with `specRef`, taken
+  as it was at that commit (a gold case: base before a fix, spec as the fix wrote it). Every spec is checked before the
+  worktree is made. Returns `worktree`, `specHashes`.
 - `read` worktree, file, [startLine, endLine] -- at most 200 lines.
 - `edit` worktree, file, find, replace -- FS's own replace: `find` must match exactly once; an empty `find` creates the
   file. Hash check, structural guard and the line-ending policy apply as for `file_write replace`. Refusals are data,
