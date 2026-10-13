@@ -43,7 +43,9 @@ import java.util.concurrent.TimeUnit
 class WorktreeService extends AbstractFileService implements ToolHandler {
 
     static final String TOOL = 'worktree'
-    static final List<String> ACTIONS = ['create', 'read', 'edit', 'diff', 'hashes', 'apply', 'remove'].asImmutable()
+    static final List<String> ACTIONS = ['create', 'read', 'outline', 'edit', 'diff', 'hashes', 'apply', 'remove'].asImmutable()
+    /** FS 0.9.87: the most outline entries returned for one file; a cut is reported. */
+    static final int MAX_OUTLINE_ENTRIES = 150
 
     static final String EDIT_REFUSED = 'WORKTREE_EDIT_REFUSED'
     static final String FIND_REQUIRED = 'WORKTREE_FIND_REQUIRED'
@@ -58,9 +60,10 @@ class WorktreeService extends AbstractFileService implements ToolHandler {
 
     static final String DESCRIPTION = '''\
 A private git worktree for an agent's code harness (AW runs a local coder in one while a test judges its change).
-Actions: create|read|edit|diff|hashes|apply|remove. A worktree is a direct child of the worktree root; paths inside it are relative.
+Actions: create|read|outline|edit|diff|hashes|apply|remove. A worktree is a direct child of the worktree root; paths inside it are relative.
 - create(repoDir, name, baseRef=HEAD, specFiles[], specRef): git worktree add --detach, then put the named files in: from the main tree, or as they were at specRef when given. Returns worktree, base, specHashes.
 - read(worktree, file, startLine, endLine): exact lines, at most 200 a call. Returns file, startLine, endLine, totalLines, lines, cut.
+- outline(worktree, file): where things are without reading them -- classes, methods and constructors with start and end lines (Groovy/Java/Kotlin). Returns file, totalLines, scanner, entries [{line, endLine, type, content, owner}], cut.
 - edit(worktree, file, find, replace): one replacement; find must match exactly once. An empty find creates the file. Hash check and structural guard apply. Returns ok, file, created, originalSha -- or refused + reason.
 - diff(worktree, files[]): unified diff of those files, new files included.
 - hashes(worktree, files[]): SHA-256 of each file, null when missing.
@@ -71,6 +74,8 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
     @Autowired WorktreeRoots roots
     @Autowired FileReplaceService replaceService
     @Autowired FileContentWriter contentWriter
+    /** FS 0.9.87: the outline is file_read structure's own scanner. Optional: absent, one is made. */
+    @Autowired(required = false) AstStructureScanner structureScanner
     /** For the after-write step on apply. Optional so a bare spec can leave it out. */
     @Autowired(required = false) FileWriteService fileWriteService
 
@@ -99,7 +104,7 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
                     specFiles: [type: 'array', items: [type: 'string'], description: '[create] Files, relative to the repo, copied in from the main tree as they are now (committed or not) -- or, with specRef, as they were at that commit'],
                     specRef  : [type: 'string', description: '[create] Commit to take specFiles from instead of the main tree (FS 0.9.86, WP4 gold cases: base before a fix, spec as the fix wrote it)'],
                     worktree : [type: 'string', description: '[read|edit|diff|hashes|apply|remove] The worktree path create returned'],
-                    file     : [type: 'string', description: '[read|edit] File path relative to the worktree'],
+                    file     : [type: 'string', description: '[read|outline|edit] File path relative to the worktree'],
                     startLine: [type: 'integer', description: '[read] First line, 1-indexed (default 1)'],
                     endLine  : [type: 'integer', description: '[read] Last line, inclusive (default: 200 lines from startLine)'],
                     find     : [type: 'string', description: '[edit] The exact text to replace; must match once. Empty creates the file.'],
@@ -122,6 +127,7 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
             switch (action) {
                 case 'create': return textResponse(requestId, doCreate(arguments))
                 case 'read'  : return textResponse(requestId, doRead(arguments))
+                case 'outline': return textResponse(requestId, doOutline(arguments))
                 case 'edit'  : return textResponse(requestId, doEdit(arguments, requestId))
                 case 'diff'  : return textResponse(requestId, doDiff(arguments))
                 case 'hashes': return textResponse(requestId, doHashes(arguments))
@@ -218,6 +224,34 @@ No ontology gate, plan gate or re-index applies inside a worktree; apply re-inde
         boolean cut = end < Math.min(wanted, total)
         [file: (Object) rel, startLine: (Object) start, endLine: (Object) end, totalLines: (Object) total,
          lines: (Object) (total == 0 ? [] : new ArrayList<String>(lines.subList(start - 1, end))), cut: (Object) cut] as Map<String, Object>
+    }
+
+    /**
+     * FS 0.9.87 (decision 358): an outline of one file in the worktree -- classes, methods and constructors with their
+     * start and end lines, from the scanner file_read structure uses. A local coder given this on its first step can
+     * read the method it must change instead of paging the file from line 1 (AW run d0dbe851: 12 steps of lines 1-200).
+     * Fields and closures are left out; a file with no code structure answers no entries, not an error.
+     */
+    private Map<String, Object> doOutline(Map<String, Object> a) {
+        Path wt = worktreeOf(a)
+        String file = str(a.get('file'))
+        Path p = inside(wt, file)
+        if (p == null) { return refused(READ_REFUSED, "'${file}' is not a path inside the worktree: give it relative to the worktree root" as String) }
+        String rel = slash(wt.relativize(p).toString())
+        if (!Files.isRegularFile(p)) { return refused(READ_REFUSED, "'${rel}' does not exist in the worktree" as String) }
+        if (Files.size(p) > MAX_BYTES) { return refused(READ_REFUSED, "'${rel}' is larger than ${MAX_BYTES} bytes" as String) }
+        int total = Files.readAllLines(p, StandardCharsets.UTF_8).size()
+        AstStructureScanner scanner = structureScanner ?: new AstStructureScanner()
+        Map<String, Object> scanned = scanner.scan(p.toFile())
+        List<Map<String, Object>> all = (scanned?.get('structure') instanceof List ? (List<Map<String, Object>>) scanned.get('structure') : []) as List<Map<String, Object>>
+        List<Map<String, Object>> entries = all.findAll { Map<String, Object> e ->
+            !(e.get('type') in ['field', 'property', 'closure'])
+        }.collect { Map<String, Object> e ->
+            [line: e.get('line'), endLine: e.get('endLine'), type: e.get('type'), content: e.get('content'), owner: e.get('owner')] as Map<String, Object>
+        }
+        boolean cut = entries.size() > MAX_OUTLINE_ENTRIES
+        if (cut) { entries = new ArrayList<Map<String, Object>>(entries.subList(0, MAX_OUTLINE_ENTRIES)) }
+        [file: (Object) rel, totalLines: (Object) total, scanner: scanned?.get('scanner'), entries: (Object) entries, cut: (Object) cut] as Map<String, Object>
     }
 
     // -----------------------------------------------------------------------
