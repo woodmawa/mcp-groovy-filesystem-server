@@ -449,7 +449,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             // synchronous execute that outlives the bridge's ~60 s deadline left every later request unread. It now
             // runs as a job; if it is not done within syncWaitSeconds the caller gets the job id instead.
             if (jobRegistry != null && syncWaitSeconds > 0 && timeout > syncWaitSeconds) {
-                String summary = sanitize(cmd.join(' ')).take(200)
+                String summary = jobSummary(cmd, tempScript)
                 ExecuteJob job = jobRegistry.submit(action, summary, workingDir, { ExecuteJob j ->
                     runAndCapture(cmd, workingDir, timeout, action, envOverrides, maxStdout, maxStderr, grepPattern, j)
                 } as Closure<Map<String, Object>>)
@@ -721,6 +721,27 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         }
     }
 
+    /**
+     * FS 0.9.94: what a job is, for job_list and AW progress. The argv of a script action is the shell plus a temp
+     * file path -- it names nothing (measured 2026-10-14: "powershell ... -File ...\mcp-ps-9602718752786609684.ps1").
+     * So: the script's first non-blank line, clipped to 120 characters, with "(+N lines)" for the rest. The argv,
+     * as before, when there is no readable script file.
+     */
+    static String jobSummary(List<String> cmd, File tempScript) {
+        try {
+            if (tempScript != null && tempScript.isFile()) {
+                List<String> lines = tempScript.getText('UTF-8').readLines()*.trim().findAll { String l -> l }
+                if (lines) {
+                    String first = sanitize(lines[0])
+                    String more = lines.size() > 1 ? " (+${lines.size() - 1} lines)".toString() : ''
+                    String out = first + more
+                    return out.length() > 120 ? out.substring(0, 120) : out
+                }
+            }
+        } catch (Exception ignored) { /* fall back to the argv */ }
+        return sanitize(cmd.join(' ')).take(200)
+    }
+
     /** FS-EXEC-2: register the work as a background job and return its id immediately. */
     private McpResponse submitAsyncJob(List<String> cmd, String workingDir, int timeout,
                                        String action, Object requestId,
@@ -728,7 +749,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                        File tempScript = null) {
         int maxStdout      = (options?.maxStdout as Integer) ?: 50000
         int maxStderr      = (options?.maxStderr as Integer) ?: 5000
-        String summary     = sanitize(cmd.join(' ')).take(200)
+        String summary     = jobSummary(cmd, tempScript)
         ExecuteJob job = jobRegistry.submit(action, summary, workingDir, { ExecuteJob j ->
             runAndCapture(cmd, workingDir, timeout, action, envOverrides,
                           maxStdout, maxStderr, null, j)
