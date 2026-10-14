@@ -6,6 +6,7 @@ import groovy.util.logging.Slf4j
 import org.softwood.promise.Promise
 import org.softwood.promise.PromiseFactory
 import org.softwood.promise.core.PromiseConfiguration
+import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 
 import java.util.concurrent.ConcurrentHashMap
@@ -46,6 +47,16 @@ class ExecuteJobRegistry {
     private PromiseFactory promiseFactory
 
     /**
+     * FS 0.9.92 P3: told when a job starts and, ONCE, when it ends -- in production {@link AwJobEventClient}, so AW
+     * {@code action=progress} sees FS jobs and they outlive this process. Optional and fail-open.
+     */
+    private volatile JobEventSink jobEventSink
+    private final Set<String> finishPosted = ConcurrentHashMap.newKeySet()
+
+    @Autowired(required = false)
+    void setJobEventSink(JobEventSink sink) { this.jobEventSink = sink }
+
+    /**
      * Test seam (practice #1166 seam 1): explicit setter so a @CompileDynamic spec can inject
      * a factory. Production resolves lazily from GCU's static configuration.
      */
@@ -78,6 +89,7 @@ class ExecuteJobRegistry {
             startedAt     : System.currentTimeMillis()
         )
         jobs.put(job.jobId, job)
+        postEvent(job, 'running')
         job.promise = getPromiseFactory().executeAsync({ ->
             try {
                 Map<String, Object> result = work.call(job)
@@ -100,6 +112,7 @@ class ExecuteJobRegistry {
                 // The job owns its script file (see ExecuteService.submitAsyncJob) precisely
                 // because the submitting call has long since returned.
                 try { job.tempScript?.delete() } catch (Exception ignored) { }
+                postFinish(job)
             }
         } as Closure<Map<String, Object>>)
         log.info('ExecuteJobRegistry: submitted job {} action={} dir={}', job.jobId, action, workingDir)
@@ -127,19 +140,36 @@ class ExecuteJobRegistry {
         try { job.tempScript?.delete() } catch (Exception ignored) { }
         job.finishedAt = System.currentTimeMillis()
         log.info('ExecuteJobRegistry: cancelled job {}', jobId)
+        postFinish(job)
         return true
+    }
+
+    /** The end of a job is reported once, by whichever of the work's finally and cancel() gets there first. */
+    private void postFinish(ExecuteJob job) {
+        if (finishPosted.add(job.jobId)) postEvent(job, job.status)
+    }
+
+    /** FAIL-OPEN: a job never fails, or waits, because its event could not be reported. */
+    private void postEvent(ExecuteJob job, String status) {
+        JobEventSink sink = jobEventSink
+        if (sink == null) return
+        try {
+            sink.jobEvent(job, status)
+        } catch (Throwable t) {
+            log.debug('ExecuteJobRegistry: job event {} for {} dropped - {}', status, job.jobId, t.message)
+        }
     }
 
     /** Drop finished jobs past the retention window, then trim to MAX_JOBS oldest-finished-first. */
     private void evict() {
         long now = System.currentTimeMillis()
         jobs.values().findAll { ExecuteJob j -> j.finished && (now - j.finishedAt) > RETAIN_COMPLETED_MS }
-            .each { ExecuteJob j -> jobs.remove(j.jobId) }
+            .each { ExecuteJob j -> jobs.remove(j.jobId); finishPosted.remove(j.jobId) }
         if (jobs.size() >= MAX_JOBS) {
             jobs.values().findAll { ExecuteJob j -> j.finished }
                 .sort { ExecuteJob a, ExecuteJob b -> a.finishedAt <=> b.finishedAt }
                 .take(Math.max(1, jobs.size() - MAX_JOBS + 1))
-                .each { ExecuteJob j -> jobs.remove(j.jobId) }
+                .each { ExecuteJob j -> jobs.remove(j.jobId); finishPosted.remove(j.jobId) }
         }
     }
 }

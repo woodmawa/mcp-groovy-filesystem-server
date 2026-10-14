@@ -2534,3 +2534,6 @@ Mutations: disjoint pairs falling through to the string check -> VAL-4 only; int
   `Error checking path allowed: null` at ERROR); an unexpected failure now names its exception class.
 - Spec: `CallerRefusalLogLevelSpec` CR-1..CR-4, red first on 0.9.90 (the live ERROR lines); mutation (CR-1's WARN back
   to ERROR) -> CR-1 red.
+
+## [0.9.92]
+Async jobs report their lifecycle to AW (BUILD-BRIEF-2026-10-14-progress-and-aw-fixes, P3). ExecuteJobRegistry tells a JobEventSink when a job starts and, exactly once, when it ends (a cancel and the work's own failure cannot both report). AwJobEventClient posts it to AW flow_management action=record_job_event on the companion (:8084/mcp, mcp.agentic-workflow.url) with this process's claimed session, exit code, duration and the last ten output lines, from one daemon thread, short timeouts, fail-open: a job never fails or waits because AW is unreachable. Claude reads it with AW action=progress instead of polling job_status per job. Specs JE-1..3, AJ-1..2; mutation-checked (once-guard).
