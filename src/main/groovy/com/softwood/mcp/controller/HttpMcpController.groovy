@@ -161,7 +161,10 @@ class HttpMcpController {
         // McpController's POST / and was proven there, but /mcp delegated to the one-argument form, so the
         // header never arrived live: the first flow call after the install still filed as 'unknown'.
         String callerSession = servletRequest?.getHeader(McpController.CALLER_SESSION_HEADER)
-        McpResponse response = mcpController.handleRequest(request, callerSession)
+        // FS 0.9.95: and the AW run/node the call is for (X-Aw-Run / X-Aw-Node) -- same route, same lesson as 0.9.59.
+        McpResponse response = mcpController.handleRequest(request, callerSession,
+            servletRequest?.getHeader(com.softwood.mcp.service.AwCallContext.RUN_HEADER),
+            servletRequest?.getHeader(com.softwood.mcp.service.AwCallContext.NODE_HEADER))
         return ResponseEntity.ok()
             .header('Mcp-Session-Id', sessionId)
             .body(response)

@@ -41,6 +41,39 @@ class ToolsService extends AbstractFileService implements ToolHandler {
     @Autowired(required = false)
     PlanGateGuard planGateGuard
 
+    /** FS 0.9.95: posts live gradle test progress to the AW node a flow call is made for. */
+    @Autowired(required = false)
+    AwJobEventClient awEvents
+
+    /** FS 0.9.95: task lists that run tests, and so get the progress init script when called for an AW node. */
+    static boolean progressTasks(List<String> tasks) {
+        return tasks?.any { String t -> t in ['test', 'build', 'check'] } ?: false
+    }
+
+    /** The gradle argv: wrapper, tasks, --no-daemon, the progress init script when given, then the caller's args. */
+    static List<String> gradleCommand(String gradleCmd, List<String> tasks, List<String> args, File initScript) {
+        List<String> cmd = [gradleCmd] + tasks + ['--no-daemon']
+        if (initScript != null) cmd += ['--init-script', initScript.absolutePath]
+        return cmd + GradleArgs.launcherSafe(args)
+    }
+
+    /**
+     * FS 0.9.95 -- runs {@code cmd} and, when this call was made for an AW node (AwCallContext, read HERE on the
+     * calling thread: the output is read on another), streams init-script markers into record_node_progress posts.
+     * Without an AW node, or without the client, it is exactly runToolRaw.
+     */
+    protected Map<String, Object> runWithProgress(List<String> cmd, String workingDir, int timeout, String detail) {
+        String runId = AwCallContext.run()
+        String nodeId = AwCallContext.node()
+        AwJobEventClient aw = awEvents
+        if (!runId || !nodeId || aw == null) return runToolRaw(cmd, workingDir, timeout)
+        GradleProgress gp = new GradleProgress(runId, nodeId, detail,
+            { Map m -> aw.nodeProgress(m as Map<String, Object>) } as Closure)
+        Map<String, Object> r = runToolRaw(cmd, workingDir, timeout, null, { String l -> gp.onLine(l) } as Closure)
+        gp.finish()
+        return r
+    }
+
     ToolsService(PathService pathService) {
         super(pathService)
     }
@@ -190,8 +223,11 @@ Developer toolchain. Actions:
 
         // FS 0.9.68 (chain 2e0ad21b): `--tests X` is folded to `--tests=X` -- the Windows java
         // launcher behind gradlew.bat glob-expands a wildcard value against workingDir files.
-        List<String> cmd = [gradleCmd] + tasks + ['--no-daemon'] + GradleArgs.launcherSafe(args)
-        return runTool(cmd, workingDir, timeout, "gradle ${subcommand}", requestId)
+        // FS 0.9.95: a test-running call made for an AW node reports live progress to that node.
+        boolean withProgress = progressTasks(tasks) && awEvents != null && AwCallContext.run() != null
+        List<String> cmd = gradleCommand(gradleCmd, tasks, args, withProgress ? GradleProgress.initScriptFile() : null)
+        return runTool(cmd, workingDir, timeout, "gradle ${subcommand}", requestId,
+            withProgress ? "gradle ${subcommand}".toString() : null)
     }
 
     private McpResponse doMvn(String subcommand, List<String> args, String workingDir,
@@ -303,8 +339,9 @@ Developer toolchain. Actions:
     // -----------------------------------------------------------------------
 
     private McpResponse runTool(List<String> cmd, String workingDir, int timeout,
-                                String label, Object requestId) {
-        Map<String, Object> result = runToolRaw(cmd, workingDir, timeout)
+                                String label, Object requestId, String progressDetail = null) {
+        Map<String, Object> result = progressDetail ? runWithProgress(cmd, workingDir, timeout, progressDetail)
+                                                    : runToolRaw(cmd, workingDir, timeout)
         log.info("tools {}: exitCode={}, duration={}ms", label, result.exitCode, result.durationMs)
         String stdout = (result.stdout as String) ?: ''
         String stderr = (result.stderr as String) ?: ''
@@ -324,8 +361,8 @@ Developer toolchain. Actions:
         return textResponse(requestId, tr)
     }
 
-    private Map<String, Object> runToolRaw(List<String> cmd, String workingDir, int timeout,
-                                            Map<String, String> envOverrides = null) {
+    protected Map<String, Object> runToolRaw(List<String> cmd, String workingDir, int timeout,
+                                              Map<String, String> envOverrides = null, Closure onLine = null) {
         long start = System.currentTimeMillis()
         Process process = null
         try {
@@ -342,6 +379,11 @@ Developer toolchain. Actions:
             int capturedErr = 0
             Thread stdoutThread = Thread.ofVirtual().start({
                 process.inputStream.eachLine { String line ->
+                    // FS 0.9.95: every line, before the capture cap -- a whole suite passes 50k chars long before
+                    // its last test. Fail-open: a listener fault never stops the drain.
+                    if (onLine != null) {
+                        try { onLine.call(line) } catch (Exception ignored) { }
+                    }
                     if (capturedOut < 50000) {
                         String s = sanitize(line)
                         stdout.append(s).append('\n')

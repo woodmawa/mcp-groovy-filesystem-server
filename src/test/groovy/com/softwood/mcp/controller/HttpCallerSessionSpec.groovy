@@ -27,6 +27,8 @@ import spock.lang.Specification
  * CONTRACT:
  *   HC-1  a tools/call on POST /mcp carrying X-Mcp-Caller-Session is attributed to that session
  *   HC-2  CONTROL: without the header, an unclaimed process files system:fs-unclaimed (FS 0.9.80 SB-2; 'unknown' before)
+ *   HC-3  FS 0.9.95: X-Aw-Run / X-Aw-Node on POST /mcp are visible to the tool DURING the call (AwCallContext), so a
+ *         long gradle call can post progress to the AW node waiting on it -- and are gone after the call
  */
 @CompileDynamic
 class HttpCallerSessionSpec extends Specification {
@@ -90,5 +92,34 @@ class HttpCallerSessionSpec extends Specification {
 
         then:
         1 * t.recordToolCall('system:fs-unclaimed', 'tools', _, _, _, _, _, _)   // FS 0.9.80 SB-2 (D2/D3): named, not 'unknown'
+    }
+
+    def 'HC-3 X-Aw-Run / X-Aw-Node reach the tool during the call, and are cleared after'() {
+        given:
+        List<String> seen = []
+        ToolHandler h = Stub(ToolHandler)
+        h.getToolDefinitions() >> [[name: 'tools', description: 'stub', inputSchema: [:]]]
+        h.canHandle(_) >> true
+        h.handleToolCall(_, _, _) >> {
+            seen << com.softwood.mcp.service.AwCallContext.run() << com.softwood.mcp.service.AwCallContext.node()
+            McpResponse.success(2, [content: [[type: 'text', text: JsonOutput.toJson([ok: true])]]])
+        }
+        McpController c = new McpController([h])
+        c.globalResponseCapChars = 64000
+        HttpMcpController hc = new HttpMcpController()
+        hc.mcpController = c
+        String sid = initialize(hc)
+        HttpServletRequest r = Stub(HttpServletRequest)
+        r.getHeader('X-Mcp-Caller-Session') >> '2026-10-14-14-01'
+        r.getHeader('X-Aw-Run') >> 'run-77'
+        r.getHeader('X-Aw-Node') >> 'run-gradle'
+
+        when:
+        hc.handleRequest(toolsCall(), sid, r)
+
+        then:
+        seen == ['run-77', 'run-gradle']
+        com.softwood.mcp.service.AwCallContext.run() == null
+        com.softwood.mcp.service.AwCallContext.node() == null
     }
 }

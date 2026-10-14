@@ -86,10 +86,28 @@ class AwJobEventClient implements JobEventSink {
      */
     private volatile String mcpSessionId
 
+    /**
+     * FS 0.9.95 -- live progress for the AW node a gradle call is running for (record_node_progress). Queued on the
+     * same single sender thread and returned at once: it is called from the gradle output reader, which must never
+     * wait on AW. Fail-open like every event here.
+     */
+    void nodeProgress(Map<String, Object> args) {
+        try {
+            sender.submit({ sendAction('record_node_progress', args) } as Runnable)
+        } catch (Exception e) {
+            log.debug('AwJobEventClient: node progress dropped [{}]: {}', args?.get('runId'), e.message)
+        }
+    }
+
     /** One record_job_event; true when AW accepted it. Never throws. */
     boolean send(Map<String, Object> args) {
+        return sendAction('record_job_event', args)
+    }
+
+    /** One flow_management call of {@code action} on the AW companion; true when AW accepted it. Never throws. */
+    boolean sendAction(String action, Map<String, Object> args) {
         try {
-            Map<String, Object> arguments = [action: 'record_job_event'] as Map<String, Object>
+            Map<String, Object> arguments = [action: action] as Map<String, Object>
             arguments.putAll(args)
             String json = JsonOutput.toJson([jsonrpc: '2.0', method: 'tools/call', id: 2,
                                              params : [name: 'flow_management', arguments: arguments]])
@@ -99,10 +117,10 @@ class AwJobEventClient implements JobEventSink {
                 mcpSessionId = openSession()
                 code = (int) post(json, mcpSessionId).code
             }
-            if (code != 200) log.debug('AwJobEventClient: record_job_event [{}] answered {}', args?.get('jobId'), code)
+            if (code != 200) log.debug('AwJobEventClient: {} [{}] answered {}', action, args?.get('jobId') ?: args?.get('runId'), code)
             return code == 200
         } catch (Exception e) {
-            log.debug('AwJobEventClient: record_job_event not sent [{}]: {}', args?.get('jobId'), e.message)
+            log.debug('AwJobEventClient: {} not sent [{}]: {}', action, args?.get('jobId') ?: args?.get('runId'), e.message)
             return false
         }
     }

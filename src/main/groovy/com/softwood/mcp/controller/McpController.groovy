@@ -216,14 +216,25 @@ class McpController {
     /** HTTP entry. The one-argument form below is kept for direct (stdio) callers. */
     @PostMapping('/')
     McpResponse handleRequest(@RequestBody McpRequest request,
-                              @RequestHeader(value = 'X-Mcp-Caller-Session', required = false) String callerSession) {
+                              @RequestHeader(value = 'X-Mcp-Caller-Session', required = false) String callerSession,
+                              @RequestHeader(value = 'X-Aw-Run', required = false) String awRun,
+                              @RequestHeader(value = 'X-Aw-Node', required = false) String awNode) {
         String declared = callerSession?.trim()
         CALLER_SESSION.set(declared ?: null)
+        // FS 0.9.95: the AW run/node this call is for, so a long gradle call can post live progress to it.
+        // A ThreadLocal only -- no I/O on the hot path (practice 260).
+        com.softwood.mcp.service.AwCallContext.set(awRun, awNode)
         try {
             return handleRequest(request)
         } finally {
             CALLER_SESSION.remove()
+            com.softwood.mcp.service.AwCallContext.clear()
         }
+    }
+
+    /** Caller session only (kept for callers and specs that predate the AW run/node headers). */
+    McpResponse handleRequest(McpRequest request, String callerSession) {
+        return handleRequest(request, callerSession, null, null)
     }
 
     McpResponse handleRequest(McpRequest request) {
