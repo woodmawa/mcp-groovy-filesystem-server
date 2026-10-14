@@ -26,8 +26,12 @@ final class GradleArgs {
     private GradleArgs() {}
 
     /**
-     * `--tests X` becomes `--tests=X`; everything else, including an already-folded
-     * `--tests=X` and a trailing `--tests` with no value, is kept as given and in order.
+     * `--tests X` becomes `--tests=X`; everything else, including a trailing `--tests` with no value, is kept
+     * as given and in order.
+     *
+     * FS 0.9.89 T3: a value holding several patterns -- separated by spaces or commas, which a gradle filter
+     * pattern never contains -- becomes one folded filter per pattern, so `gradle-test-summary tests="*A* *B*"`
+     * runs both specs in one gradle call. An already-folded `--tests=A,B` is expanded the same way.
      */
     static List<String> launcherSafe(List<String> args) {
         List<String> out = []
@@ -36,13 +40,24 @@ final class GradleArgs {
         while (i < args.size()) {
             String a = args[i]
             if ((a in FOLDED_OPTIONS) && i + 1 < args.size()) {
-                out << (a + '=' + args[i + 1])
+                patterns(args[i + 1]).each { String p -> out << (a + '=' + p) }
                 i += 2
+            } else if (FOLDED_OPTIONS.any { String o -> a.startsWith(o + '=') }) {
+                int eq = a.indexOf('=')
+                String opt = a.substring(0, eq)
+                patterns(a.substring(eq + 1)).each { String p -> out << (opt + '=' + p) }
+                i++
             } else {
                 out << a
                 i++
             }
         }
         return out
+    }
+
+    /** The patterns in one filter value: split on spaces and commas, blanks dropped; never empty. */
+    static List<String> patterns(String value) {
+        List<String> ps = (value ?: '').split(/[\s,]+/).findAll { String s -> s } as List<String>
+        return ps ?: [value ?: '']
     }
 }

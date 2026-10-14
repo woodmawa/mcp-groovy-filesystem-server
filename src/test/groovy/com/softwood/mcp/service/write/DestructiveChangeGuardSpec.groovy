@@ -255,4 +255,27 @@ class DestructiveChangeGuardSpec extends Specification {
         assertToolError(r, 'DESTRUCTIVE_REPLACE')
         readFileContent(f.path).contains('the majority of this file')
     }
+
+    // FS 0.9.89 T2 (learning-loop-follow-through): the refusal said "removes at least half the file" on every
+    // path, including the one where the file length was unknown and nothing about the file had been measured.
+
+    def "CT-DR-12: a refusal with the file length known states the measured share"() {
+        when: '3,000 chars removed from a 4,000-char file, nothing added'
+        String msg = DestructiveChangeGuard.check('replace', 3000, 0, false, 'x.groovy', 4000)
+
+        then: 'RED on 0.9.88 -- it said "at least half the file", not what it measured'
+        msg.startsWith('DESTRUCTIVE_REPLACE')
+        msg.contains('removes 75% of the file')
+        !msg.contains('at least half')
+    }
+
+    def "CT-DR-13: with the file length unknown the refusal makes no claim about the file"() {
+        when:
+        String msg = DestructiveChangeGuard.check('replace', 3000, 0, false, 'x.groovy', 0)
+
+        then:
+        msg.startsWith('DESTRUCTIVE_REPLACE')
+        !msg.contains('of the file')
+        !msg.contains('at least half')
+    }
 }

@@ -48,17 +48,14 @@ final class DestructiveChangeGuard {
      * @param addedLength    total chars being added
      * @param force          true to bypass (options.force=true from caller)
      * @param filePath       used to pick code vs non-code threshold
+     * @param fileLength     length of the file being changed; when {@code > 0} and the removal is under
+     *                       {@link #SMALL_SHARE} of it, the change is allowed -- removing under half a file is a
+     *                       deletion, not a truncated rewrite. {@code <= 0} means unknown: the ratio alone decides.
      * @return               error string if guard fires, null if OK
-     */
-    static String check(String action, int removedLength, int addedLength,
-                        boolean force, String filePath) {
-        check(action, removedLength, addedLength, force, filePath, -1)
-    }
-
-    /**
-     * As above, knowing the length of the file being changed. When {@code fileLength > 0} and the removal is
-     * under {@link #SMALL_SHARE} of it, the change is allowed: removing under half a file is a deletion, not a
-     * truncated rewrite. {@code fileLength <= 0} (unknown) behaves exactly as the five-argument form.
+     *
+     * FS 0.9.89 T2: the five-argument form (length unknown) is gone -- every production caller passes the
+     * length -- and the refusal states what was measured instead of claiming "at least half the file" on a
+     * path that had not measured the file at all.
      */
     static String check(String action, int removedLength, int addedLength,
                         boolean force, String filePath, int fileLength) {
@@ -68,7 +65,9 @@ final class DestructiveChangeGuard {
         if (removedLength > threshold && addedLength < (int)(removedLength * DEFAULT_RATIO)) {
             return (
                 "DESTRUCTIVE_REPLACE: newText (${addedLength} chars) is less than 20% of " +
-                "oldText (${removedLength} chars) and removes at least half the file. " +
+                "oldText (${removedLength} chars)" +
+                (fileLength > 0 ? " and removes ${(int) Math.round(removedLength * 100.0d / fileLength)}% of the file" : '') +
+                '. ' +
                 "This typically means a full-file ${action} with truncated newText, which destroys content. " +
                 "To rewrite the file use action=write with the full content. " +
                 "For a legitimate shrinking ${action}, reduce oldText scope to just the target block. " +

@@ -31,4 +31,20 @@ class GradleArgsSpec extends Specification {
         GradleArgs.launcherSafe(null) == []
         GradleArgs.launcherSafe([]) == []
     }
+
+    // FS 0.9.89 T3 (obs 12593): gradle-test-summary passes tests=<one string> as one --tests value, so two specs
+    // needed two runs. Gradle filter patterns never contain spaces or commas, so a value that does is a list.
+
+    def 'GA-4: a --tests value holding several patterns becomes one filter each, spaces or commas'() {
+        expect: 'RED on 0.9.88 -- folded as one filter that matches nothing'
+        GradleArgs.launcherSafe(['-q', '--tests', '*A* *B*']) == ['-q', '--tests=*A*', '--tests=*B*']
+        GradleArgs.launcherSafe(['--tests', '*A*,*B*, com.x.C']) == ['--tests=*A*', '--tests=*B*', '--tests=com.x.C']
+        GradleArgs.launcherSafe(['--tests=*A*,*B*']) == ['--tests=*A*', '--tests=*B*']
+    }
+
+    def 'GA-5: a single pattern stays one filter (CONTROL); stray separators are dropped'() {
+        expect:
+        GradleArgs.launcherSafe(['--tests', 'com.*']) == ['--tests=com.*']
+        GradleArgs.launcherSafe(['--tests', ' *A* ,, ']) == ['--tests=*A*']
+    }
 }

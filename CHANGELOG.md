@@ -2499,3 +2499,14 @@ Mutations: disjoint pairs falling through to the string check -> VAL-4 only; int
   `replace` now checks after the load so the length is known; `multi_replace` and `patch` pass theirs. The patcher
   agent (task 98c53eda) was refused twice for deleting one dead method.
 - Specs: DestructiveChangeGuardSpec CT-DR-8..11, mutation-checked (8..10 red without the share rule; 11 stays refused).
+
+## [0.9.89] (2026-10-14) -- two specs in one run; a refusal that says what it measured (learning-loop-follow-through)
+
+- **T3** `GradleArgs.launcherSafe` (obs 12593): a `--tests` value holding several patterns, separated by spaces or commas
+  (which a gradle filter never contains), becomes one `--tests=` per pattern; an already-folded `--tests=A,B` too. So
+  `gradle-test-summary tests="*A* *B*"` runs both specs in one gradle call, where it used to need two runs.
+- **T2** `DestructiveChangeGuard`: the five-argument `check` (file length unknown) is removed -- no production caller
+  used it -- and the refusal states the measured share (`removes 75% of the file`) instead of "removes at least half
+  the file" on every path, including the one that had not measured the file.
+- Specs: GradleArgsSpec GA-4/GA-5 (GA-5's first line the CONTROL); DestructiveChangeGuardSpec CT-DR-12/13. All red
+  first on 0.9.88. Mutation (no split) turned GA-4/GA-5 red alone.
