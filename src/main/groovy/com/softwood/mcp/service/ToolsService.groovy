@@ -384,6 +384,10 @@ Developer toolchain. Actions:
                     if (onLine != null) {
                         try { onLine.call(line) } catch (Exception ignored) { }
                     }
+                    // FS 0.9.96: the progress markers are FS's own side channel, not the build's output. Captured,
+                    // they reached gradle-test-summary, whose compile-failure check matched 'compileGroovy' inside a
+                    // test NAME and reported an 11/11 green run as COMPILE_FAILED; a full suite added ~1,600 lines.
+                    if (line.startsWith(GradleProgress.MARKER)) return
                     if (capturedOut < 50000) {
                         String s = sanitize(line)
                         stdout.append(s).append('\n')

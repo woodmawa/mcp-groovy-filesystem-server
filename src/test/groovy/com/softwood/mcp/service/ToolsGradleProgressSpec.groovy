@@ -12,6 +12,9 @@ import spock.lang.Specification
  *         suite's output passes long before the end
  *   TG-4  a gradle call made for an AW node (AwCallContext) streams marker lines into node progress posts; with no
  *         AW context nothing is posted (CONTROL)
+ *   TG-5  (0.9.96) marker lines reach the listener but NOT the captured stdout -- captured, a test named after
+ *         'compileGroovy' made gradle-test-summary report a green run as COMPILE_FAILED. Ordinary lines are kept
+ *         (CONTROL)
  */
 class ToolsGradleProgressSpec extends Specification {
 
@@ -87,5 +90,27 @@ class ToolsGradleProgressSpec extends Specification {
 
         then:
         posted.isEmpty()
+    }
+
+    def 'TG-5 marker lines reach the listener but never the captured stdout'() {
+        given:
+        ToolsService t = new ToolsService()
+        List<String> heard = []
+        List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                            "'> Task :test'; '##AWTEST|SUCCESS|a.b.ToolsSpec|tasks: [compileGroovy]'; 'BUILD SUCCESSFUL'"]
+
+        when:
+        Map r = t.runToolRaw(cmd, System.getProperty('java.io.tmpdir'), 60, null, { String l -> heard << l })
+
+        then: 'the listener hears all three'
+        r.exitCode == 0
+        heard.size() == 3
+        heard.any { it.startsWith(GradleProgress.MARKER) }
+
+        and: 'the captured output keeps the build lines and drops the marker'
+        !(r.stdout as String).contains(GradleProgress.MARKER)
+        !(r.stdout as String).contains('compileGroovy')
+        (r.stdout as String).contains('> Task :test')
+        (r.stdout as String).contains('BUILD SUCCESSFUL')
     }
 }
