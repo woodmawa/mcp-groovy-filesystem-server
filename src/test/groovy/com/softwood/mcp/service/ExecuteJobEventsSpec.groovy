@@ -97,17 +97,55 @@ class ExecuteJobEventsSpec extends Specification {
         seen == ['running', 'cancelled']
     }
 
-    def 'AJ-1: the client posts record_job_event to AW over MCP, with the session and the output tail'() {
-        given: 'a stand-in for the AW companion'
-        List<String> bodies = new CopyOnWriteArrayList<String>()
-        HttpServer server = HttpServer.create(new InetSocketAddress('127.0.0.1', 0), 0)
-        server.createContext('/mcp') { ex ->
-            bodies << ex.requestBody.getText('UTF-8')
-            byte[] ok = '{"jsonrpc":"2.0","id":1,"result":{}}'.getBytes('UTF-8')
-            ex.sendResponseHeaders(200, ok.length); ex.responseBody.write(ok); ex.close()
+    /**
+     * A stand-in for the AW companion that behaves like the real one (HttpMcpController, Streamable HTTP):
+     * {@code initialize} issues an {@code Mcp-Session-Id}; any other call without a KNOWN id is 400. FS 0.9.92's
+     * AJ-1 used a stand-in that accepted anything, and passed against a route the real companion refuses
+     * (obs 12722). Records the bodies of the calls it ACCEPTED, apart from initialize.
+     */
+    private static class StrictAw {
+        HttpServer server
+        Set<String> known = java.util.concurrent.ConcurrentHashMap.newKeySet()
+        List<String> accepted = new CopyOnWriteArrayList<String>()
+        int initializes = 0
+        int refused = 0
+
+        StrictAw start() {
+            server = HttpServer.create(new InetSocketAddress('127.0.0.1', 0), 0)
+            server.createContext('/mcp') { ex ->
+                String body = ex.requestBody.getText('UTF-8')
+                Map rpc = new JsonSlurper().parseText(body) as Map
+                String sid = ex.requestHeaders.getFirst('Mcp-Session-Id')
+                int code = 200
+                if (rpc.method == 'initialize') {
+                    initializes++
+                    String issued = UUID.randomUUID().toString()
+                    known << issued
+                    ex.responseHeaders.add('Mcp-Session-Id', issued)
+                } else if (!sid || !known.contains(sid)) {
+                    refused++
+                    code = 400
+                } else {
+                    accepted << body
+                }
+                byte[] out = (code == 200 ? '{"jsonrpc":"2.0","id":1,"result":{}}'
+                                          : '{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Missing Mcp-Session-Id header"}}').getBytes('UTF-8')
+                ex.sendResponseHeaders(code, out.length); ex.responseBody.write(out); ex.close()
+            }
+            server.start()
+            return this
         }
-        server.start()
-        AwJobEventClient client = new AwJobEventClient(awUrl: "http://127.0.0.1:${server.address.port}".toString())
+
+        String url() { "http://127.0.0.1:${server.address.port}".toString() }
+        void forgetSessions() { known.clear() }   // what a companion restart does
+        void stop() { server?.stop(0) }
+    }
+
+    def 'AJ-1: the client opens an MCP session, then posts record_job_event with the session and the output tail'() {
+        given: 'a stand-in for the AW companion that enforces sessions like the real one'
+        StrictAw aw = new StrictAw().start()
+        List<String> bodies = aw.accepted
+        AwJobEventClient client = new AwJobEventClient(awUrl: aw.url())
         ExecuteJob job = new ExecuteJob(jobId: 'j-9', action: 'powershell', commandSummary: 'gradle test',
                                         workingDir: workDir, startedAt: System.currentTimeMillis() - 1500L)
         (1..15).each { job.appendStdout("line ${it}\n") }
@@ -133,8 +171,40 @@ class ExecuteJobEventsSpec extends Specification {
         a.command == 'gradle test'
         (a.tail as String).readLines() == (6..15).collect { "line ${it}".toString() }
 
+        and: 'one handshake, nothing refused'
+        aw.initializes == 1
+        aw.refused == 0
+
+        when: 'a second event reuses the session'
+        boolean again = client.send([jobId: 'j-9', jobStatus: 'running'] as Map<String, Object>)
+
+        then:
+        again
+        aw.initializes == 1
+        bodies.size() == 2
+
         cleanup:
-        server?.stop(0)
+        aw?.stop()
+    }
+
+    def 'AJ-3: after a companion restart the session is unknown -- the client re-opens one and the event still lands'() {
+        given:
+        StrictAw aw = new StrictAw().start()
+        AwJobEventClient client = new AwJobEventClient(awUrl: aw.url())
+        assert client.send([jobId: 'j-1', jobStatus: 'running'] as Map<String, Object>)
+
+        when: 'the companion restarts and forgets every session'
+        aw.forgetSessions()
+        boolean sent = client.send([jobId: 'j-1', jobStatus: 'completed', exitCode: 0] as Map<String, Object>)
+
+        then:
+        sent
+        aw.initializes == 2
+        aw.refused == 1
+        aw.accepted.size() == 2
+
+        cleanup:
+        aw?.stop()
     }
 
     def 'AJ-2: FAIL-OPEN -- AW not listening is false, never an exception'() {

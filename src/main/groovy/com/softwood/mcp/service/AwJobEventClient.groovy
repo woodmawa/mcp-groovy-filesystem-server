@@ -78,29 +78,58 @@ class AwJobEventClient implements JobEventSink {
         return out
     }
 
-    /** One POST; true when AW answered 200. Never throws. */
+    /**
+     * FS 0.9.93: the AW companion speaks Streamable HTTP -- {@code initialize} issues an {@code Mcp-Session-Id}, and
+     * any other call without a KNOWN one is answered 400 (AW HttpMcpController). 0.9.92 posted bare tools/call and
+     * every event was refused and dropped (obs 12722). The id is kept for reuse; a companion restart forgets it, so a
+     * 400 opens a fresh session once and retries.
+     */
+    private volatile String mcpSessionId
+
+    /** One record_job_event; true when AW accepted it. Never throws. */
     boolean send(Map<String, Object> args) {
         try {
             Map<String, Object> arguments = [action: 'record_job_event'] as Map<String, Object>
             arguments.putAll(args)
-            String json = JsonOutput.toJson([jsonrpc: '2.0', method: 'tools/call', id: 1,
+            String json = JsonOutput.toJson([jsonrpc: '2.0', method: 'tools/call', id: 2,
                                              params : [name: 'flow_management', arguments: arguments]])
-            HttpURLConnection conn = (HttpURLConnection) new URL("${awUrl}/mcp").openConnection()
-            try {
-                conn.requestMethod = 'POST'
-                conn.doOutput = true
-                conn.connectTimeout = 500
-                conn.readTimeout = 1500
-                conn.setRequestProperty('Content-Type', 'application/json')
-                conn.setRequestProperty('Accept', 'application/json, text/event-stream')
-                conn.outputStream.withWriter('UTF-8') { Writer w -> w << json }
-                return conn.responseCode == 200
-            } finally {
-                conn.disconnect()
+            if (mcpSessionId == null) mcpSessionId = openSession()
+            int code = (int) post(json, mcpSessionId).code
+            if (code == 400) {
+                mcpSessionId = openSession()
+                code = (int) post(json, mcpSessionId).code
             }
+            if (code != 200) log.debug('AwJobEventClient: record_job_event [{}] answered {}', args?.get('jobId'), code)
+            return code == 200
         } catch (Exception e) {
             log.debug('AwJobEventClient: record_job_event not sent [{}]: {}', args?.get('jobId'), e.message)
             return false
+        }
+    }
+
+    private String openSession() {
+        String init = JsonOutput.toJson([jsonrpc: '2.0', method: 'initialize', id: 1,
+                                         params : [protocolVersion: '2025-03-26', capabilities: [:],
+                                                   clientInfo     : [name: 'fs-job-events', version: '1']]])
+        Map<String, Object> r = post(init, null)
+        return ((int) r.code) == 200 ? (String) r.sessionId : null
+    }
+
+    private Map<String, Object> post(String json, String sessionId) {
+        HttpURLConnection conn = (HttpURLConnection) new URL("${awUrl}/mcp").openConnection()
+        try {
+            conn.requestMethod = 'POST'
+            conn.doOutput = true
+            conn.connectTimeout = 500
+            conn.readTimeout = 1500
+            conn.setRequestProperty('Content-Type', 'application/json')
+            conn.setRequestProperty('Accept', 'application/json, text/event-stream')
+            if (sessionId) conn.setRequestProperty('Mcp-Session-Id', sessionId)
+            conn.outputStream.withWriter('UTF-8') { Writer w -> w << json }
+            int code = conn.responseCode
+            return [code: code, sessionId: conn.getHeaderField('Mcp-Session-Id')] as Map<String, Object>
+        } finally {
+            conn.disconnect()
         }
     }
 }
