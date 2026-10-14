@@ -103,6 +103,10 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
             return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (FileNotFoundException e) {
             return McpResponse.toolError(requestId, sanitize(e.message))
+        } catch (IllegalArgumentException e) {
+            // FS 0.9.91: the caller's input was refused (e.g. "Path is not a directory") -- not a fault.
+            log.warn("file_search refused: {}", sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         } catch (Exception e) {
             log.error("file_search error: {}", sanitize(e.message))
             return McpResponse.toolError(requestId, sanitize(e.message))

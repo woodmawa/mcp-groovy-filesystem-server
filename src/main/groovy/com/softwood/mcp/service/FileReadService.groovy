@@ -546,6 +546,10 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
             return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
         } catch (FileNotFoundException e) {
             return McpResponse.toolError(requestId, sanitize(e.message))
+        } catch (IllegalArgumentException e) {
+            // FS 0.9.91: the caller's input was refused (e.g. "Path is not a file") -- the tool working, not a fault.
+            log.warn('file_read refused: {}', sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         } catch (Exception e) {
             log.error('file_read error: {}', sanitize(e.message), e)
             return McpResponse.toolError(requestId, sanitize(e.message))

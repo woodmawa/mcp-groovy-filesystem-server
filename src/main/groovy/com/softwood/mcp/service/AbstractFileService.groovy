@@ -175,6 +175,9 @@ abstract class AbstractFileService {
      * Handles symbolic link validation and relative path resolution
      */
     boolean isPathAllowed(String path) {
+        // FS 0.9.91: no path is not allowed -- said plainly. It used to reach normalizePath and come back as
+        // "Error checking path allowed: null" at ERROR (2026-10-14, two incidents).
+        if (path == null || path.trim().isEmpty()) return false
         try {
             String normalized = pathService.normalizePath(path)
             Path absPath = Paths.get(normalized).toAbsolutePath()
@@ -206,7 +209,7 @@ abstract class AbstractFileService {
                 resolvedPath.startsWith(allowedReal)
             }
         } catch (Exception e) {
-            log.error("Error checking path allowed: ${sanitize(e.message)}")
+            log.error("Error checking path allowed: ${e.class.simpleName}: ${sanitize(e.message)}")
             return false
         }
     }

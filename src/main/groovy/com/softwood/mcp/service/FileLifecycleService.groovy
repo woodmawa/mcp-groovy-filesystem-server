@@ -89,6 +89,10 @@ dst required for copy/move/rename. All actions: options.verbose=true for full re
         } catch (SecurityException e) {
             log.warn("Security violation in file_lifecycle: {}", sanitize(e.message))
             return McpResponse.toolError(requestId, "Security error: ${sanitize(e.message)}")
+        } catch (FileNotFoundException | IllegalArgumentException e) {
+            // FS 0.9.91: the caller's input was refused (e.g. "Source not found") -- the tool working, not a fault.
+            log.warn("file_lifecycle refused: {}", sanitize(e.message))
+            return McpResponse.toolError(requestId, sanitize(e.message))
         } catch (Exception e) {
             log.error("file_lifecycle error: {}", sanitize(e.message))
             return McpResponse.toolError(requestId, sanitize(e.message))

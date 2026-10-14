@@ -2522,3 +2522,15 @@ Mutations: disjoint pairs falling through to the string check -> VAL-4 only; int
 - Spec: `TestLogTargetSpec` LT-1 (boots a Spring context; no file appender under claude-sync/logs, root still has
   an appender). Red without the file (`mcp-filesystem-11344.log` attached), green with it.
 - Data: the 29 existing test-JVM logs moved to `claude-sync/logs/test-jvm-archive/` (not deleted), out of the glob.
+
+## [0.9.91] (2026-10-14) -- a refusal of the caller's input is a WARN, not an ERROR
+
+- Found by AW's app-error scan: FileReadService, FileSearchService and FileLifecycleService logged every exception
+  from a catch-all at ERROR, so "Path is not a file", "Path is not a directory" and "Source not found" -- the tool
+  correctly refusing a bad request -- read as server faults and became incidents.
+- `IllegalArgumentException` (and in file_lifecycle `FileNotFoundException`) now logs `<tool> refused: ...` at WARN
+  and returns the same tool error; ERROR is kept for everything else.
+- `AbstractFileService.isPathAllowed`: a null or blank path is a plain `false` (it used to surface as
+  `Error checking path allowed: null` at ERROR); an unexpected failure now names its exception class.
+- Spec: `CallerRefusalLogLevelSpec` CR-1..CR-4, red first on 0.9.90 (the live ERROR lines); mutation (CR-1's WARN back
+  to ERROR) -> CR-1 red.
