@@ -2510,3 +2510,15 @@ Mutations: disjoint pairs falling through to the string check -> VAL-4 only; int
   the file" on every path, including the one that had not measured the file.
 - Specs: GradleArgsSpec GA-4/GA-5 (GA-5's first line the CONTROL); DestructiveChangeGuardSpec CT-DR-12/13. All red
   first on 0.9.88. Mutation (no split) turned GA-4/GA-5 red alone.
+
+## [0.9.90] (2026-10-14) -- test JVMs stop writing into claude-sync/logs (learning-loop-verdict)
+
+- Found by AW 1.30.91's new app-error scan: 29 of the FS per-pid logs in `claude-sync/logs` were gradle test JVMs
+  (`[Test worker]`, "Starting ...Spec"), because `logback-spring.xml` attaches the FILE appender in every profile.
+  The specs' deliberate failures read as live incidents: SecurityService 57, FileLifecycleService 40,
+  ServerLifecycleService 16, most of FileReadService 45. CS and AW tests write none.
+- New `src/test/resources/logback-test.xml` (console only). Spring Boot loads it ahead of `logback-spring.xml` in a
+  test JVM; production logging is unchanged.
+- Spec: `TestLogTargetSpec` LT-1 (boots a Spring context; no file appender under claude-sync/logs, root still has
+  an appender). Red without the file (`mcp-filesystem-11344.log` attached), green with it.
+- Data: the 29 existing test-JVM logs moved to `claude-sync/logs/test-jvm-archive/` (not deleted), out of the glob.

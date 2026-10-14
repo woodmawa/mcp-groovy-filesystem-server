@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!--
+        FS 0.9.90. TEST classpath only. Spring Boot looks for logback-test.xml before logback-spring.xml,
+        so in a test JVM this file replaces the production config.
+
+        Why: logback-spring.xml attaches the FILE appender (claude-sync/logs/mcp-filesystem-PID.log) in every
+        profile. Every gradle test JVM therefore wrote a per-pid log beside the live servers' logs: 27 of 110
+        files on 2026-10-14. Once AW 1.30.91 began scanning those logs, the specs' deliberate failures read as
+        live incidents. Tests log to the console only. Pinned by TestLogTargetSpec.
+
+        Do not use a double hyphen anywhere in this comment: logback fails to parse the file and Spring Boot
+        falls back to its default config.
+    -->
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDERR"/>
+    </root>
+
+    <logger name="com.softwood.mcp" level="DEBUG"/>
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="org.springframework.boot" level="WARN"/>
+</configuration>
