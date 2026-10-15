@@ -757,7 +757,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         // The job outlives this call, so it owns the script file and deletes it on completion.
         job.tempScript = tempScript
 
-        return textResponse(requestId, [
+        Map<String, Object> submitted = [
             async     : true,
             jobId     : job.jobId,
             status    : job.status,
@@ -767,7 +767,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             timeoutSec: timeout,
             hint      : 'Poll with action=job_status jobId=<id>; tail with action=job_output ' +
                         'jobId=<id> sinceOffset=<n>; stop with action=job_cancel.'
-        ] as Map<String, Object>)
+        ] as Map<String, Object>
+        // FS 0.9.98: say so at once when this job's events cannot reach AW progress.
+        Map<String, Object> h = jobRegistry.eventHealth()
+        if (h != null) submitted.aw_events = h
+        return textResponse(requestId, submitted)
     }
 
     /** FS-EXEC-2: status / incremental output / cancel / list for background jobs. */
@@ -776,7 +780,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
         if (action == 'job_list') {
             List<Map<String, Object>> rows = jobRegistry.list().collect { ExecuteJob j -> j.statusMap() }
-            return textResponse(requestId, [jobs: rows, count: rows.size()] as Map<String, Object>)
+            Map<String, Object> listed = [jobs: rows, count: rows.size()] as Map<String, Object>
+            Map<String, Object> h = jobRegistry.eventHealth()
+            if (h != null) listed.aw_events = h
+            return textResponse(requestId, listed)
         }
 
         if (!jobId) return McpResponse.toolError(requestId, "${action} requires options.jobId" as String)
@@ -788,11 +795,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
 
         switch (action) {
             case 'job_status':
-                return textResponse(requestId, job.statusMap())
+                return textResponse(requestId, jobRegistry.statusOf(job))
 
             case 'job_cancel':
                 boolean cancelled = jobRegistry.cancel(jobId)
-                Map<String, Object> cm = job.statusMap()
+                Map<String, Object> cm = jobRegistry.statusOf(job)
                 cm.cancelled = cancelled
                 if (!cancelled) cm.note = 'Job had already finished; nothing to cancel.'
                 return textResponse(requestId, cm)
@@ -807,7 +814,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 boolean errTrunc = err.length() > maxStderr
                 if (outTrunc) out = out.take(maxStdout)
                 if (errTrunc) err = err.take(maxStderr)
-                Map<String, Object> om = job.statusMap()
+                Map<String, Object> om = jobRegistry.statusOf(job)
                 om.stdout = out
                 om.stderr = err
                 // nextOffset lets the caller resume exactly where this read stopped.

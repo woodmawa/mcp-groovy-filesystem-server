@@ -10,4 +10,11 @@ import groovy.transform.CompileStatic
 @CompileStatic
 interface JobEventSink {
     void jobEvent(ExecuteJob job, String status)
+
+    /**
+     * FS 0.9.98: null while events are getting through; otherwise what is known about why they are not (reachable,
+     * since, dropped, lastError, note). A job answer carries it so a caller learns that AW progress cannot see this
+     * work -- found live 2026-10-15, when 11 minutes of dropped events read as quiet:true.
+     */
+    default Map<String, Object> health() { null }
 }

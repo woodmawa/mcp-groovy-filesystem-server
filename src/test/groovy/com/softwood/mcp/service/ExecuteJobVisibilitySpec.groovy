@@ -222,4 +222,69 @@ class ExecuteJobVisibilitySpec extends Specification {
         j.lineCount == 3
         j.lastLine == 'two'
     }
+
+    // FS 0.9.98 (Will 2026-10-15: make it visible). Found live: an install killed the AW companion at 13:15; for 11
+    // minutes every job event was refused and dropped, and AW progress answered quiet:true -- nothing said so.
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    def 'JV-6: refused posts are counted and named; the first accepted post clears them'() {
+        given: 'a port nothing listens on'
+        int closedPort = new ServerSocket(0).withCloseable { it.localPort }
+        AwJobEventClient client = new AwJobEventClient(awUrl: "http://127.0.0.1:${closedPort}".toString())
+
+        expect: 'healthy until something fails'
+        client.health() == null
+
+        when:
+        client.send([jobId: 'j1', jobStatus: 'running'] as Map<String, Object>)
+        client.send([jobId: 'j1', jobStatus: 'completed'] as Map<String, Object>)
+        Map h = client.health()
+
+        then:
+        h.reachable == false
+        h.dropped == 2
+        h.since != null
+        (h.note as String).contains('progress')
+
+        when: 'AW is back'
+        StrictAw aw = new StrictAw().start()
+        client.awUrl = aw.url()
+        client.send([jobId: 'j2', jobStatus: 'running'] as Map<String, Object>)
+
+        then:
+        client.health() == null
+
+        cleanup:
+        aw?.stop()
+    }
+
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    def 'JV-7: job_status through ExecuteService says when job events are not reaching AW; a healthy sink adds nothing'() {
+        given:
+        ExecuteService service = new ExecuteService()
+        service.jobRegistry = registry
+        Map unhealthy = [reachable: false, since: '2026-10-15T12:15:21Z', dropped: 7, note: 'x'] as Map<String, Object>
+        Map current = null
+        registry.jobEventSink = new JobEventSink() {
+            void jobEvent(ExecuteJob j, String s) { }
+            Map<String, Object> health() { current }
+        }
+        ExecuteJob job = registry.submit('cmd', 'x', workDir, { ExecuteJob j ->
+            [success: true, exitCode: 0] as Map<String, Object> } as Closure<Map<String, Object>>)
+
+        when:
+        Map healthy = payload(service.handleToolCall('execute', [action: 'job_status', options: [jobId: job.jobId]], 'spec'))
+        current = unhealthy
+        Map broken = payload(service.handleToolCall('execute', [action: 'job_status', options: [jobId: job.jobId]], 'spec'))
+
+        then:
+        !healthy.containsKey('aw_events')
+        broken.aw_events.reachable == false
+        broken.aw_events.dropped == 7
+    }
+
+    private static Map payload(def response) {
+        def content = response?.result?.content
+        return content ? (new groovy.json.JsonSlurper().parseText(content[0].text as String) as Map) : [:]
+    }
+
 }

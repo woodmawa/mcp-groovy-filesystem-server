@@ -176,6 +176,19 @@ class ExecuteJobRegistry {
 
     ExecuteJob get(String jobId) { jobId ? jobs.get(jobId) : null }
 
+    /** FS 0.9.98: the event sink's health -- null while job events are reaching AW. Never throws. */
+    Map<String, Object> eventHealth() {
+        try { return jobEventSink?.health() } catch (Throwable ignored) { return null }
+    }
+
+    /** A job's status, plus aw_events when its events are not reaching AW (so progress cannot show it). */
+    Map<String, Object> statusOf(ExecuteJob job) {
+        Map<String, Object> m = job.statusMap()
+        Map<String, Object> h = eventHealth()
+        if (h != null) m.aw_events = h
+        return m
+    }
+
     /** Newest first. */
     List<ExecuteJob> list() {
         return jobs.values().toList().sort { ExecuteJob a, ExecuteJob b -> b.startedAt <=> a.startedAt }

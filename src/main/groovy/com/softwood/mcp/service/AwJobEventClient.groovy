@@ -99,6 +99,35 @@ class AwJobEventClient implements JobEventSink {
      */
     private volatile String mcpSessionId
 
+    /** FS 0.9.98: posts refused since the last one AW accepted -- 0 means events are getting through. */
+    private volatile int droppedSinceOk
+    private volatile long failingSince
+    private volatile String lastError
+
+    @Override
+    Map<String, Object> health() {
+        int d = droppedSinceOk
+        if (d == 0) return null
+        return [reachable: false,
+                since    : java.time.Instant.ofEpochMilli(failingSince).toString(),
+                dropped  : d,
+                lastError: lastError,
+                note     : ('job events and node progress are not reaching AW at ' + awUrl +
+                            ' (companion down?) -- flow_management progress cannot see this work; job_status here can')
+               ] as Map<String, Object>
+    }
+
+    private void noteOutcome(boolean ok, String error) {
+        if (ok) {
+            droppedSinceOk = 0
+            lastError = null
+            return
+        }
+        if (droppedSinceOk == 0) failingSince = System.currentTimeMillis()
+        droppedSinceOk++
+        lastError = error
+    }
+
     /**
      * FS 0.9.95 -- live progress for the AW node a gradle call is running for (record_node_progress). Queued on the
      * same single sender thread and returned at once: it is called from the gradle output reader, which must never
@@ -131,9 +160,11 @@ class AwJobEventClient implements JobEventSink {
                 code = (int) post(json, mcpSessionId).code
             }
             if (code != 200) log.debug('AwJobEventClient: {} [{}] answered {}', action, args?.get('jobId') ?: args?.get('runId'), code)
+            noteOutcome(code == 200, code == 200 ? null : ('HTTP ' + code))
             return code == 200
         } catch (Exception e) {
             log.debug('AwJobEventClient: {} not sent [{}]: {}', action, args?.get('jobId') ?: args?.get('runId'), e.message)
+            noteOutcome(false, e.message)
             return false
         }
     }
