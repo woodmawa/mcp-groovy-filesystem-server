@@ -182,6 +182,12 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             // Security validation -- pass executor type for per-executor pattern rules
             securityService.validateScript(script, workingDir, action)
 
+            // optimised-learning WS1-D: a script that cannot do what was meant is refused before it runs, and before
+            // PLAN-GATE so it costs no gate (ScriptLint, ScriptLintSpec, ExecuteServiceDispatchSpec FS-EXEC-OL-1/2).
+            Map<String, Object> lint = ScriptLint.check(action, script)
+            if (lint.get('refusal')) return McpResponse.toolError(requestId, lint.get('refusal') as String)
+            List<String> lintWarnings = (lint.get('warnings') ?: []) as List<String>
+
             // FS 0.9.37 C1: PLAN-GATE on the first build/git call per repo this session.
             String planRefusal = planGateGuard?.checkExecute(script, workingDir, options.intent as String, options?.planAck as String)
             if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
@@ -190,11 +196,11 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             Map<String, String> envOverrides = options.env ? (options.env as Map<String, String>) : null
 
             switch (action) {
-                case 'bash'      : return doBash(script, workingDir, timeout, envOverrides, options, requestId)
-                case 'powershell': return doPowershell(script, workingDir, timeout, envOverrides, options, requestId)
-                case 'groovy'    : return doGroovy(script, workingDir, timeout, options, requestId)
-                case 'cmd'       : return doCmd(script, workingDir, timeout, envOverrides, options, requestId)
-                case 'python'    : return doPython(script, workingDir, timeout, envOverrides, options, requestId)
+                case 'bash'      : return withLintWarnings(doBash(script, workingDir, timeout, envOverrides, options, requestId), lintWarnings)
+                case 'powershell': return withLintWarnings(doPowershell(script, workingDir, timeout, envOverrides, options, requestId), lintWarnings)
+                case 'groovy'    : return withLintWarnings(doGroovy(script, workingDir, timeout, options, requestId), lintWarnings)
+                case 'cmd'       : return withLintWarnings(doCmd(script, workingDir, timeout, envOverrides, options, requestId), lintWarnings)
+                case 'python'    : return withLintWarnings(doPython(script, workingDir, timeout, envOverrides, options, requestId), lintWarnings)
                 default:
                     // FS 0.9.47: NAME THE VALID SET. file_read has always done this and
                     // file_write was given it in 0.9.46; execute was the last one guessing.
@@ -827,4 +833,20 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                 return McpResponse.toolError(requestId, "Unknown job action: ${action}" as String)
         }
     }
+
+    /**
+     * optimised-learning WS1-D: a ScriptLint warning rides on the response as ONE extra content element
+     * ({"lint_warnings":[...]}) -- the run's own payload is not parsed or touched. Unchanged when there is nothing to say.
+     */
+    static McpResponse withLintWarnings(McpResponse r, List<String> warnings) {
+        if (!warnings || !(r?.result instanceof Map)) return r
+        Map<String, Object> result = (Map<String, Object>) r.result
+        Object content = result.get('content')
+        if (!(content instanceof List)) return r
+        List<Object> extended = new ArrayList<Object>((List<Object>) content)
+        extended.add([type: 'text', text: groovy.json.JsonOutput.toJson([lint_warnings: warnings])] as Map<String, Object>)
+        result.put('content', (Object) extended)
+        return r
+    }
+
 }

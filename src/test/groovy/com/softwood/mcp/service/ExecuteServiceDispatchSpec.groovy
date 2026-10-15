@@ -124,4 +124,40 @@ class ExecuteServiceDispatchSpec extends Specification {
         and:
         ExecuteService.VALID_EXECUTE_ACTIONS.every { out.contains(it) }
     }
+
+    // -----------------------------------------------------------------------
+    // optimised-learning WS1-D: ScriptLint at the dispatch path (unit cases in ScriptLintSpec).
+    // -----------------------------------------------------------------------
+    private McpResponse runScript(String action, String script) {
+        return executeService.handleToolCall('execute', [
+            action : action,
+            script : script,
+            options: [workingDir: tempDir.toString()]
+        ] as Map<String, Object>, "lint-${action}")
+    }
+
+    def 'FS-EXEC-OL-1: a script that starts by sleeping is refused SLEEP_REFUSED, and nothing after it runs'() {
+        given:
+        File marker = tempDir.resolve('marker.txt').toFile()
+
+        when:
+        McpResponse r = runScript('bash', 'sleep 20; echo made > marker.txt')
+
+        then:
+        r.result.isError == true
+        payloadOf(r).startsWith('SLEEP_REFUSED')
+        !marker.exists()
+    }
+
+    def 'FS-EXEC-OL-2: a stray % under cmd still runs, and the warning rides as one extra content element'() {
+        when:
+        McpResponse r = runScript('cmd', 'echo 100% done')
+        List content = r.result.content as List
+
+        then:
+        !r.result.isError
+        content.size() == 2
+        (content[1].text as String).contains('lint_warnings')
+        (content[1].text as String).contains('%')
+    }
 }

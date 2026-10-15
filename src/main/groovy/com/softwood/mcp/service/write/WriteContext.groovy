@@ -197,6 +197,14 @@ final class WriteContext {
                 'Read the target section first (file_read action=range or get_method) and pass ' +
                 'the returned file_content_hash as options.expectedHash.')
         }
+        // optimised-learning WS1-D (brief C9): a value that is not a file_content_hash at all ('<hash>', 'PLACEHOLDER')
+        // means the file was never read -- say that, not 'the file changed'. Pinned by WriteContextSpec CT-HASH-PH.
+        if (!(expectedHash ==~ /(?i)[0-9a-f]{12}/)) {
+            return McpResponse.toolError(requestId,
+                "PLACEHOLDER_HASH: '${expectedHash}' is not a file_content_hash (12 hex characters). " +
+                'Read the target first (file_read action=range or get_method) and pass the returned ' +
+                'file_content_hash as options.expectedHash. Nothing was written.')
+        }
         if (hash != expectedHash) {
             return McpResponse.toolError(requestId,
                 "expectedHash mismatch: file has changed since your last read " +

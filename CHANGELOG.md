@@ -2559,3 +2559,29 @@ Everything FS runs for a session is visible while it runs (HANDOFF-2026-10-15 D1
 
 ## [0.9.98]
 A job says when its events are not reaching AW (Will 2026-10-15: make it visible). Found live: an install killed the AW companion at 13:15 and for 11 minutes every job event was refused (logged at DEBUG only) while AW progress read quiet:true over a running build. AwJobEventClient counts posts refused since the last one AW accepted (connection refused, or a non-200 after the session retry) and exposes them through JobEventSink.health() (a default method, null while events get through): reachable:false, since, dropped, lastError, and a note that flow_management progress cannot see this work but job_status can. ExecuteJobRegistry.statusOf(job) adds it as aw_events, and job_status, job_output, job_cancel, job_list and the async-submit answer all carry it; the first accepted post clears it. Specs ExecuteJobVisibilitySpec JV-6 (refused posts counted and named, cleared on the first accepted post) and JV-7 (job_status through ExecuteService carries aw_events only while unhealthy); both red under mutation. With AW 1.30.100, which warns AW_COMPANION_DOWN in progress.
+
+## v0.9.99 (2026-10-15)
+
+optimised-learning Release 1, FS half (design `claude-sync/briefs/optimised-learning/DESIGN-2026-10-15-optimised-learning.md`,
+decisions 372-374). WS1-D: catch the execute and file_write caller mistakes before anything runs.
+
+**`ScriptLint`**, called in `ExecuteService` next to `validateScript` and BEFORE PLAN-GATE (a script that cannot do what
+was meant costs no gate):
+- REFUSED `SLEEP_REFUSED` when the first statement waits (sleep N, Start-Sleep, timeout /t, ping -n) -- a wait is a bridge
+  call that dies at ~60 s; waiting is one flow_management action=progress, or send_later.
+- REFUSED `EXECUTE_ACTION_MISMATCH` when action=python is given one line of shell (`python x.py`): action=python runs the
+  script AS Python source, so it could only ever fail with no output (2026-10-15, spec census).
+- WARNED: a stray % under action=cmd (git log --format=%h); gradle -q with test (hides per-test FAILED lines). The warning
+  rides on the response as ONE extra content element (`{"lint_warnings":[...]}`); the run's own payload is untouched.
+This mechanises the first line of Rule2c lesson #3556.
+
+**`PLACEHOLDER_HASH`.** An `expectedHash` that is not a file_content_hash at all (`<hash>`, `PLACEHOLDER`) is refused by name
+rather than as a mismatch -- it means the file was never read, not that it changed (brief C9: two such calls on 2026-10-15).
+
+**`error_code` sent to CS.** `McpController.errorCodeOf` names an FS refusal (SLEEP_REFUSED, PLAN_GATE, HASH_MISMATCH,
+BLOCKED_ONTOLOGY_GATE, ...) and sends it as `telemetry.error_code`, which CS 1.1.92 writes to `tool_call_telemetry.error_code`.
+`outcome` is unchanged.
+
+New cases were added to the specs that already own each area (`ExecuteServiceDispatchSpec` FS-EXEC-OL-1/2,
+`WriteContextSpec` CT-HASH-PH, `TelemetryOutcomeSpec` CT-OL-1/2) plus `ScriptLintSpec` for the new class.
+Mutations caught by exactly the named cases.

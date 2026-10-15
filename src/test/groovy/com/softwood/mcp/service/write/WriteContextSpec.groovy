@@ -266,6 +266,28 @@ class WriteContextSpec extends Specification {
         readFileContent(f.path).contains('x = 1')
     }
 
+    // optimised-learning WS1-D (brief C9): two placeholder file_write calls on 2026-10-15 were refused as an
+    // expectedHash MISMATCH -- true, but it reads as 'the file changed', not 'you never read it'. A value that is
+    // not a file_content_hash at all is refused by name, and the file is unchanged.
+    def "CT-HASH-PH: a placeholder expectedHash is refused PLACEHOLDER_HASH, naming the real shape"() {
+        given:
+        def f = writeFile('ct-hash-ph.groovy', 'class A { def x = 1 }\n')
+
+        when:
+        McpResponse r = fileWriteService.handleToolCall('file_write', [
+            action : 'replace',
+            path   : f.path,
+            options: [oldText: 'x = 1', newText: 'x = 2', expectedHash: hash]
+        ], 'test')
+
+        then:
+        assertToolError(r, 'PLACEHOLDER_HASH', '12 hex')
+        readFileContent(f.path).contains('x = 1')
+
+        where:
+        hash << ['<hash>', 'PLACEHOLDER', 'abc', '<file_content_hash from the read>']
+    }
+
     def "CT-HASH-1b: stale expectedHash on multi_replace returns expectedHash mismatch error"() {
         given:
         def f = writeFile('ct-hash-1-mr.groovy', 'class B { def y = 1 }\n')

@@ -167,4 +167,29 @@ class TelemetryOutcomeSpec extends Specification {
         expect:
         McpController.extractOutcome(buildTextResponse([error: 'BLOCKED_ONTOLOGY_GATE', locate_query: 'x'])) == 'refused'
     }
+
+    // optimised-learning B3: the code FS sends to CS as telemetry.error_code (tool_call_telemetry.error_code),
+    // so WS4 can count caller mistakes from telemetry. outcome is unchanged -- lights read it.
+    // Proven end to end only live, after the restart (practice #3454): Release 1 checkpoint item 4.
+    def 'CT-OL-1: errorCodeOf names the refusal; a success has no code'() {
+        expect:
+        McpController.errorCodeOf(McpResponse.toolError('t', text)) == code
+
+        where:
+        text                                                                   || code
+        'SLEEP_REFUSED: a leading sleep blocks the bridge; use progress'       || 'SLEEP_REFUSED'
+        'PLACEHOLDER_HASH: <hash> is not a file_content_hash (12 hex)'         || 'PLACEHOLDER_HASH'
+        'PLAN-GATE: first mutating call on x this session'                     || 'PLAN_GATE'
+        'expectedHash mismatch: file has changed since your last read'         || 'HASH_MISMATCH'
+        'options.expectedHash required. Read the target section first'          || 'HASH_REQUIRED'
+        "Unknown execute action: 'pythn'. Valid actions: bash|cmd"             || 'UNKNOWN_ACTION'
+        'something else went wrong'                                            || 'ERROR'
+    }
+
+    def 'CT-OL-2: a content-level refusal is coded, an ordinary success is not'() {
+        expect:
+        McpController.errorCodeOf(buildTextResponse([error: 'BLOCKED_ONTOLOGY_GATE', locate_query: 'x'])) == 'BLOCKED_ONTOLOGY_GATE'
+        McpController.errorCodeOf(buildTextResponse([content: 'class A {}', file_content_hash: 'abc'])) == null
+        McpController.errorCodeOf(null) == null
+    }
 }

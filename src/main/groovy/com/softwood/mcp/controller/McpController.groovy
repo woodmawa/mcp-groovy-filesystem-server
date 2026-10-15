@@ -359,6 +359,12 @@ class McpController {
                 String sessionId = resolved ?: 'system:fs-unclaimed'
                 // FS 0.9.67 item 3: requested window + lines returned, for range calls only.
                 Map<String, Object> detail = RangeTelemetry.detail(toolName, arguments, responseText(response))
+                // optimised-learning B3: the refusal code rides to CS as telemetry.error_code (outcome unchanged).
+                String errorCode = errorCodeOf(response)
+                if (errorCode) {
+                    detail = detail ? new LinkedHashMap<String, Object>(detail) : new LinkedHashMap<String, Object>()
+                    detail.put('error_code', (Object) errorCode)
+                }
                 telemetryService.recordToolCall(sessionId, toolName, charCount, arguments,
                     action, pathHash, outcome, detail)
             }
@@ -462,6 +468,44 @@ class McpController {
             if (text.contains('_truncated')) return 'truncated'
         } catch (Exception ignored) {}
         return 'success'
+    }
+
+    private static final java.util.regex.Pattern CODE_LEAD = java.util.regex.Pattern.compile('^([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\\b')
+    private static final java.util.regex.Pattern CODE_ANY  = java.util.regex.Pattern.compile('\\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\\b')
+    private static final java.util.regex.Pattern CONTENT_ERROR =
+        java.util.regex.Pattern.compile('^\\{\\s*(?:"success"\\s*:\\s*false\\s*,\\s*)?"error"\\s*:\\s*"([^"]*)"')
+
+    /**
+     * optimised-learning B3: the refusal code of an FS response, null when it was not a refusal. Sent to CS as
+     * telemetry.error_code so WS4 can count caller mistakes from telemetry, not only from what Claude writes up.
+     * Tool errors (isError) always get a code; a content-level refusal ({"error":...} at the head) gets one too.
+     * Pinned by TelemetryOutcomeSpec CT-OL-1/2.
+     */
+    static String errorCodeOf(McpResponse response) {
+        try {
+            if (response == null) return null
+            if (response.error != null) return codeFrom(response.error.message ?: '')
+            Object result = response.result
+            String text = responseText(response) ?: ''
+            if (result instanceof Map && (result as Map).get('isError') == Boolean.TRUE) return codeFrom(text)
+            String head = text.length() > 400 ? text.substring(0, 400) : text
+            java.util.regex.Matcher m = CONTENT_ERROR.matcher(head.trim())
+            return m.find() ? codeFrom(m.group(1)) : null
+        } catch (Exception ignored) {
+            return null
+        }
+    }
+
+    static String codeFrom(String msg) {
+        String t = (msg ?: '').trim()
+        if (t.startsWith('PLAN-GATE')) return 'PLAN_GATE'
+        java.util.regex.Matcher lead = CODE_LEAD.matcher(t)
+        if (lead.find()) return lead.group(1)
+        if (t.startsWith('expectedHash mismatch')) return 'HASH_MISMATCH'
+        if (t.startsWith('options.expectedHash required')) return 'HASH_REQUIRED'
+        if (t.startsWith('Unknown execute action')) return 'UNKNOWN_ACTION'
+        java.util.regex.Matcher any = CODE_ANY.matcher(t.length() > 200 ? t.substring(0, 200) : t)
+        return any.find() ? any.group(1) : 'ERROR'
     }
 
     private static String responseText(McpResponse response) {
