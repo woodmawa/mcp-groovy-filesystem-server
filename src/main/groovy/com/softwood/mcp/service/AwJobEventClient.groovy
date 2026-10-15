@@ -44,9 +44,17 @@ class AwJobEventClient implements JobEventSink {
     @Override
     void jobEvent(ExecuteJob job, String status) {
         try {
-            String sid = telemetryService?.readActiveSessionId()
+            // FS 0.9.97 (G2): the session the job was started FOR wins over this process's claim -- the FS companion
+            // a flow calls holds none, and its jobs went to AW with sessionId null, invisible to progress.
+            String sid = job.callerSession ?: telemetryService?.readActiveSessionId()
             Map<String, Object> payload = payloadFor(job, status, sid)
             sender.submit({ send(payload) } as Runnable)
+            // FS 0.9.97: a running job made for an AW node shows its output as that node's live progress too.
+            if (status == 'running' && job.awRun && job.awNode && job.lineCount > 0) {
+                nodeProgress([runId  : job.awRun, nodeId: job.awNode,
+                              detail : clip("${job.action}: ${job.commandSummary}".toString(), 120),
+                              done   : job.lineCount, current: job.lastLine] as Map<String, Object>)
+            }
         } catch (Exception e) {
             log.debug('AwJobEventClient: job event dropped [{} {}]: {}', job?.jobId, status, e.message)
         }
@@ -59,7 +67,10 @@ class AwJobEventClient implements JobEventSink {
                                  sessionId: sessionId,
                                  jobAction: job.action,
                                  command  : job.commandSummary,
-                                 ownerKey : ProcessIdentity.OWNER_KEY] as Map<String, Object>
+                                 ownerKey : ProcessIdentity.OWNER_KEY,
+                                 // FS 0.9.97: output so far -- a heartbeat re-sends 'running' while these move
+                                 lines    : job.lineCount,
+                                 lastLine : job.lastLine] as Map<String, Object>
         if (status != 'running') {
             p.exitCode = job.exitCode
             p.durationMs = job.elapsedMs()
@@ -67,6 +78,8 @@ class AwJobEventClient implements JobEventSink {
         }
         return p
     }
+
+    private static String clip(String s, int max) { s == null ? null : (s.length() > max ? s.substring(0, max) : s) }
 
     private static String tail(ExecuteJob job) {
         int len = job.stdoutLength()

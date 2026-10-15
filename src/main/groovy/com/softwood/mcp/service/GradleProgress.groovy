@@ -17,12 +17,26 @@ import groovy.transform.CompileStatic
 class GradleProgress {
 
     static final String MARKER = '##AWTEST|'
+    /** FS 0.9.97 (G4): one line per task as it starts, and the size of the task graph once it is known. */
+    static final String TASK_MARKER = '##AWTASK|'
+    static final String TASKS_MARKER = '##AWTASKS|'
     static final long MIN_INTERVAL_MS = 5000L
 
+    /** Every side-channel line FS prints into a gradle run -- kept out of the captured output. */
+    static boolean isMarker(String line) {
+        return line != null && (line.startsWith(MARKER) || line.startsWith(TASK_MARKER) || line.startsWith(TASKS_MARKER))
+    }
+
     static final String INIT_SCRIPT = '''// FS 0.9.95: live test progress for flow_management action=progress -- one line per finished test.
+// FS 0.9.97: and one line per task as it starts, plus the task-graph size (bootJar, packageMcpbThin, ...).
+gradle.taskGraph.whenReady { g -> println "##AWTASKS|${g.allTasks.size()}" }
 gradle.beforeProject { p ->
     p.tasks.withType(Test).configureEach { t ->
         t.afterTest { d, r -> println "##AWTEST|${r.resultType}|${d.className}|${d.name}" }
+    }
+    p.tasks.configureEach { t ->
+        String path = t.path
+        t.doFirst { println "##AWTASK|${path}" }
     }
 }
 '''
@@ -52,6 +66,11 @@ gradle.beforeProject { p ->
     private String current
     private long lastPost = -1L
 
+    /** FS 0.9.97: tasks started, the graph size, and the newest task -- reported until the first test runs. */
+    private int tasksStarted
+    private Integer taskTotal
+    private String currentTask
+
     GradleProgress(String runId, String nodeId, String detail, Closure sink,
                    Closure<Long> clock = { System.currentTimeMillis() } as Closure<Long>) {
         this.runId = runId
@@ -62,7 +81,21 @@ gradle.beforeProject { p ->
     }
 
     void onLine(String line) {
-        if (line == null || !line.startsWith(MARKER)) return
+        if (line == null) return
+        if (line.startsWith(TASKS_MARKER)) {
+            try { taskTotal = Integer.valueOf(line.substring(TASKS_MARKER.length()).trim()) } catch (Exception ignored) { }
+            return
+        }
+        if (line.startsWith(TASK_MARKER)) {
+            tasksStarted++
+            currentTask = line.substring(TASK_MARKER.length()).trim()
+            if (testsSeen() == 0) {
+                long now = clock.call()
+                if (lastPost < 0L || now - lastPost >= MIN_INTERVAL_MS) post(now)
+            }
+            return
+        }
+        if (!line.startsWith(MARKER)) return
         String[] parts = line.substring(MARKER.length()).split('\\|', 3)
         if (parts.length < 2) return
         switch (parts[0]) {
@@ -74,19 +107,27 @@ gradle.beforeProject { p ->
         String cls = parts[1]
         current = cls.contains('.') ? cls.substring(cls.lastIndexOf('.') + 1) : cls
         long now = clock.call()
-        if (lastPost < 0L || now - lastPost >= MIN_INTERVAL_MS) post(now)
+        // the first test posts at once even after task posts, so the view switches to tests without a 5 s lag
+        if (lastPost < 0L || testsSeen() == 1 || now - lastPost >= MIN_INTERVAL_MS) post(now)
     }
 
     /** The final count, once the process has ended. Nothing when no test ran. */
     void finish() {
-        if (passed + failed + skipped > 0) post(clock.call())
+        if (testsSeen() > 0 || tasksStarted > 0) post(clock.call())
     }
 
+    private int testsSeen() { passed + failed + skipped }
+
+    /** Tests once any have run; until then tasks, under '<detail>: tasks' so the two counts never read as one. */
     private void post(long now) {
         lastPost = now
-        Map<String, Object> m = [runId  : runId, nodeId: nodeId, detail: detail,
-                                 done   : passed + failed + skipped, failed: failed,
-                                 current: current] as Map<String, Object>
+        Map<String, Object> m = testsSeen() > 0
+            ? [runId  : runId, nodeId: nodeId, detail: detail,
+               done   : testsSeen(), failed: failed,
+               current: current] as Map<String, Object>
+            : [runId  : runId, nodeId: nodeId, detail: (detail + ': tasks').toString(),
+               done   : tasksStarted, total: taskTotal,
+               current: currentTask] as Map<String, Object>
         try {
             sink.call(m)
         } catch (Exception ignored) {

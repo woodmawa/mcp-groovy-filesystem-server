@@ -223,7 +223,8 @@ class McpController {
         CALLER_SESSION.set(declared ?: null)
         // FS 0.9.95: the AW run/node this call is for, so a long gradle call can post live progress to it.
         // A ThreadLocal only -- no I/O on the hot path (practice 260).
-        com.softwood.mcp.service.AwCallContext.set(awRun, awNode)
+        // FS 0.9.97 (G2): and the declared session, so a job this call submits is filed under its caller.
+        com.softwood.mcp.service.AwCallContext.set(awRun, awNode, declared)
         try {
             return handleRequest(request)
         } finally {

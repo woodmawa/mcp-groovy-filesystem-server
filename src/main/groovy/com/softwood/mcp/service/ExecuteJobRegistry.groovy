@@ -10,6 +10,10 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Service
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.TimeUnit
 
 /**
  * FS-EXEC-2 — background execution jobs.
@@ -57,6 +61,51 @@ class ExecuteJobRegistry {
     void setJobEventSink(JobEventSink sink) { this.jobEventSink = sink }
 
     /**
+     * FS 0.9.97 -- live output. Every {@code heartbeatMs} a running job whose output has grown since its last report is
+     * reported again as 'running' (the sink sends its line count and last line). Silence posts nothing. The tick and
+     * the finish post share the job's monitor and the finish is recorded first, so a 'running' can never follow the
+     * end -- a late one would make AW show the job running for ever. Test seam: set heartbeatMs before submitting.
+     */
+    long heartbeatMs = 5000L
+    private volatile ScheduledExecutorService ticker
+    private final Map<String, Integer> lastBeatLines = new ConcurrentHashMap<String, Integer>()
+
+    private synchronized void ensureHeartbeat() {
+        if (ticker != null) return
+        ticker = Executors.newSingleThreadScheduledExecutor({ Runnable r ->
+            Thread t = new Thread(r, 'fs-job-heartbeat')
+            t.daemon = true
+            return t
+        } as ThreadFactory)
+        ticker.scheduleWithFixedDelay({ beat() } as Runnable, heartbeatMs, heartbeatMs, TimeUnit.MILLISECONDS)
+    }
+
+    /** Test cleanup; production lets the daemon thread live with the process. */
+    synchronized void shutdownHeartbeat() {
+        ticker?.shutdownNow()
+        ticker = null
+    }
+
+    /** One heartbeat over the running jobs. Never throws: a failed tick must not cancel the schedule. */
+    void beat() {
+        try {
+            jobs.values().each { ExecuteJob j ->
+                if (j.finished) return
+                synchronized (j) {
+                    if (finishPosted.contains(j.jobId) || j.finished) return
+                    int n = j.lineCount
+                    Integer prev = lastBeatLines.get(j.jobId)
+                    if (prev != null && prev == n) return
+                    lastBeatLines.put(j.jobId, n)
+                    postEvent(j, 'running')
+                }
+            }
+        } catch (Throwable t) {
+            log.debug('ExecuteJobRegistry: heartbeat tick failed - {}', t.message)
+        }
+    }
+
+    /**
      * Test seam (practice #1166 seam 1): explicit setter so a @CompileDynamic spec can inject
      * a factory. Production resolves lazily from GCU's static configuration.
      */
@@ -86,10 +135,16 @@ class ExecuteJobRegistry {
             action        : action,
             commandSummary: commandSummary,
             workingDir    : workingDir,
-            startedAt     : System.currentTimeMillis()
+            startedAt     : System.currentTimeMillis(),
+            // FS 0.9.97 (G2): read HERE, on the request thread -- the work runs on another, where it is gone.
+            callerSession : AwCallContext.session(),
+            awRun         : AwCallContext.run(),
+            awNode        : AwCallContext.node()
         )
         jobs.put(job.jobId, job)
+        lastBeatLines.put(job.jobId, 0)
         postEvent(job, 'running')
+        ensureHeartbeat()
         job.promise = getPromiseFactory().executeAsync({ ->
             try {
                 Map<String, Object> result = work.call(job)
@@ -146,7 +201,10 @@ class ExecuteJobRegistry {
 
     /** The end of a job is reported once, by whichever of the work's finally and cancel() gets there first. */
     private void postFinish(ExecuteJob job) {
-        if (finishPosted.add(job.jobId)) postEvent(job, job.status)
+        synchronized (job) {
+            if (finishPosted.add(job.jobId)) postEvent(job, job.status)
+        }
+        lastBeatLines.remove(job.jobId)
     }
 
     /** FAIL-OPEN: a job never fails, or waits, because its event could not be reported. */
@@ -186,6 +244,15 @@ class ExecuteJob {
     String workingDir
     long startedAt
 
+    /** FS 0.9.97 (G2): who started it -- the declared caller session and the AW run/node, when there were any. */
+    String callerSession
+    String awRun
+    String awNode
+
+    /** FS 0.9.97: output so far, kept as it is appended so a heartbeat never rescans the buffer. */
+    volatile int lineCount
+    volatile String lastLine
+
     volatile long finishedAt
     volatile String status = 'running'
     volatile Integer exitCode
@@ -204,7 +271,19 @@ class ExecuteJob {
 
     boolean isFinished() { status != 'running' }
 
-    void appendStdout(String s) { synchronized (stdoutBuf) { stdoutBuf.append(s) } }
+    void appendStdout(String s) {
+        if (s == null) return
+        synchronized (stdoutBuf) {
+            stdoutBuf.append(s)
+            int nl = 0
+            for (int i = 0; i < s.length(); i++) { if (s.charAt(i) == ('\n' as char)) nl++ }
+            lineCount += nl
+            for (String part : s.split('\n').reverse()) {
+                String t = part.replace('\r', '')
+                if (t.trim()) { lastLine = t.length() > 200 ? t.substring(0, 200) : t; break }
+            }
+        }
+    }
     void appendStderr(String s) { synchronized (stderrBuf) { stderrBuf.append(s) } }
 
     int stdoutLength() { synchronized (stdoutBuf) { return stdoutBuf.length() } }

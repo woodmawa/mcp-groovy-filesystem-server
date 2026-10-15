@@ -16,6 +16,12 @@ mcp:
   context-server:
     url: http://127.0.0.1:1
 
+  # FS 0.9.97 (D1, chain cd627a8a): nor the live AW companion. Unset, AwJobEventClient took its @Value default
+  # (http://localhost:8084) and ExecuteService specs posted fsjob:* record_job_event rows into the live AW
+  # database (2026-10-14 16:35Z). Same dead port as CS. TestsNeverReachLiveAwSpec.
+  agentic-workflow:
+    url: http://127.0.0.1:1
+
   # Align kit 2026-09-25: no background tool-description poll in test contexts; specs call pollOnce().
   tool-descriptions:
     poll-enabled: false

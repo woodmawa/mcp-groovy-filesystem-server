@@ -102,6 +102,7 @@ class HttpCallerSessionSpec extends Specification {
         h.canHandle(_) >> true
         h.handleToolCall(_, _, _) >> {
             seen << com.softwood.mcp.service.AwCallContext.run() << com.softwood.mcp.service.AwCallContext.node()
+            seen << com.softwood.mcp.service.AwCallContext.session()   // FS 0.9.97 G2
             McpResponse.success(2, [content: [[type: 'text', text: JsonOutput.toJson([ok: true])]]])
         }
         McpController c = new McpController([h])
@@ -118,8 +119,9 @@ class HttpCallerSessionSpec extends Specification {
         hc.handleRequest(toolsCall(), sid, r)
 
         then:
-        seen == ['run-77', 'run-gradle']
+        seen == ['run-77', 'run-gradle', '2026-10-14-14-01']
         com.softwood.mcp.service.AwCallContext.run() == null
         com.softwood.mcp.service.AwCallContext.node() == null
+        com.softwood.mcp.service.AwCallContext.session() == null
     }
 }

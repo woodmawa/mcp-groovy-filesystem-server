@@ -45,9 +45,29 @@ class ToolsService extends AbstractFileService implements ToolHandler {
     @Autowired(required = false)
     AwJobEventClient awEvents
 
-    /** FS 0.9.95: task lists that run tests, and so get the progress init script when called for an AW node. */
-    static boolean progressTasks(List<String> tasks) {
-        return tasks?.any { String t -> t in ['test', 'build', 'check'] } ?: false
+    /**
+     * FS 0.9.97 (G4; 0.9.95 limited this to test, build, check): ANY gradle task list made for an AW node gets the
+     * progress init script -- bootJar and packageMcpbThin showed only node age. Tests report test counts, everything
+     * else reports tasks started of the task graph.
+     */
+    static boolean progressFor(List<String> tasks, boolean forAwNode) {
+        return forAwNode && tasks != null && !tasks.isEmpty()
+    }
+
+    /**
+     * FS 0.9.97 -- true when the project turns the configuration cache on. The init script's closures are not
+     * cache-safe and would fail such a build, so it gets no init script and the node shows its age only.
+     */
+    static boolean configurationCacheOn(String workingDir) {
+        try {
+            File f = new File(workingDir, 'gradle.properties')
+            if (!f.isFile()) return false
+            Properties p = new Properties()
+            f.withInputStream { InputStream s -> p.load(s) }
+            return 'true'.equalsIgnoreCase(p.getProperty('org.gradle.configuration-cache')?.trim())
+        } catch (Exception ignored) {
+            return false
+        }
     }
 
     /** The gradle argv: wrapper, tasks, --no-daemon, the progress init script when given, then the caller's args. */
@@ -224,7 +244,8 @@ Developer toolchain. Actions:
         // FS 0.9.68 (chain 2e0ad21b): `--tests X` is folded to `--tests=X` -- the Windows java
         // launcher behind gradlew.bat glob-expands a wildcard value against workingDir files.
         // FS 0.9.95: a test-running call made for an AW node reports live progress to that node.
-        boolean withProgress = progressTasks(tasks) && awEvents != null && AwCallContext.run() != null
+        boolean withProgress = progressFor(tasks, awEvents != null && AwCallContext.run() != null) &&
+            !configurationCacheOn(workingDir)
         List<String> cmd = gradleCommand(gradleCmd, tasks, args, withProgress ? GradleProgress.initScriptFile() : null)
         return runTool(cmd, workingDir, timeout, "gradle ${subcommand}", requestId,
             withProgress ? "gradle ${subcommand}".toString() : null)
@@ -387,7 +408,7 @@ Developer toolchain. Actions:
                     // FS 0.9.96: the progress markers are FS's own side channel, not the build's output. Captured,
                     // they reached gradle-test-summary, whose compile-failure check matched 'compileGroovy' inside a
                     // test NAME and reported an 11/11 green run as COMPILE_FAILED; a full suite added ~1,600 lines.
-                    if (line.startsWith(GradleProgress.MARKER)) return
+                    if (GradleProgress.isMarker(line)) return
                     if (capturedOut < 50000) {
                         String s = sanitize(line)
                         stdout.append(s).append('\n')

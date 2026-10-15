@@ -14,7 +14,11 @@ import spock.lang.Specification
  *   GP-1  the first finished test posts at once; further tests inside the interval do not; past it they do, with
  *         done / failed / current (simple class name); finish() posts the final count
  *   GP-2  non-marker output, and a marker with an unknown result type, count for nothing and post nothing
- *   GP-3  the init script prints the marker the parser reads (one source of truth for the format)
+ *   GP-3  the init script prints the markers the parser reads (one source of truth for the format)
+ *   GP-4  (0.9.97, G4) task markers: the first task posts at once with done/total/current task and detail '<x>: tasks';
+ *         inside the interval nothing more; past it the newest task
+ *   GP-5  once tests run, posts carry the TEST counts under the plain detail -- tasks never mix into done
+ *   GP-6  isMarker recognises every FS marker and nothing else
  */
 class GradleProgressSpec extends Specification {
 
@@ -67,10 +71,71 @@ class GradleProgressSpec extends Specification {
         posts.isEmpty()
     }
 
-    def 'GP-3 the init script prints the marker the parser reads'() {
+    def 'GP-3 the init script prints the markers the parser reads'() {
         expect:
         GradleProgress.INIT_SCRIPT.contains(GradleProgress.MARKER)
         GradleProgress.INIT_SCRIPT.contains('afterTest')
+        GradleProgress.INIT_SCRIPT.contains(GradleProgress.TASK_MARKER)
+        GradleProgress.INIT_SCRIPT.contains(GradleProgress.TASKS_MARKER)
         GradleProgress.initScriptFile().text == GradleProgress.INIT_SCRIPT
+    }
+
+    def 'GP-4 task markers post done / total / current task'() {
+        given:
+        GradleProgress g = new GradleProgress('run-9', 'package', 'gradle packageMcpbThin', { Map m -> posts << m }, { now })
+
+        when:
+        g.onLine('##AWTASKS|12')
+        g.onLine('##AWTASK|:compileGroovy')
+        now += 1000
+        g.onLine('##AWTASK|:jar')
+        now += GradleProgress.MIN_INTERVAL_MS
+        g.onLine('##AWTASK|:packageMcpbThin')
+        g.finish()
+
+        then:
+        posts.size() == 3
+        posts[0].detail == 'gradle packageMcpbThin: tasks'
+        posts[0].done == 1
+        posts[0].total == 12
+        posts[0].current == ':compileGroovy'
+        posts[1].done == 3
+        posts[1].current == ':packageMcpbThin'
+        posts[2].done == 3
+    }
+
+    def 'GP-5 once tests run, posts are about tests, not tasks'() {
+        given:
+        GradleProgress g = new GradleProgress('run-9', 'build', 'gradle build', { Map m -> posts << m }, { now })
+
+        when:
+        g.onLine('##AWTASKS|20')
+        g.onLine('##AWTASK|:compileGroovy')
+        now += GradleProgress.MIN_INTERVAL_MS
+        g.onLine('##AWTASK|:test')
+        g.onLine('##AWTEST|SUCCESS|a.b.AlphaSpec|t')
+        now += GradleProgress.MIN_INTERVAL_MS
+        g.onLine('##AWTEST|SUCCESS|a.b.BetaSpec|t')
+        g.finish()
+
+        then:
+        posts[0].detail == 'gradle build: tasks'
+        posts.last().detail == 'gradle build'
+        posts.last().done == 2
+        posts.last().current == 'BetaSpec'
+        posts.last().total == null
+    }
+
+    def 'GP-6 isMarker recognises every FS marker and nothing else'() {
+        expect:
+        GradleProgress.isMarker(line) == expected
+
+        where:
+        line                              || expected
+        '##AWTEST|SUCCESS|a.B|t'          || true
+        '##AWTASK|:bootJar'               || true
+        '##AWTASKS|7'                     || true
+        '> Task :bootJar'                 || false
+        null                              || false
     }
 }

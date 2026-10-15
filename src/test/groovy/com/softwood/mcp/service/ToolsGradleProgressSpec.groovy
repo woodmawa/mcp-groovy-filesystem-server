@@ -6,7 +6,8 @@ import spock.lang.Specification
  * FS 0.9.95 -- the ToolsService half of live gradle progress (see GradleProgressSpec for the parser).
  *
  * CONTRACT:
- *   TG-1  only test-running task lists (test, build, check) get the progress init script
+ *   TG-1  (0.9.97, was: only test, build, check) EVERY gradle task list made for an AW node gets the init script --
+ *         bootJar / packageMcpbThin showed only node age (HANDOFF-2026-10-15 G4); with no AW node, none does
  *   TG-2  the command carries --init-script <file> before the user's args, and only when asked
  *   TG-3  every stdout line reaches the line listener -- including lines past the 50k capture cap, which a whole
  *         suite's output passes long before the end
@@ -15,20 +16,17 @@ import spock.lang.Specification
  *   TG-5  (0.9.96) marker lines reach the listener but NOT the captured stdout -- captured, a test named after
  *         'compileGroovy' made gradle-test-summary report a green run as COMPILE_FAILED. Ordinary lines are kept
  *         (CONTROL)
+ *   TG-6  (0.9.97) task markers (##AWTASK| / ##AWTASKS|) are kept out of the captured stdout too
  */
 class ToolsGradleProgressSpec extends Specification {
 
-    def 'TG-1 only test-running tasks get progress'() {
+    def 'TG-1 every gradle task list made for an AW node gets progress; without a node, none does'() {
         expect:
-        ToolsService.progressTasks(tasks) == expected
+        ToolsService.progressFor(tasks, true) == true
+        ToolsService.progressFor(tasks, false) == false
 
         where:
-        tasks                      || expected
-        ['test']                   || true
-        ['clean', 'build']         || true
-        ['check']                  || true
-        ['compileGroovy']          || false
-        ['packageMcpbThin']        || false
+        tasks << [['test'], ['clean', 'build'], ['check'], ['compileGroovy'], ['packageMcpbThin'], ['bootJar']]
     }
 
     def 'TG-2 the init script goes in front of the user args, only when asked'() {
@@ -111,6 +109,50 @@ class ToolsGradleProgressSpec extends Specification {
         !(r.stdout as String).contains(GradleProgress.MARKER)
         !(r.stdout as String).contains('compileGroovy')
         (r.stdout as String).contains('> Task :test')
+        (r.stdout as String).contains('BUILD SUCCESSFUL')
+    }
+
+    def 'TG-7 a project with the configuration cache on gets no init script (its closures would fail that build)'() {
+        given:
+        File dir = File.createTempDir('tg7', '')
+        File props = new File(dir, 'gradle.properties')
+
+        when:
+        props.text = text
+
+        then:
+        ToolsService.configurationCacheOn(dir.absolutePath) == expected
+
+        cleanup:
+        dir.deleteDir()
+
+        where:
+        text                                                        || expected
+        'org.gradle.configuration-cache=true\n'                     || true
+        'org.gradle.jvmargs=-Xmx2g\norg.gradle.configuration-cache = true\n' || true
+        'org.gradle.configuration-cache=false\n'                    || false
+        '# org.gradle.configuration-cache=true\n'                   || false
+        'org.gradle.jvmargs=-Xmx2g\n'                               || false
+    }
+
+    def 'TG-7b CONTROL: a directory with no gradle.properties is not configuration-cached'() {
+        expect:
+        !ToolsService.configurationCacheOn(System.getProperty('java.io.tmpdir') + '/no-such-dir-tg7b')
+    }
+
+    def 'TG-6 task markers reach the listener but never the captured stdout'() {
+        given:
+        ToolsService t = new ToolsService()
+        List<String> heard = []
+        List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                            "'##AWTASKS|12'; '##AWTASK|:stageJarForMcpb'; 'BUILD SUCCESSFUL'"]
+
+        when:
+        Map r = t.runToolRaw(cmd, System.getProperty('java.io.tmpdir'), 60, null, { String l -> heard << l })
+
+        then:
+        heard.size() == 3
+        !(r.stdout as String).contains('##AWTASK')
         (r.stdout as String).contains('BUILD SUCCESSFUL')
     }
 }
