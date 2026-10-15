@@ -200,14 +200,12 @@ up — and the blocked call **serialises every call behind it**.
 
 For anything that might exceed 60s (gradle builds, full test suites), submit it with `async:true`.
 
-**Pass `options.timeout` as well.** An async job has its own cap, defaulting to 60s, and
-`options.timeout` is what raises it — the sentence above is about the CLIENT deadline and was read
-for a year as though it applied to jobs too. Measured 2026-09-07, same command three times, only
-this option differing: without it the job reported `status:"timeout"` at 61,011 ms and 61,010 ms;
-with `timeout:400` the identical command ran to 66,604 ms and returned a real `exitCode`. A CS full
-suite is ~70–85s, so the default cap kills it a few seconds before it finishes — and a killed job
-leaves the previous run's `build/test-results` in place, which reads as a stale pass if you check
-the XML without checking its timestamp.
+**Pass `options.timeout` as well.** An async job has its own cap, and `options.timeout` sets it.
+Without one an async job gets `mcp.script.max-async-execution-time-seconds` (1800 s, since FS
+0.9.69) -- not the 60 s synchronous default it inherited before, which killed CS full suites a few
+seconds short (measured 2026-09-07: `status:"timeout"` at 61,011 ms). A killed job leaves the previous
+run's `build/test-results` in place, which reads as a stale pass if you check the XML without checking
+its timestamp -- so set a cap that fits the work and check the job's own exit code.
 
 ```
 execute action=cmd script="gradlew.bat test" options={async:true, timeout:400, workingDir:"<dir>"}
@@ -222,6 +220,15 @@ execute action=job_list                      # newest first
 
 Jobs are retained for 30 minutes after finishing (max 100). An unknown `jobId` is an explicit
 error, never a blank status.
+
+**Waiting is one AW call, not a poll per job.** Every job reports its start, a heartbeat while its
+output grows, and its finish to AW, so `flow_management action=progress cursor=<c>` lists this
+session's running jobs (`lines`, `lastLine`, `lastOutputAgeSeconds`) and the ones finished since the
+cursor (`exitCode`, `durationMs`, `tail`) beside its flow runs. For a wait of minutes, schedule a
+nudge back into the chat and make that one call when it arrives; never sleep inside a call. Read
+`job_output` for the detail afterwards. If `job_status` / `job_list` / the submit answer carry
+`aw_events`, AW is not receiving job events (usually the companions are down after an install):
+`progress` cannot see these jobs and `job_status` here is the authority.
 
 ### Windows builds
 Use `tools action=gradle` for all builds — canonical path from both Claude and AW flows:

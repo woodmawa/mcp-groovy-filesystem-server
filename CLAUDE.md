@@ -10,6 +10,20 @@
 > The same rule is the served project-instructions section `sql-column-names` (eager). This block is a copy for sessions that start from the repo.
 
 
+## FS 0.9.92-0.9.98: everything FS runs is visible from the chat
+
+Claude Desktop has no callback, so a job's progress has to be somewhere the chat can pull it from in one
+call. Every async job, every long synchronous `execute` (moved to the background after 45 s), and every
+`execute` or `tools action=gradle` made for an AW flow node reports to AW: start, a heartbeat while its
+output grows, and exactly one finish (0.9.92-0.9.94, 0.9.97). A gradle call for a node runs with an init
+script whose markers become live node progress -- tasks of the graph, then tests run/failed and the
+current spec -- and never reach the captured build output (0.9.95-0.9.96; skipped when the configuration
+cache is on). A job takes the session its caller declared, so work a flow starts on the unclaimed
+companion lands in the right session (0.9.97). The test context points the job-event client at a dead
+address, so FS's own suite never posts into a live session (0.9.97, `TestsNeverReachLiveAwSpec`). When
+posts stop reaching AW, job answers carry `aw_events` (0.9.98). Claude waits with AW `flow_management
+action=progress`, not `job_status` per job -- see "Anything that may take over ~60s" below.
+
 ## FS 0.9.88: a deletion is not a truncated rewrite
 
 `DESTRUCTIVE_REPLACE` now also requires the edit to remove at least half the file. Deleting one dead method from a
@@ -223,17 +237,31 @@ the MCP *client*, not by FS: `options.timeout` cannot extend it, and a blocked c
 every call behind it (observation 9821, chain `ef8cae5c`).
 
 ```
-# CORRECT -- submit, then poll
-execute action=cmd script="gradlew.bat test" options={async:true, workingDir:"<dir>"}
+# CORRECT -- submit, then wait with ONE AW progress call (not job_status per job, never a sleep)
+execute action=cmd script="gradlew.bat test" options={async:true, timeout:900, workingDir:"<dir>"}
    -> {jobId, status:"running"}
-execute action=job_status jobId=<id>
-execute action=job_output jobId=<id> sinceOffset=<nextOffset from last read>
-execute action=job_cancel jobId=<id>
+flow_management action=progress cursor=<c>      # AW: every run AND FS job this session has in flight
+   -> jobs.running [{jobId, lines, lastLine, lastOutputAgeSeconds}], jobs.finished_since [{exitCode, tail}]
+execute action=job_output jobId=<id> sinceOffset=<nextOffset>   # the detail, once it has finished
+execute action=job_status jobId=<id>             # one job, on THIS process -- the authority if AW is down
+execute action=job_cancel jobId=<id>             # kills the process tree
 execute action=job_list
 
 # WRONG -- raising options.timeout does nothing; the client has already given up
 execute action=cmd script="gradlew.bat test" options={timeout:600}
 ```
+
+**Jobs report themselves to AW (FS 0.9.92+).** `ExecuteJobRegistry` posts each job's start, a
+heartbeat every 5 s while its output grows (line count, last line), and exactly one finish (exit
+code, duration, last ten lines) to AW `record_job_event` on the companion. The session is the
+caller's declared one (`X-Mcp-Caller-Session`), else this process's claim. A job made for a flow node
+also posts its output as that node's live progress, and `tools action=gradle` for a node adds an init
+script whose task and test markers become `record_node_progress` (tasks of the graph, then tests run
+and failed and the current spec). Posting is fail-open on one background thread -- and not silent: when
+posts stop reaching AW, `job_status`, `job_list` and the async-submit answer carry `aw_events` (since
+when, how many dropped) until AW accepts one again. A long *synchronous* call is a job too: after
+`mcp.script.sync-wait-seconds` (45 s) the answer is `moved_to_background:true` with a `jobId`.
+Mechanism and field reference: AW book ch9 "Async Progress" and ch11 "Execution".
 
 Detaching via `Start-Process` and polling a redirected log file was the pre-0.9.12 workaround. It
 still works, but `async` is the supported path: it reports exit code and status, and `job_cancel`
