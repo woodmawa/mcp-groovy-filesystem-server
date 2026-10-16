@@ -212,6 +212,11 @@ class FileReplaceAndPatchSpec extends Specification {
 
         then: "second boundary patch BLOCKED, error visible to Claude (RCA-1 fix)"
         assertToolError(r2, 'Sequential boundary patch rejected')
+
+        and: "the file still holds the first patch, not the second"
+        String onDisk = new File(f.path as String).text
+        onDisk.contains('replaced4')
+        !onDisk.contains('badpatch')
     }
 
     // -----------------------------------------------------------------------

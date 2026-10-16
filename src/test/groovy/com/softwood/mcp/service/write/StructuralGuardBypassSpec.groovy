@@ -146,6 +146,9 @@ class StructuralGuardBypassSpec extends Specification {
 
         then: 'box-drawing guard still fires'
         r.result.isError == true
+
+        and: 'and the file on disk is untouched'
+        new File(f.path as String).text.contains('    // ─── section')
     }
     // -----------------------------------------------------------------------
     // CT-SG-BYPASS-4  StructuralGuard.checkAll unit: flag behaviour
@@ -186,6 +189,9 @@ class StructuralGuardBypassSpec extends Specification {
         and: 'warning field present and descriptive'
         parsed.code_append_warning != null
         (parsed.code_append_warning as String).toLowerCase().contains('append')
+
+        and: 'the warning is advisory: the text was appended'
+        new File(f.path as String).text == 'class Appendable { void foo() { } }\n// extra\n'
     }
 
     // -----------------------------------------------------------------------
