@@ -385,6 +385,14 @@ The client also caches directory listings in-memory after `file_list` calls.
 > companion on 8082 and every `@SpringBootTest` writes its temp files into the live store -- 20,247 rows by
 > 2026-09-24. Guarded by `TestsNeverReachLiveCsSpec` and CS contract `fs-tests-never-write-live-cs`. Do not remove it.
 
+> **Test tiers, forks and isolation (WS10-C, 2026-10-16 -- same in CS, AW and FS).** `gradle/test-tiers.gradle` is one
+> file, byte-identical in all three repos. `test` = full suite + release gate; `testFast` = inner loop without
+> `@Tag('slow')` / `@Tag('integration')` specs (allowed through `tools action=gradle` since 0.9.102). Both run 4 parallel
+> forks by default (decision 380), `-Ptests.forks=N` overrides. `checkTiering` fails an untagged spec >= 1 s but judges
+> single-fork runs only -- before a release run `test -Ptests.forks=1`. FS tests use a test-only claude-sync with a
+> fixture server config, never the real one (`TestsNeverReachLiveClaudeSyncSpec`, decision 378); `LivePortTripwire`
+> fails any feature that connects to a live companion port. Waits use Awaitility, never `Thread.sleep`.
+
 ```
 # Build (canonical path)
 mcp-groovy-filesystem-server:tools action=gradle subcommand=compileGroovy options={workingDir:"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server"}
