@@ -2594,3 +2594,33 @@ tool call locally. On a match new to this session the response gains ONE extra c
 after telemetry and the global backstop, so it never inflates the measured size -- and the show is reported to CS
 (`record_trigger_show`) on a daemon thread. CS is never a dependency of an FS call (#377): only the first load is
 inline (1.5 s read, else empty); later refreshes run in the background. Spec `FsTriggerSpec` FT-1..4.
+
+## [0.9.101] -- optimised-learning WS10-C (faster suite; tests never reach the live environment)
+
+**X58 -- FS test runs no longer touch the live claude-sync or start companions (chain dd40c060, critical).** Found on
+2026-10-16 by the new live-port tripwire. The test Spring context never set `MCP_CONTEXT_STORAGE_PATH`, so
+`ServerLifecycleService` took DERIVE = `user.home/claude-sync`: it read the REAL `mcp-http-servers.json`, auto-started
+a real agentic-workflow companion from the INSTALLED extension jar at every context boot (it lost 8084 to the live
+companion and exited) and rewrote the LIVE `mcp-http-servers-runtime.json` with the test worker as its stdioPid. Every
+FS test run had done this. The test `application.yml` now points `MCP_CONTEXT_STORAGE_PATH` at a build-output fixture
+(`build/resources/test/test-claude-sync`, one lazy dead-port entry, no auto-start companion, no extension lookup).
+New `TestsNeverReachLiveClaudeSyncSpec` TNS-1..3 asserts on the injected path, the config read and that boot started
+no process. Verified: the live runtime file's timestamp did not move across the full suite.
+
+**Live-port tripwire (decision 377).** `support/LivePortTripwire` is installed as the test JVM's default
+`ProxySelector` by a global Spock extension (`META-INF/services/...IGlobalExtension`); HttpURLConnection, OkHttp,
+java.net.http and raw `Socket` connects consult it, so a connection to localhost on 8081-8084 is refused and recorded
+and the feature that made it fails, naming the URL -- even when fail-open client code swallows the refusal.
+`-Dtests.allowLive=true` for a deliberate live run. `support/TestPorts.deadPort()/deadUrl()` give specs a dynamic port.
+First run: 23 failures in 16 specs; 22 were the claude-sync path above, the last was `ServerLifecycleKillByPortSpec`,
+whose fake netstat named the live AW port so killByPort's post-kill probe reached the live companion -- now built on a
+dynamic dead port. `LivePortTripwireSpec` LPT-1..3; mutation (no install) turns LPT-1 and LPT-3 red.
+
+**Suite time 78.9 s -> 54.3 s** (release run: 729 tests, 0 failures; live runtime file untouched across it).
+- Awaitility 4.3.0 as a test dependency (as CS and AW).
+- `ExecuteService.exitDrainMs` (default `ProcessWaits.EXIT_DRAIN_MS`, 5 s; production unchanged) -- the post-exit
+  reader drain, passed to `ProcessWaits.await`; WEDGE-1 proves the held-open path on 500 ms and now asserts the call
+  returns within the CONFIGURED drain (mutation: drain not passed -> WEDGE-1 red only).
+- `ExecuteServiceWedgeSpec` 27.4 -> 9.2 s: cleanup kills only the ping markers a feature used (was three PowerShell CIM
+  queries per feature, WEDGE-4/5 included); WEDGE-2 waits for the tree kill instead of 1.5 s; WEDGE-3 `ping -n 4`.
+- `ExecuteServiceAsyncSpec` 5.0 -> 3.9 s and `ExecuteServiceAsyncTimeoutSpec`: the same proofs on a ~2 s job.

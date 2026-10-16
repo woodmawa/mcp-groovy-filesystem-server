@@ -1,5 +1,6 @@
 package com.softwood.mcp.service
 
+import com.softwood.mcp.support.TestPorts
 import spock.lang.Specification
 
 /**
@@ -24,26 +25,37 @@ class ServerLifecycleKillByPortSpec extends Specification {
     static final long OTHER_SRV  = 33333L   // a server on :8082 whose FOREIGN address is :8084
     static final long PREFIX     = 77777L   // listens on :80840 -- must not match :8084
 
-    static final String NETSTAT = '''
+    /**
+     * X58: the shape of the 2026-10-07 netstat, on a DYNAMIC dead port P instead of the live AW port 8084 --
+     * killByPort's post-kill socket probe reached the live companion (LivePortTripwire, socket://localhost:8084).
+     * S is the other server whose FOREIGN address is P; P0 the prefix trap (":P" must not match ":P0").
+     */
+    static String netstat(int p, int s) {
+        """
 Active Connections
 
   Proto  Local Address          Foreign Address        State           PID
-  TCP    0.0.0.0:8084           0.0.0.0:0              LISTENING       59956
-  TCP    127.0.0.1:8084         127.0.0.1:51234        ESTABLISHED     59956
-  TCP    127.0.0.1:51234        127.0.0.1:8084         ESTABLISHED     45296
-  TCP    127.0.0.1:8082         127.0.0.1:8084         ESTABLISHED     33333
-  TCP    0.0.0.0:80840          0.0.0.0:0              LISTENING       77777
-  TCP    [::]:8084              [::]:0                 LISTENING       59956
-  UDP    0.0.0.0:8084           *:*                                    11111
-'''
+  TCP    0.0.0.0:${p}           0.0.0.0:0              LISTENING       59956
+  TCP    127.0.0.1:${p}         127.0.0.1:51234        ESTABLISHED     59956
+  TCP    127.0.0.1:51234        127.0.0.1:${p}         ESTABLISHED     45296
+  TCP    127.0.0.1:${s}         127.0.0.1:${p}         ESTABLISHED     33333
+  TCP    0.0.0.0:${p}0          0.0.0.0:0              LISTENING       77777
+  TCP    [::]:${p}              [::]:0                 LISTENING       59956
+  UDP    0.0.0.0:${p}           *:*                                    11111
+""".toString()
+    }
+
+    int port
 
     ServerLifecycleService service
     List<Long> destroyed = []
     Map<Long, String> commandLines = [:]
 
     def setup() {
+        port = TestPorts.deadPort()
+        String table = netstat(port, TestPorts.deadPort())
         service = new ServerLifecycleService(Stub(PathService))
-        service.netstatRunner = { -> NETSTAT }
+        service.netstatRunner = { -> table }
         service.commandLineOf = { Long pid -> commandLines.get(pid) ?: 'java -jar mcp-agentic-workflow.jar' }
         service.pidDestroyer  = { Long pid -> destroyed << pid; true }
         service.ownPid = 1L
@@ -51,7 +63,7 @@ Active Connections
 
     def 'KP-1: only the listener on the port is destroyed -- never a client of it, never a server talking to it'() {
         when:
-        service.killByPort(8084)
+        service.killByPort(port)
 
         then:
         destroyed == [LISTENER]
@@ -62,7 +74,7 @@ Active Connections
         commandLines.put(LISTENER, 'java -Dspring.profiles.active=stdio -jar mcp-agentic-workflow.jar')
 
         when:
-        service.killByPort(8084)
+        service.killByPort(port)
 
         then:
         destroyed.isEmpty()
@@ -73,7 +85,7 @@ Active Connections
         service.ownPid = LISTENER
 
         when:
-        service.killByPort(8084)
+        service.killByPort(port)
 
         then:
         destroyed.isEmpty()

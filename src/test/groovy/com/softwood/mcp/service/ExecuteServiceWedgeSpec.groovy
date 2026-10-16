@@ -8,7 +8,10 @@ import spock.lang.Specification
 import spock.lang.Timeout
 import spock.lang.Title
 
+import java.util.concurrent.Callable
 import java.util.concurrent.TimeUnit
+
+import static org.awaitility.Awaitility.await
 
 /**
  * FS 0.9.73 -- chain bacfc195 (critical), local-model-reliability WP-FS, ARC-STATE C3a.
@@ -32,6 +35,8 @@ class ExecuteServiceWedgeSpec extends Specification {
     ExecuteService service
     ExecuteJobRegistry registry
     String workDir = System.getProperty('java.io.tmpdir')
+    /** WS10-C: the ping markers this feature started; cleanup kills only these (each kill is a PowerShell spawn). */
+    Set<String> usedMarkers = [] as Set<String>
 
     def setup() {
         registry = new ExecuteJobRegistry()
@@ -46,7 +51,7 @@ class ExecuteServiceWedgeSpec extends Specification {
     }
 
     def cleanup() {
-        ['127.0.0.2', '127.0.0.3', '127.0.0.4'].each { String m -> killPings(m) }
+        usedMarkers.each { String m -> killPings(m) }
         McpHeartbeat.end()
     }
 
@@ -89,6 +94,8 @@ class ExecuteServiceWedgeSpec extends Specification {
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     def 'WEDGE-1: a grandchild holding the output pipe does not hold the call once the command has exited'() {
         given: 'cmd starts ping in the background on the same handles and exits at once -- the Gradle daemon shape'
+        usedMarkers << '127.0.0.2'
+        service.exitDrainMs = 500L   // WS10-C: the held-open path on a short drain (production default 5 s)
         String script = "start \"\" /b ${PING} -n 30 127.0.0.2"
 
         when:
@@ -97,7 +104,8 @@ class ExecuteServiceWedgeSpec extends Specification {
         long elapsed = System.currentTimeMillis() - t0
 
         then: 'it returns within the drain window, not when the grandchild lets go (about 29 s)'
-        elapsed < 12_000L
+        // WS10-C: bound by the CONFIGURED drain (500 ms here) plus start-up -- an ignored exitDrainMs (5 s) fails it
+        elapsed < service.exitDrainMs + 3_500L
 
         and: 'the command itself succeeded, and the response says why output may be incomplete'
         r.exitCode == 0
@@ -111,6 +119,7 @@ class ExecuteServiceWedgeSpec extends Specification {
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     def 'WEDGE-2: a timeout kills the whole process tree, not just the shell'() {
         when: 'cmd waits on ping, and the call times out'
+        usedMarkers << '127.0.0.3'
         long t0 = System.currentTimeMillis()
         Map r = runCmd("${PING} -n 30 127.0.0.3", 3)
         long elapsed = System.currentTimeMillis() - t0
@@ -121,18 +130,20 @@ class ExecuteServiceWedgeSpec extends Specification {
         elapsed < 12_000L
 
         and: 'and the ping under cmd is dead too -- before this only cmd was destroyed'
-        sleep(1500)
-        pings('127.0.0.3') == 0
+        // WS10-C: wait for the tree kill to land instead of a fixed 1.5 s; each pings() is a PowerShell spawn
+        await().atMost(10, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS)
+                .until({ pings('127.0.0.3') == 0 } as Callable<Boolean>)
     }
 
     @Timeout(value = 60, unit = TimeUnit.SECONDS)
     def 'WEDGE-3: a synchronous call that outlives the sync window is answered with a job, not by blocking'() {
         given:
         service.syncWaitSeconds = 2
+        usedMarkers << '127.0.0.4'
 
-        when:
+        when: 'ping -n 4 runs ~3 s -- past the 2 s sync window, so it must be moved to a job'
         long t0 = System.currentTimeMillis()
-        Map r = runCmd("${PING} -n 8 127.0.0.4", 30)
+        Map r = runCmd("${PING} -n 4 127.0.0.4", 30)
         long elapsed = System.currentTimeMillis() - t0
 
         then: 'the caller gets an answer inside the window -- the stdio thread is free again'
@@ -143,8 +154,7 @@ class ExecuteServiceWedgeSpec extends Specification {
 
         and: 'and the work carries on to completion as a job'
         ExecuteJob job = registry.get(r.jobId as String)
-        long deadline = System.currentTimeMillis() + 20_000L
-        while (!job.finished && System.currentTimeMillis() < deadline) { sleep(200) }
+        await().atMost(20, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS).until({ job.finished } as Callable<Boolean>)
         job.status == 'completed'
         job.exitCode == 0
     }

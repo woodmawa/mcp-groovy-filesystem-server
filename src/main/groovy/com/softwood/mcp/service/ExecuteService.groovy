@@ -78,6 +78,13 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     @Value('${mcp.script.sync-wait-seconds:45}')
     int syncWaitSeconds = 45
 
+    /**
+     * WS10-C (FS 0.9.101): how long readers get to finish after the child exits before the output is reported as
+     * held open (ProcessWaits). Default is the constant; a field only so ExecuteServiceWedgeSpec WEDGE-1 can prove the
+     * held-open path on a short drain. Production never sets it.
+     */
+    long exitDrainMs = ProcessWaits.EXIT_DRAIN_MS
+
     @Value('${mcp.script.enable-bash:true}')
     boolean enableBash
 
@@ -692,7 +699,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             // remaining budget in turn, on the stdio thread: a Gradle daemon holding the pipe made a 300 s timeout
             // last 494 s and wedged the server.
             ProcessWaits.Outcome waited = ProcessWaits.await(process, [stdoutThread, stderrThread] as List<Thread>,
-                    start + timeout * 1000L)
+                    start + timeout * 1000L, exitDrainMs)
             boolean finished = waited.finished
 
             // A reader still alive after the drain is held open by something the command started (the command

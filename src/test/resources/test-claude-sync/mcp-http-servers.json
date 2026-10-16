@@ -1,0 +1,15 @@
+{
+  "_comment": "X58 (decision 378): FS TEST fixture. The test context's claude-sync is build/resources/test/test-claude-sync, never the real one: a real config made every FS test run spawn the installed AW companion and rewrite the live mcp-http-servers-runtime.json. One lazy entry, no autoHttpCompanion, no mcpb/mcpbExtDir, a dead port and a jar that does not exist -- nothing can be started or reached. TestsNeverReachLiveClaudeSyncSpec.",
+  "jarsDir": "does-not-exist",
+  "javaCmd": "java",
+  "servers": [
+    {
+      "name": "fixture-only",
+      "port": 1,
+      "jar": "does-not-exist.jar",
+      "startupPolicy": "lazy",
+      "autoHttpCompanion": false,
+      "jvmArgs": []
+    }
+  ]
+}

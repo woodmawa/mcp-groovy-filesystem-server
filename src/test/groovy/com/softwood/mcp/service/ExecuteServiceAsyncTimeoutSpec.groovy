@@ -39,7 +39,8 @@ import java.util.concurrent.TimeUnit
 class ExecuteServiceAsyncTimeoutSpec extends Specification {
 
     /** Absolute path: the gradle test worker's PATH has no System32 (see ExecuteServiceAsyncSpec). */
-    static final String FOUR_SECONDS = '%SystemRoot%\\System32\\ping.exe -n 5 127.0.0.1'
+    /** ~2 s (ping -n 3): past the 1 s sync limit set in setup(). WS10-C: was ~4 s against 2 s -- same proof, half the wait. */
+    static final String FOUR_SECONDS = '%SystemRoot%\\System32\\ping.exe -n 3 127.0.0.1'
 
     @Autowired ExecuteService executeService
 
@@ -49,7 +50,7 @@ class ExecuteServiceAsyncTimeoutSpec extends Specification {
 
     def setup() {
         savedSyncMax = executeService.maxExecutionTimeSeconds
-        executeService.maxExecutionTimeSeconds = 2
+        executeService.maxExecutionTimeSeconds = 1
     }
 
     def cleanup() {

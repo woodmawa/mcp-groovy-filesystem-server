@@ -1,3 +1,10 @@
+# X58 (decision 378, FS 0.9.101): the test context's claude-sync is a fixture in the build output, NEVER the real
+# C:/Users/willw/claude-sync. ServerLifecycleService resolves it from MCP_CONTEXT_STORAGE_PATH (unset = DERIVE =
+# user.home/claude-sync), read the real mcp-http-servers.json, auto-started a real AW companion from the INSTALLED
+# extension jar at every context boot and rewrote the live mcp-http-servers-runtime.json (chain dd40c060).
+# TestsNeverReachLiveClaudeSyncSpec. Gradle runs tests with user.dir = the project dir.
+MCP_CONTEXT_STORAGE_PATH: ${user.dir}/build/resources/test/test-claude-sync
+
 spring:
   application:
     name: mcp-groovy-filesystem-server-test

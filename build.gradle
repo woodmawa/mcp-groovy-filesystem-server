@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.100'
+version = '0.9.101'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -73,6 +73,8 @@ dependencies {
     testImplementation "org.apache.groovy:groovy-test:${groovyVersion}"
     testImplementation 'org.spockframework:spock-core:2.4-groovy-5.0'
     testImplementation 'org.spockframework:spock-spring:2.4-groovy-5.0'
+    // WS10-C: condition waits in specs -- await().atMost(..).pollInterval(..).until { } -- not sleeps (as CS and AW).
+    testImplementation 'org.awaitility:awaitility:4.3.0'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 

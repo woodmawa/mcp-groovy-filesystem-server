@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
 class ExecuteServiceAsyncSpec extends Specification {
 
     /** See the note in FS-EXEC-2: the test worker's PATH has no System32. */
-    static final String SLOW      = '%SystemRoot%\\System32\\ping.exe -n 5 127.0.0.1'
+    static final String SLOW      = '%SystemRoot%\\System32\\ping.exe -n 3 127.0.0.1'   // ~2 s (WS10-C: was ~4 s)
     static final String VERY_SLOW = '%SystemRoot%\\System32\\ping.exe -n 30 127.0.0.1'
 
     ExecuteService service
@@ -78,11 +78,9 @@ class ExecuteServiceAsyncSpec extends Specification {
         submitMs < 2000
 
         when: 'we poll until it finishes'
-        Map status = [:]
-        for (int i = 0; i < 100 && (status.finished != true); i++) {
-            Thread.sleep(200)
-            status = registry.get(submit.jobId as String).statusMap()
-        }
+        org.awaitility.Awaitility.await().atMost(20, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+                .until({ registry.get(submit.jobId as String).statusMap().finished == true } as java.util.concurrent.Callable<Boolean>)
+        Map status = registry.get(submit.jobId as String).statusMap()
 
         then: 'the work actually ran to completion in the background'
         status.finished == true
