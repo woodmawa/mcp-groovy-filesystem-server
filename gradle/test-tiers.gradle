@@ -13,10 +13,23 @@
 //   integration   needs something outside the test JVM: a live server, a real child process, the network
 //
 // Override the threshold with -Ptiering.slowSeconds=2.0 if a slow machine makes it flap.
+//
+// Parallel forks (handoff item 4, 2026-10-16): -Ptests.forks=N runs spec classes in N test JVMs at once, on both
+// `test` and `testFast`. Each fork is its own JVM, so statics are not shared -- but files, SQLite databases and
+// ports are, and a spec that collides with another shows up as a flake under N > 1 and never at 1. Default 4
+// (Will, 2026-10-16, ARC-STATE X68): measured full `test` FS 68 -> 37 s, AW 65 -> 37 s, CS 85 -> 53 s, 0 failures;
+// 8 forks was no faster and flaked an FS spec. -Ptests.forks=1 is exactly the pre-fork behaviour.
+//
+// checkTiering judges ONLY a single-fork run. Under 4 forks every repo had 6-7 specs crossing 1 s purely from CPU
+// contention, none of them slow alone -- a timing guard fed contended timings fails for the wrong reason. On a
+// forked run it says it skipped; run `gradlew test -Ptests.forks=1` to have it judge (e.g. before a release).
 
 import groovy.xml.XmlSlurper
 
 List<String> tierTags = ['slow', 'integration']
+
+int testForks = Math.max(1, (project.findProperty('tests.forks') ?: '4').toString() as int)
+tasks.named('test', Test) { Test t -> t.maxParallelForks = testForks }
 
 tasks.register('testFast', Test) { Test t ->
     group = 'verification'
@@ -32,6 +45,7 @@ tasks.register('testFast', Test) { Test t ->
     t.include(base.includes)
     t.exclude(base.excludes)
     t.timeout.set(base.timeout.orNull)
+    t.maxParallelForks = testForks
     t.useJUnitPlatform { excludeTags(*tierTags) }
 }
 
@@ -42,6 +56,11 @@ def checkTiering = tasks.register('checkTiering') {
     def runtime = tasks.named('test', Test).map { Test t -> t.classpath + t.testClassesDirs }
     doNotTrackState('reads the results of the test run that has just finished')
     doLast {
+        if (testForks > 1) {
+            logger.lifecycle("checkTiering: SKIPPED -- this run used ${testForks} parallel forks, so its spec timings include " +
+                "CPU contention. Run `gradlew test -Ptests.forks=1` for the tiering check.")
+            return
+        }
         double limit = (project.findProperty('tiering.slowSeconds') ?: '1.0').toString() as double
         File dir = resultsDir.get().asFile
         if (!dir.isDirectory()) {
