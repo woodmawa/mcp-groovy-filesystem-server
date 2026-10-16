@@ -27,6 +27,7 @@ import java.nio.file.Path
 @SpringBootTest
 @ActiveProfiles('test')
 @Title('FS -- WO worktree outline')
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class WorktreeOutlineSpec extends Specification {
 
     @Autowired WorktreeService worktree

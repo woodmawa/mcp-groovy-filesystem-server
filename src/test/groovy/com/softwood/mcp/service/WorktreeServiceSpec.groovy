@@ -26,6 +26,7 @@ import java.nio.file.Path
 @SpringBootTest
 @ActiveProfiles('test')
 @Title('FS -- WT the worktree tool and the gates that stand down inside one')
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class WorktreeServiceSpec extends Specification {
 
     @Autowired WorktreeService worktree

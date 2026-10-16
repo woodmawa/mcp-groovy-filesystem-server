@@ -36,6 +36,7 @@ import spock.lang.Specification
  */
 @SpringBootTest
 @CompileDynamic
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class McpbManifestToolCoverageSpec extends Specification {
 
     /** The registered tool set, by definition: what McpController is handed and dispatches on. */

@@ -17,6 +17,7 @@ import spock.lang.Timeout
  * wait is longer, not unbounded.</p>
  */
 @Timeout(20)
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class PlanGateTimeoutSpec extends Specification {
 
     HttpServer server

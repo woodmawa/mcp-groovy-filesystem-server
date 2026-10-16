@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit
  */
 @Title('ExecuteService — FS-EXEC-2 background jobs')
 @Requires({ os.windows })
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class ExecuteServiceAsyncSpec extends Specification {
 
     /** See the note in FS-EXEC-2: the test worker's PATH has no System32. */

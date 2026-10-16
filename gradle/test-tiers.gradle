@@ -1,0 +1,93 @@
+// WS10-C test tiers -- decision 375 (Will, 2026-10-16), ARC-STATE X66.
+// This file is IDENTICAL in CS, AW and FS; each build.gradle applies it with `apply from: 'gradle/test-tiers.gradle'`.
+//
+//   test          The FULL suite and the release gate. Nothing here changes what it runs; it is only followed by
+//                 checkTiering.
+//   testFast      The inner loop: the same JVM set-up as `test` (classpath, system properties, JVM args, environment)
+//                 minus every spec tagged @Tag('slow') or @Tag('integration') (spock.lang.Tag -> JUnit Platform tags).
+//   checkTiering  Runs after `test`. Any spec class that took >= tiering.slowSeconds (default 1.0) in THAT run and
+//                 carries neither tag fails the build, so the fast tier cannot quietly grow a slow tail again. Tags are
+//                 read by reflection from the compiled classes -- what JUnit sees -- never from source text.
+//
+//   slow          measured >= 1 s per spec class on a full run (tagged from >= 0.8 s, for headroom against noise)
+//   integration   needs something outside the test JVM: a live server, a real child process, the network
+//
+// Override the threshold with -Ptiering.slowSeconds=2.0 if a slow machine makes it flap.
+
+import groovy.xml.XmlSlurper
+
+List<String> tierTags = ['slow', 'integration']
+
+tasks.register('testFast', Test) { Test t ->
+    group = 'verification'
+    description = 'Fast tier: the full test configuration minus @Tag(slow) and @Tag(integration) specs. Not the release gate.'
+    Test base = tasks.named('test', Test).get()
+    t.testClassesDirs = base.testClassesDirs
+    t.classpath = base.classpath
+    t.systemProperties(base.systemProperties)
+    t.jvmArgs(base.jvmArgs ?: [])
+    t.environment(base.environment)
+    // AW's `test` excludes '**/disabled/**' and sets a timeout -- the fast tier must inherit both, or it would run
+    // specs the full suite deliberately skips.
+    t.include(base.includes)
+    t.exclude(base.excludes)
+    t.timeout.set(base.timeout.orNull)
+    t.useJUnitPlatform { excludeTags(*tierTags) }
+}
+
+def checkTiering = tasks.register('checkTiering') {
+    group = 'verification'
+    description = 'Fails if a spec class took >= tiering.slowSeconds in the last `test` run and is tagged neither slow nor integration.'
+    def resultsDir = tasks.named('test', Test).flatMap { it.reports.junitXml.outputLocation }
+    def runtime = tasks.named('test', Test).map { Test t -> t.classpath + t.testClassesDirs }
+    doNotTrackState('reads the results of the test run that has just finished')
+    doLast {
+        double limit = (project.findProperty('tiering.slowSeconds') ?: '1.0').toString() as double
+        File dir = resultsDir.get().asFile
+        if (!dir.isDirectory()) {
+            logger.lifecycle('checkTiering: no test results to check')
+            return
+        }
+        Map<String, Double> secs = [:]
+        (dir.listFiles() ?: [] as File[]).findAll { it.name ==~ /TEST-.+\.xml/ }.each { File f ->
+            def suite = new XmlSlurper().parse(f)
+            String cls = f.name.substring(5, f.name.length() - 4)
+            secs[cls] = (secs[cls] ?: 0d) + ((suite.@time.text() ?: '0') as double)
+        }
+        URL[] urls = runtime.get().files.collect { File f -> f.toURI().toURL() } as URL[]
+        URLClassLoader cl = new URLClassLoader(urls, ClassLoader.platformClassLoader)
+        try {
+            Class tagType = cl.loadClass('spock.lang.Tag')
+            List<String> offenders = []
+            secs.findAll { it.value >= limit }.sort { -it.value }.each { String cls, Double t ->
+                Set<String> tags = [] as Set<String>
+                try {
+                    for (Class c = Class.forName(cls, false, cl); c != null; c = c.superclass) {
+                        // spock.lang.Tag is @Repeatable: the compiler may store it inside its container, where
+                        // getAnnotation(Tag) returns null even though JUnit sees the tag. getAnnotationsByType
+                        // reads both forms.
+                        // Spock 2.4's Tag.value() is ONE String (not String[]): `as List` would split 'slow' into
+                        // [s, l, o, w] -- the first version of this guard did exactly that and passed nothing.
+                        c.getAnnotationsByType(tagType).each { def a ->
+                            def v = a.value()
+                            if (v instanceof String) tags << (v as String) else tags.addAll((v as List).collect { it as String })
+                        }
+                    }
+                } catch (Throwable e) {
+                    logger.warn("checkTiering: cannot read tags of ${cls}: ${e}")
+                }
+                if (!tags.any { it in tierTags }) offenders << String.format('%6.2f s  %s', t, cls)
+            }
+            if (offenders) {
+                throw new GradleException("checkTiering: ${offenders.size()} spec class(es) took >= ${limit} s in the full " +
+                    "run and carry neither @Tag('slow') nor @Tag('integration') -- tag them, or make them fast:\n  " +
+                    offenders.join('\n  '))
+            }
+            logger.lifecycle("checkTiering: OK -- ${secs.size()} spec classes checked; every one >= ${limit} s is tagged slow or integration")
+        } finally {
+            cl.close()
+        }
+    }
+}
+
+tasks.named('test') { finalizedBy checkTiering }

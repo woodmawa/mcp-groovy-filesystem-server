@@ -41,6 +41,7 @@ import java.nio.file.Path
 @SpringBootTest
 @ActiveProfiles('test')
 @Title('ExecuteService -- FS-EXEC-6 bash quoting on Windows')
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class ExecuteServiceBashQuotingSpec extends Specification {
 
     @Autowired ExecuteService executeService

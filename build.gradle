@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.9.101'
+version = '0.9.102'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -82,6 +82,10 @@ tasks.named('test') {
     useJUnitPlatform()
     jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
+
+// WS10-C (decision 375): `test` stays the full suite and release gate; `testFast` is the inner loop; checkTiering
+// follows every `test` run. Shared verbatim with CS and AW.
+apply from: 'gradle/test-tiers.gradle'
 
 tasks.named('bootRun') {
     jvmArgs '--enable-native-access=ALL-UNNAMED'

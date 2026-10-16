@@ -49,6 +49,7 @@ import java.nio.file.Path
  */
 @Title('a transient Windows lock must not lose a write')
 @groovy.transform.CompileDynamic
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class AtomicWriteRetrySpec extends Specification {
 
     /** Longer than the retry budget, so CT-AWR-3 proves boundedness rather than patience. */

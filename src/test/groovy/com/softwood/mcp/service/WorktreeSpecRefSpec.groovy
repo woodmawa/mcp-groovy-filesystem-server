@@ -28,6 +28,7 @@ import java.nio.file.Path
 @SpringBootTest
 @ActiveProfiles('test')
 @Title('FS -- WR worktree create from a spec ref')
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class WorktreeSpecRefSpec extends Specification {
 
     @Autowired WorktreeService worktree

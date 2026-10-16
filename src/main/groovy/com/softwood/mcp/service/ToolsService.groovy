@@ -223,17 +223,27 @@ Developer toolchain. Actions:
         return runTool(cmd, workingDir, timeout, "git ${subcommand}", requestId)
     }
 
+    /** The gradle tasks FS will run. ToolsGradleAllowlistSpec pins it. */
+    static final List<String> GRADLE_ALLOWED = ['build', 'test', 'clean', 'compileGroovy', 'compileJava',
+                                                'bootRun', 'bootJar', 'jar', 'dependencies', 'tasks',
+                                                'check', 'assemble', 'publish', 'wrapper',
+                                                'packageMcpbThin', 'installMcpbLocal', 'copyMcpbToSync',
+                                                'generateMcpbManifest', 'stageJarForMcpb',
+                                                // WS10-C (decision 375): the test tiers in gradle/test-tiers.gradle
+                                                'testFast', 'checkTiering'].asImmutable()
+
+    /** Each token of a (possibly multi-task) subcommand that is not allowed, e.g. 'packageMcpbThin installMcpbLocal'. */
+    static List<String> rejectedGradleTasks(String subcommand) {
+        return (subcommand ?: '').trim().split(/\s+/).toList().findAll { String t -> t && !(t in GRADLE_ALLOWED) }
+    }
+
     private McpResponse doGradle(String subcommand, List<String> args, String workingDir,
                                   int timeout, Object requestId) {
-        List<String> allowed = ['build', 'test', 'clean', 'compileGroovy', 'compileJava',
-                                'bootRun', 'bootJar', 'jar', 'dependencies', 'tasks',
-                                'check', 'assemble', 'publish', 'wrapper',
-                                'packageMcpbThin', 'installMcpbLocal', 'copyMcpbToSync',
-                                'generateMcpbManifest', 'stageJarForMcpb']
+        List<String> allowed = GRADLE_ALLOWED
         if (!subcommand) return McpResponse.toolError(requestId, "subcommand required for gradle. Allowed: ${allowed.join(', ')}")
         // Support multi-task subcommands e.g. 'packageMcpbThin installMcpbLocal' - validate each token
         List<String> tasks = subcommand.trim().split(/\s+/).toList()
-        List<String> rejected = tasks.findAll { !(it in allowed) }
+        List<String> rejected = rejectedGradleTasks(subcommand)
         if (rejected) return McpResponse.toolError(requestId, "gradle task(s) not allowed: ${rejected.join(', ')}. Allowed: ${allowed.join(', ')}")
 
         // Use gradlew wrapper if available, fall back to system gradle

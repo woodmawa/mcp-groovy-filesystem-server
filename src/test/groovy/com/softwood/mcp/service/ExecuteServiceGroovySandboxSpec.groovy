@@ -32,6 +32,7 @@ import java.nio.file.Path
 @SpringBootTest
 @ActiveProfiles('test')
 @Title('ExecuteService -- FS-GS the groovy sandbox')
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class ExecuteServiceGroovySandboxSpec extends Specification {
 
     @Autowired ExecuteService executeService

@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit
 @ActiveProfiles('test')
 @Requires({ os.windows })
 @Title('ExecuteService -- async jobs are not killed at the synchronous default (chain 18eb7c8d)')
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class ExecuteServiceAsyncTimeoutSpec extends Specification {
 
     /** Absolute path: the gradle test worker's PATH has no System32 (see ExecuteServiceAsyncSpec). */

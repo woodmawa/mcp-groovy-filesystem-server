@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit
  * the 2026-10-14 lesson was specs proving the producer while the consumer did something else.</p>
  */
 @Title('FS jobs are attributed to their caller and report live output')
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class ExecuteJobVisibilitySpec extends Specification {
 
     ExecuteJobRegistry registry = new ExecuteJobRegistry()

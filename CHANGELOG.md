@@ -2624,3 +2624,18 @@ dynamic dead port. `LivePortTripwireSpec` LPT-1..3; mutation (no install) turns 
 - `ExecuteServiceWedgeSpec` 27.4 -> 9.2 s: cleanup kills only the ping markers a feature used (was three PowerShell CIM
   queries per feature, WEDGE-4/5 included); WEDGE-2 waits for the tree kill instead of 1.5 s; WEDGE-3 `ping -n 4`.
 - `ExecuteServiceAsyncSpec` 5.0 -> 3.9 s and `ExecuteServiceAsyncTimeoutSpec`: the same proofs on a ~2 s job.
+
+## [0.9.102] -- WS10-C item 4: fast/slow test tiers (Will, 2026-10-16, decision 375)
+
+**`tools action=gradle` runs the tier tasks.** `testFast` and `checkTiering` join the gradle allowlist, which is now
+`ToolsService.GRADLE_ALLOWED` with `rejectedGradleTasks(subcommand)` (refactor, same refusals). Without it the tiers
+below were unreachable through FS and so through the `gradle-test-summary` flow (1.12 adds `task=testFast`).
+`ToolsGradleAllowlistSpec` TA-1..4 (red on today's allowlist for testFast/checkTiering; controls green).
+
+**Test tiers (tests and build only), identical in CS, AW and FS.** `gradle/test-tiers.gradle`, applied from
+build.gradle: `test` is unchanged -- the full suite and the release gate; `testFast` is the same JVM set-up (classpath,
+system properties, JVM args, environment, includes/excludes, timeout) minus specs tagged `@spock.lang.Tag('slow')` or
+`@Tag('integration')`; `checkTiering` follows every `test` run and fails the build if a spec class took >= 1 s in
+that run without either tag (tags read by reflection from the compiled classes, as JUnit sees them; Spock 2.4's
+`Tag.value()` is a single String). FS tags: 9 `integration` (specs that start real shells, git or javac -- the
+ExecuteService, Worktree and gradle-progress specs) and 8 `slow` (>= 0.8 s in-JVM).

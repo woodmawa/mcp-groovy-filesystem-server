@@ -27,6 +27,7 @@ import static org.awaitility.Awaitility.await
  */
 @Title('ExecuteService -- WEDGE-1..5 a command can never wedge the stdio server')
 @Requires({ os.windows })
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class ExecuteServiceWedgeSpec extends Specification {
 
     static final String PING = '%SystemRoot%\\System32\\ping.exe'

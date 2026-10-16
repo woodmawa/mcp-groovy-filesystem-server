@@ -18,6 +18,7 @@ import spock.lang.Specification
  *   <li>KP-3 -- this process is never a target</li>
  * </ul>
  */
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class ServerLifecycleKillByPortSpec extends Specification {
 
     static final long LISTENER   = 59956L   // the AW companion

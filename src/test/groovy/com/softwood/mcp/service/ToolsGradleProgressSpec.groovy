@@ -18,6 +18,7 @@ import spock.lang.Specification
  *         (CONTROL)
  *   TG-6  (0.9.97) task markers (##AWTASK| / ##AWTASKS|) are kept out of the captured stdout too
  */
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class ToolsGradleProgressSpec extends Specification {
 
     def 'TG-1 every gradle task list made for an AW node gets progress; without a node, none does'() {

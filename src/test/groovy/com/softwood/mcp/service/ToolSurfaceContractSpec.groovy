@@ -42,6 +42,7 @@ import java.nio.file.Path
 @SpringBootTest
 @ActiveProfiles('test')
 @Title('FS -- FS-SURF the advertised tool surface is the wired tool surface')
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class ToolSurfaceContractSpec extends Specification {
 
     @Autowired List<ToolHandler> handlers

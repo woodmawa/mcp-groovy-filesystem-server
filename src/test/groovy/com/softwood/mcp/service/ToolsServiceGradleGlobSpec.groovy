@@ -28,6 +28,7 @@ import java.nio.file.Path
  * GG-4  other args keep their order around the fold
  */
 @IgnoreIf({ !os.windows })
+@spock.lang.Tag('integration')   // WS10-C tiering: starts real processes (shell/git/javac)
 class ToolsServiceGradleGlobSpec extends Specification {
 
     @TempDir

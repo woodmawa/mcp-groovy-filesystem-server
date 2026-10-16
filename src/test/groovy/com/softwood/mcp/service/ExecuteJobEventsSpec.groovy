@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit
  * where {@code action=progress} reads it. FAIL-OPEN: a job never fails because the event could not be sent.</p>
  */
 @Title('FS async jobs report their lifecycle to AW')
+@spock.lang.Tag('slow')   // WS10-C tiering: measured >= 0.8 s per full run
 class ExecuteJobEventsSpec extends Specification {
 
     ExecuteJobRegistry registry = new ExecuteJobRegistry()
