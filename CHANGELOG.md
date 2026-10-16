@@ -2585,3 +2585,12 @@ BLOCKED_ONTOLOGY_GATE, ...) and sends it as `telemetry.error_code`, which CS 1.1
 New cases were added to the specs that already own each area (`ExecuteServiceDispatchSpec` FS-EXEC-OL-1/2,
 `WriteContextSpec` CT-HASH-PH, `TelemetryOutcomeSpec` CT-OL-1/2) plus `ScriptLintSpec` for the new class.
 Mutations caught by exactly the named cases.
+
+## [0.9.100] -- optimised-learning Release 2 (WS2 triggered lessons)
+
+**Added: triggered lessons on FS calls.** `FsTriggerCache` fetches FS's `practice_triggers` rows from CS
+(`context_lifecycle action=trigger_rows server=fs`, via the new `ContextServerClient.lifecycleCall`) and matches every
+tool call locally. On a match new to this session the response gains ONE extra content element `{"lesson":{...}}` --
+after telemetry and the global backstop, so it never inflates the measured size -- and the show is reported to CS
+(`record_trigger_show`) on a daemon thread. CS is never a dependency of an FS call (#377): only the first load is
+inline (1.5 s read, else empty); later refreshes run in the background. Spec `FsTriggerSpec` FT-1..4.

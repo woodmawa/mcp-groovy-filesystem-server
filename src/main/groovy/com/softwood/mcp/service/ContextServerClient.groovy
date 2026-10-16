@@ -996,6 +996,39 @@ class ContextServerClient {
      *
      * @return CS's answer ({@code predecessor}, {@code notice}, {@code cause}), or null when CS cannot be asked
      */
+    /**
+     * optimised-learning WS2 (FS 0.9.100): one synchronous context_lifecycle call -- the parsed JSON result, or null
+     * when CS is unreachable or the reply cannot be read. Never throws. FsTriggerCache calls it ONLY from its own
+     * daemon thread, never on a tool call's thread: CS is never a dependency of an FS call (#377).
+     */
+    Map<String, Object> lifecycleCall(Map<String, Object> arguments, int readTimeoutMs) {
+        if (!isCsReachable()) return null
+        try {
+            String json = groovy.json.JsonOutput.toJson([jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params: [name: 'context_lifecycle', arguments: arguments]])
+            HttpURLConnection conn = openCs(new URL("${contextServerUrl}/mcp"))
+            try {
+                conn.requestMethod  = 'POST'
+                conn.doOutput       = true
+                conn.connectTimeout = 500
+                conn.readTimeout    = readTimeoutMs
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode == 200) {
+                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(conn.inputStream.getText('UTF-8'))
+                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                    if (text) return (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
+                }
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('lifecycleCall {} failed: {}', arguments?.get('action'), e.message)
+        }
+        return null
+    }
+
     Map<String, Object> claimPredecessor(String server, long pid, String jvmStartedAt) {
         if (!isCsReachable()) return null
         try {

@@ -45,6 +45,10 @@ class McpController {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     FilesystemTelemetryService telemetryService
 
+    /** FS 0.9.100 optimised-learning WS2: a lesson rides on the call it belongs to. Optional. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    com.softwood.mcp.service.FsTriggerCache triggerCache
+
     /** FS 0.9.80 SB-1: asked once, while unbound, whom this restarted process replaced. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     com.softwood.mcp.service.ContextServerClient contextServerClient
@@ -341,6 +345,7 @@ class McpController {
 
         // v0.7.19: telemetry - fire-and-forget, never blocks response
         boolean unbound = false
+        String callSession = CALLER_SESSION.get()
         try {
             if (telemetryService != null) {
                 String action   = arguments.action as String
@@ -355,6 +360,7 @@ class McpController {
                 String declared  = CALLER_SESSION.get()
                 String resolved  = declared ?: telemetryService.readActiveSessionId()
                 unbound = (resolved == null)
+                callSession = resolved
                 // FS 0.9.80 SB-2: unbound still warns (above), but the row names who made it rather than 'unknown'.
                 String sessionId = resolved ?: 'system:fs-unclaimed'
                 // FS 0.9.67 item 3: requested window + lines returned, for range calls only.
@@ -392,6 +398,9 @@ class McpController {
                 "Response too large: ${toolName} produced ${charCount} chars (~${tokenEst} tokens). " +
                 "Use targeted actions: structure/get_method/range/grep instead of full reads.")
         }
+
+        // FS 0.9.100 WS2: after telemetry and the backstop, so the lesson never inflates the measured size. Never throws.
+        if (triggerCache != null && callSession) out = triggerCache.offer(toolName, arguments, out, callSession)
 
         // FS 0.9.27 W11.1: applied to whatever is actually being returned, backstop error included.
         // Being unbound is orthogonal to the call having failed, and a session whose response was
