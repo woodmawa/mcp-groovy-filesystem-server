@@ -277,6 +277,9 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     // protected, not private: @CompileStatic private methods are unreachable from a
     // @CompileDynamic Spock spec even in the same package (practice #1166 seam 2).
     // Seam added for ExecuteServiceNativeCommandSpec (FS-EXEC-PATHEXT).
+    /** X74: appended to every powershell temp script -- see doPowershell. Single quotes: Groovy must not interpolate $. */
+    static final String PS_EXIT_TRAILER = '\r\nif (-not $? -and $LASTEXITCODE) { exit $LASTEXITCODE }\r\n'
+
     protected McpResponse doPowershell(String script, String workingDir, int timeout,
                                     Map<String, String> envOverrides, Map<String, Object> options, Object requestId) {
         if (!enablePowershell) return McpResponse.toolError(requestId, "PowerShell execution is disabled")
@@ -292,7 +295,12 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
         // this method, so deleting the script in a finally block here destroyed it before the
         // background job could run it.
         File tempScript = File.createTempFile('mcp-ps-', '.ps1')
-        tempScript.text = script
+        // FS 0.9.104 (X74, chain ae8b7c25): a -File script exits 0 at its end unless it calls exit
+        // itself, so a failing LAST native command (gradlew.bat BUILD FAILED) was reported as exit 0.
+        // The trailer exits with that code only when the last statement failed AND a native exit code
+        // exists: an explicit `exit N` never reaches it, a succeeding last command leaves $? true, and a
+        // cmdlet's non-terminating error keeps reporting 0 as before. ExecutePowershellExitCodeSpec.
+        tempScript.text = script + PS_EXIT_TRAILER
         // -InputFormat None: ProcessBuilder hands powershell a stdin pipe that is never written
         // to and never closed. Without this, PowerShell negotiates input on that dead pipe.
         List<String> cmd = ['powershell', '-NoProfile', '-NonInteractive', '-InputFormat', 'None',

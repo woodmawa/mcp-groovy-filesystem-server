@@ -2653,3 +2653,16 @@ ExecuteService, Worktree and gradle-progress specs) and 8 `slow` (>= 0.8 s in-JV
   `record_tool_descriptions` and never the later success, so the log read as a CS still refusing after it had
   accepted (X68 item 1). It now logs `accepted after an earlier refusal` once. `ToolDescriptionReportRecoverySpec`
   TDR-2 red on 0.9.102, TDR-1/TDR-3 controls green both ways. Paired with AW 1.30.108 (same defect in AW).
+
+## [0.9.104] (2026-10-19) -- execute action=powershell carries a failing native exit code out (X74, chain ae8b7c25)
+
+`doPowershell` runs the script with `-File`, and PowerShell exits 0 at the end of a `-File` script unless the script
+calls `exit` itself -- so a failing LAST native command was reported as exit 0. Found live: async job a3f3f163 ran
+`.\gradlew.bat test --rerun -Ptests.forks=1`, gradle printed BUILD FAILED (PowerShell had split the -P argument), and
+the job came back `completed exitCode=0` -- a release gate reading green for a build that ran no test. Every
+powershell temp script now ends with `if (-not $? -and $LASTEXITCODE) { exit $LASTEXITCODE }`: it fires only when the
+last statement failed AND a native exit code exists. An explicit `exit N` never reaches it, a succeeding last command
+leaves `$?` true (the tool's "last command's exit code" contract), and a cmdlet's own non-terminating error still
+reports 0 as before. `ExecutePowershellExitCodeSpec` (integration): PSX-1 (last native exit 3) and PSX-2 (a .bat
+exiting 1, the gradlew shape) red on 0.9.103; PSX-3/4/5 controls (fail-then-succeed = 0, explicit exit 5, plain
+cmdlet) green both ways. 54/0 across the ExecuteService specs.
