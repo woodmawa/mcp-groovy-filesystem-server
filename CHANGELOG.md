@@ -2749,3 +2749,10 @@ repeat reads without a hash. Removed `missingKhWarnEnabled`, `maybeWarnMissingKn
 get_method call site, `ContextServerClient.writeMissingKnownHashObservationAsync` and the telemetry counter.
 MissingKnownHashDetectionSpec deleted; KnownHashObligationSpec KH-4 removed; ServedReadDedupSpec SRD-10 now checks at
 runtime that a cached re-read carries no `_missing_knownhash`.
+
+
+## [0.9.109] -- 2026-10-19 -- optimised-learning WP4: remove the mistake, not report it
+- **multi_grep expands a directory** (mistake class `multi-grep-directory`, obs 12292/12928). A directory in `options.paths` used to be refused `MULTI_GREP_DIRECTORY` (FS 0.9.80); the refusal was honest but the mistake kept recurring. It is now walked with file_search's default code/text filter, skipping `.git`, `.gradle`, `.idea`, `build`, `out`, `target`, `node_modules`, capped at `mcp.filesystem.multi-grep-dir-max-files` (200) across the call. The expansion is REPORTED: `expanded:[{dir,files}]`, and over the cap `expansion_capped`, `files_not_searched`, `expansion_note` -- never cut in silence. A directory outside the allowed dirs is not walked; it is reported `path not allowed`. MultiGrepDirectorySpec MG-1..4 (red first; mutation check caught), tagged slow.
+- **file_write / file_read source descriptions** now state the CODE_APPEND refusal (live since 0.9.107) and the directory expansion. NOTE: FS serves descriptions from CS help_sections (`tool_desc_file_*`); the source text is only the fallback, which is why the stale append warning outlived 0.9.107. The `tool_desc_file_write(_verbose)` rows were corrected 2026-10-19; `tool_desc_file_read` is updated once this release is live.
+- **checkSpecLint** (`gradle/spec-lint.gradle`, shared verbatim with CS and AW) runs before every test run: SPEC_CALL_METHOD, NON_CLASS_PROPERTIES, MOCK_RETURNS_SHARED_COLLECTION (mistake class `spec-lint`). FS: 108 files clean.
+- Full suite: 801 tests, 0 failures, single fork; checkTiering OK.

@@ -1,0 +1,128 @@
+// optimised-learning WP4 (Will, 2026-10-19; mistake class spec-lint) -- shared VERBATIM by CS, AW and FS.
+//
+//   checkSpecLint  Parses every test source to its AST (CONVERSION phase: syntax only, no classpath) and fails the
+//                  build on mechanical Spock/Groovy slips that have each cost a red-for-the-wrong-reason run. Each
+//                  rule names the HAZARD, not a shape that merely could become one -- the first draft flagged shapes
+//                  and found 32 "problems" in 423 passing CS spec files; a lint that flags correct code is ignored.
+//
+//     SPEC_CALL_METHOD               a Specification declares a method named call(...) AND a closure in it invokes
+//                                    call(...) unqualified -- which resolves to Closure.call, not the helper
+//                                    (MissingMethodException). Obs 12766, 12953.
+//     NON_CLASS_PROPERTIES           `.properties` read off anything but a class name (System.properties is fine). On
+//                                    a Map it is getProperties(), not the 'properties' key -- use
+//                                    map.get('properties'). Obs 11890, 12100.
+//     MOCK_RETURNS_SHARED_COLLECTION a mock answers `>> X` where X is a static final Map/List LITERAL field: every
+//                                    feature gets the SAME object, so code under test that mutates its result leaks
+//                                    into the next feature. Return a copy (`>> new HashMap(X)`) or build it per
+//                                    feature. Obs 12956.
+//
+//   Not checked, deliberately: "a side effect in then:" -- syntax cannot tell a condition from a call with effects.
+//
+//   A finding is suppressed by `// spec-lint: allow` on its line. A file the parser cannot read (Gradle's Groovy may
+//   lag the project's) is REPORTED by name and does not fail the build -- it is never skipped in silence.
+//   -PspecLint.dir=<dir> lints another directory (how the check is proven red on a fixture).
+
+import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.ClassCodeVisitorSupport
+import org.codehaus.groovy.ast.FieldNode
+import org.codehaus.groovy.ast.expr.BinaryExpression
+import org.codehaus.groovy.ast.expr.ClassExpression
+import org.codehaus.groovy.ast.expr.ClosureExpression
+import org.codehaus.groovy.ast.expr.ListExpression
+import org.codehaus.groovy.ast.expr.MapExpression
+import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
+import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.control.CompilationUnit
+import org.codehaus.groovy.control.CompilerConfiguration
+import org.codehaus.groovy.control.Phases
+import org.codehaus.groovy.control.SourceUnit
+
+def checkSpecLint = tasks.register('checkSpecLint') {
+    group = 'verification'
+    description = 'Fails on mechanical Spock/Groovy spec slips: call(...) inside a closure of a spec that declares call, .properties off a non-class, a mock answering >> a shared static collection.'
+    File root = project.findProperty('specLint.dir') ? project.file(project.findProperty('specLint.dir').toString())
+                                                     : project.file('src/test/groovy')
+    inputs.dir(root).optional()
+    doNotTrackState('a lint: cheap, and its verdict must never be served from a stale cache')
+    doLast {
+        if (!root.isDirectory()) {
+            logger.lifecycle("checkSpecLint: no test sources at ${root}")
+            return
+        }
+        List<String> findings = []
+        List<String> unparsed = []
+        int files = 0
+        root.eachFileRecurse { File f ->
+            if (!f.name.endsWith('.groovy')) return
+            files++
+            List<String> lines = f.readLines('UTF-8')
+            String rel = root.toPath().relativize(f.toPath()).toString().replace('\\', '/')
+            Closure<Void> report = { int line, String rule, String what ->
+                String src = (line > 0 && line <= lines.size()) ? lines[line - 1] : ''
+                if (!src.contains('spec-lint: allow')) findings << "${rel}:${line}  ${rule}  ${what}".toString()
+            }
+            CompilationUnit cu = new CompilationUnit(new CompilerConfiguration())
+            SourceUnit su = cu.addSource(f)
+            try {
+                cu.compile(Phases.CONVERSION)
+            } catch (Throwable e) {
+                unparsed << "${rel}: ${(e.message ?: e.class.simpleName).readLines().find { it.trim() } ?: e.class.simpleName}".toString()
+                return
+            }
+            su.AST.classes.each { ClassNode cn ->
+                String sup = cn.unresolvedSuperClass?.name ?: ''
+                boolean isSpec = sup == 'Specification' || sup.endsWith('.Specification')
+                boolean declaresCall = isSpec && cn.methods.any { it.name == 'call' }
+                Set<String> sharedCollections = isSpec ? cn.fields.findAll { FieldNode fn -> fn.static && fn.final &&
+                        (fn.initialExpression instanceof MapExpression || fn.initialExpression instanceof ListExpression) }
+                    .collect { it.name } as Set<String> : [] as Set<String>
+                new ClassCodeVisitorSupport() {
+                    int closureDepth = 0
+                    @Override protected SourceUnit getSourceUnit() { su }
+                    @Override void visitClosureExpression(ClosureExpression ce) {
+                        closureDepth++
+                        try { super.visitClosureExpression(ce) } finally { closureDepth-- }
+                    }
+                    @Override void visitMethodCallExpression(MethodCallExpression mce) {
+                        if (declaresCall && closureDepth > 0 && mce.implicitThis && mce.methodAsString == 'call') {
+                            report(mce.lineNumber, 'SPEC_CALL_METHOD',
+                                "call(...) inside a closure resolves to Closure.call, not ${cn.nameWithoutPackage}.call -- rename the helper")
+                        }
+                        super.visitMethodCallExpression(mce)
+                    }
+                    @Override void visitBinaryExpression(BinaryExpression be) {
+                        if (sharedCollections && be.operation.text == '>>' && be.rightExpression instanceof VariableExpression &&
+                            (be.rightExpression as VariableExpression).name in sharedCollections) {
+                            report(be.lineNumber, 'MOCK_RETURNS_SHARED_COLLECTION',
+                                "a mock answers >> ${(be.rightExpression as VariableExpression).name}, one static object shared by every feature -- return a copy")
+                        }
+                        super.visitBinaryExpression(be)
+                    }
+                    @Override void visitPropertyExpression(PropertyExpression pe) {
+                        if (pe.propertyAsString == 'properties') {
+                            def obj = pe.objectExpression
+                            boolean classRef = obj instanceof ClassExpression ||
+                                (obj instanceof VariableExpression && Character.isUpperCase((obj as VariableExpression).name.charAt(0)))
+                            if (!classRef) report(pe.lineNumber, 'NON_CLASS_PROPERTIES',
+                                '.properties off a value is getProperties(), not a map key -- use .get(\'properties\')')
+                        }
+                        super.visitPropertyExpression(pe)
+                    }
+                }.visitClass(cn)
+            }
+        }
+        if (unparsed) {
+            logger.warn("checkSpecLint: ${unparsed.size()} file(s) could not be parsed by Gradle's Groovy and were NOT linted:\n  " +
+                unparsed.join('\n  '))
+        }
+        if (findings) {
+            throw new GradleException("checkSpecLint: ${findings.size()} finding(s) in ${files} file(s):\n  " + findings.join('\n  ') +
+                "\nSuppress a deliberate one with `// spec-lint: allow` on its line.")
+        }
+        logger.lifecycle("checkSpecLint: ${files} file(s) clean" + (unparsed ? ", ${unparsed.size()} unparsed (listed above)" : ''))
+    }
+}
+
+tasks.named('test') { dependsOn checkSpecLint }
+tasks.matching { it.name == 'testFast' }.configureEach { dependsOn checkSpecLint }

@@ -112,7 +112,7 @@ Do NOT pass options.knownHash to action=range -- it returns {unchanged:true} ins
 
 Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|get_method|list ONLY -- NOT range), options.force (re-send content this chat already holds; override >200-line refusal), options.compact (minimal response), options.className (structure filter).
 action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
-action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches.
+action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches. A directory in paths is expanded to its files (file_search's default code/text filter; build/.git/node_modules skipped; at most 200 files) and reported as expanded[{dir,files}]; a capped expansion says expansion_capped and files_not_searched.
 All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.
 
 LARGE FILE, NEED ORIENTATION? Do not read it whole. Ask the local model instead (AW, WP-G G5):
@@ -230,7 +230,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   method      : [type: 'string',  description: 'Method name for get_method (required for get_method)'],
                                   fuzzy       : [type: 'boolean', description: 'If true, match method name as substring (for get_method)'],
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
-                                  paths       : [type: 'array', items: [type: 'string'], description: 'File paths for multi/multi_grep (required for multi max 10, multi_grep max 20)'],
+                                  paths       : [type: 'array', items: [type: 'string'], description: 'File paths for multi/multi_grep (required for multi max 10, multi_grep max 20; multi_grep also takes directories, expanded to their files)'],
                                   knownHashes : [type: 'object', description: 'Map of {path->12-char-hash} from prior reads. Files matching hash return {unchanged:true} with no content.'],
                                   compareTo   : [type: 'string',  description: 'Second file for diff (required for diff)'],
                                   algorithm   : [type: 'string',  description: 'Checksum: MD5|SHA-256 (default SHA-256)'],

@@ -84,6 +84,18 @@ class FileContentReader extends AbstractFileService {
     @Value('${mcp.filesystem.read-max-lines-docs:600}')
     int readMaxLinesDocs
 
+    /** WP4 (2026-10-19): most files one multi_grep call searches from expanded directories, across all of them. */
+    @Value('${mcp.filesystem.multi-grep-dir-max-files:200}')
+    int multiGrepDirMaxFiles
+
+    /** WP4: file_search's default filter, so a directory in multi_grep searches what file_search would. */
+    @Value('${mcp.filesystem.default-file-pattern:.*\\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$}')
+    String multiGrepDefaultFilePattern
+
+    /** WP4: folders a multi_grep directory expansion never walks into. */
+    static final Set<String> MULTI_GREP_SKIP_DIRS =
+        ['.git', '.gradle', '.idea', 'build', 'out', 'target', 'node_modules'] as Set<String>
+
     private static final Set<String> DOC_EXTENSIONS =
         ['.md', '.txt', '.yml', '.yaml', '.json', '.toml', '.ini', '.properties', '.xml'] as Set
 
@@ -457,13 +469,34 @@ class FileContentReader extends AbstractFileService {
         String patternStr = options.pattern as String
         if (!patternStr) return McpResponse.toolError(requestId, 'options.pattern required for multi_grep')
 
-        // FS 0.9.80 S6 item 1 (obs 12291): a directory is refused BY NAME. It used to throw inside the loop and land
-        // as a per-path error in a success envelope with totalMatches 0 -- which reads exactly like "no matches".
-        List<String> dirs = paths.findAll { String p -> p && new File(p).isDirectory() }
-        if (dirs) {
-            return McpResponse.toolError(requestId, ('MULTI_GREP_DIRECTORY: multi_grep searches FILES; these are ' +
-                'directories: ' + dirs.join(', ') + '. To search a directory use file_search action=content with ' +
-                'options.contentPattern; nothing was searched.').toString())
+        // WP4 (2026-10-19, Will; class multi-grep-directory, obs 12292/12928): a directory is EXPANDED to its files.
+        // FS 0.9.80 refused it by name (MULTI_GREP_DIRECTORY) because it used to answer inside a success envelope
+        // with totalMatches 0; the refusal was honest, but the mistake kept recurring. Remove the mistake instead:
+        // walk it with file_search's default code/text filter, skip build and VCS folders, cap the total -- and
+        // REPORT the expansion (expanded, expansion_capped, files_not_searched), so nothing is dropped in silence.
+        // A directory outside the allowed dirs is never walked: it is reported 'path not allowed' and skipped.
+        List<String> searchPaths = []
+        List<Map<String, Object>> expanded = []
+        List<Map<String, Object>> dirErrors = []
+        int expandedCount = 0
+        int notSearched = 0
+        for (String p : paths) {
+            if (!p || !new File(p).isDirectory()) { searchPaths << p; continue }
+            String dirNorm
+            try {
+                dirNorm = validateDirectoryPath(p)
+            } catch (SecurityException ignored) {
+                dirErrors << ([path: p, error: 'path not allowed'] as Map<String, Object>)
+                continue
+            }
+            List<String> found = []
+            collectFiles(new File(dirNorm), Pattern.compile(multiGrepDefaultFilePattern), found, 0)
+            int room = Math.max(0, multiGrepDirMaxFiles - expandedCount)
+            List<String> taken = found.size() > room ? found.take(room) : found
+            notSearched += found.size() - taken.size()
+            expandedCount += taken.size()
+            searchPaths.addAll(taken)
+            expanded << ([dir: dirNorm, files: taken.size()] as Map<String, Object>)
         }
 
         int maxMatchesPerFile = (options.maxMatches as Integer) ?: 5
@@ -475,7 +508,7 @@ class FileContentReader extends AbstractFileService {
         int totalMatchingFiles = 0
         int totalMatches = 0
 
-        for (String rawPath : paths) {
+        for (String rawPath : searchPaths) {
             try {
                 String normalized = validateFilePath(rawPath)
                 List<Map<String, Object>> matches = []
@@ -518,7 +551,7 @@ class FileContentReader extends AbstractFileService {
         Map<String, Object> mgResp = [
             action        : 'multi_grep',
             pattern       : sanitize(patternStr),
-            fileCount     : paths.size(),
+            fileCount     : searchPaths.size(),
             matchingFiles : totalMatchingFiles,
             totalMatches  : totalMatches,
             results       : results
@@ -527,7 +560,33 @@ class FileContentReader extends AbstractFileService {
         // options._blocked has been set by the multi guard since v0.8.54 and read by nobody, so a
         // mixed request quietly came back with fewer files than were asked for and said nothing.
         if (options.get('_blocked')) mgResp.put('blocked', options.get('_blocked'))
+        if (dirErrors) results.addAll(dirErrors)
+        if (expanded) mgResp.put('expanded', expanded)
+        if (notSearched > 0) {
+            mgResp.put('expansion_capped', true)
+            mgResp.put('files_not_searched', notSearched)
+            mgResp.put('expansion_note', ('directory expansion is capped at ' + multiGrepDirMaxFiles + ' files; ' +
+                notSearched + ' more were not searched. Narrow the directory, or use file_search action=content.').toString())
+        }
         return textResponse(requestId, mgResp)
+    }
+
+    /**
+     * WP4 -- every file under {@code dir} that {@code filter} takes (matched on the file NAME, as file_search does),
+     * in name order, never entering {@link #MULTI_GREP_SKIP_DIRS}. Depth-bounded so a link cycle cannot loop.
+     */
+    private void collectFiles(File dir, Pattern filter, List<String> out, int depth) {
+        if (depth > 32) return
+        File[] kids = dir.listFiles()
+        if (kids == null) return
+        List<File> sorted = kids.toList().sort { File a, File b -> a.name <=> b.name }
+        for (File k : sorted) {
+            if (k.isDirectory()) {
+                if (!(k.name in MULTI_GREP_SKIP_DIRS)) collectFiles(k, filter, out, depth + 1)
+            } else if (filter.matcher(k.name).matches()) {
+                out << k.absolutePath
+            }
+        }
     }
 
     // -----------------------------------------------------------------------

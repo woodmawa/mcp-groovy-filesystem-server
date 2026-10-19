@@ -65,14 +65,14 @@ Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|f
 Key params: path (top-level, not in options), content (write/append), options.oldText+newText (replace), options.replacements (patch/multi_replace), options.transform+expectedHash (server_transform), options.expectedHash (replace|patch|multi_replace|server_transform -- required).
 server_transform transforms: replace_section|replace_method|replace_between|insert_before_match|insert_after_heading|append_section|add_method|add_import
 options.allowStructuralEdit=true -- bypass brace/paren delta guard on replace|patch|multi_replace (FS 0.9.6). Use to repair orphaned braces. checkBareBoxDrawing is never bypassed.
-append on .groovy/.java/.kt returns code_append_warning (suppressible via options.suppressCodeAppendWarning=true).
+append on a code file (.groovy/.java/.kt/.kts) is REFUSED with CODE_APPEND and nothing is written -- an append has no structural check; use replace or server_transform add_method, or pass options.suppressCodeAppendWarning=true when an append is genuinely meant.
 ESCAPES (action=write): backslash-n, backslash-t and backslash-r in content are unescaped to real control characters, because Claude's serialiser sends them as two-character sequences. To write a LITERAL backslash-n/t/r, double the backslash. options.raw=true skips unescaping entirely -- use it when content must survive verbatim. FS 0.9.14 fixed the restore step: before it, a doubled backslash came back doubled, so no input at all produced a literal backslash-t. FS 0.9.34: the write response now REPORTS the pass -- an `unescaped` field with per-sequence counts (n/t/r), a total and a note, present only when something was actually changed. Before that the response said success and a content hash and nothing else, so a caller whose escapes were meant to survive found out at compile time in another tool.'''
 
     private static final String DEFAULT_DESC_VERBOSE = '''\
 Write/modify files.
 Actions: write|append|replace|patch|multi_replace|server_transform|chunk_write|finalise_write|abort_write|chunk_status|write_office
 - write(path, content): overwrite entire file
-- append(path, content): append to end. WARNING: append on .groovy/.java/.kt/.kts files may corrupt brace structure -- response includes code_append_warning field. Prefer action=replace or server_transform add_method. Suppress with options.suppressCodeAppendWarning=true.
+- append(path, content): append to end. On a code file (.groovy/.java/.kt/.kts) it is REFUSED with CODE_APPEND and nothing is written, because an append has no structural check. Use action=replace or server_transform add_method; options.suppressCodeAppendWarning=true allows the append.
 - replace: ONE unique string swap. options.oldText+newText (inside options). Fails if not found or duplicated -- check error detail.
 - patch: line-range edits. options.replacements=[{startLine,endLine,newText}] 1-indexed. ALWAYS re-read target lines immediately before each patch (line numbers shift after every edit). For multi-section changes pass ALL replacements in a single patch call -- never sequential patches across turns. After any structural Groovy edit (new method/brace changes) run compileGroovy before continuing. On compile failure: git checkout HEAD -- <file> and start over with one clean patch.
 - multi_replace: ordered [{oldText,newText}]. Pre-validates all before writing. Preferred for multiple text swaps in one file. Does NOT shift line numbers. Use instead of sequential patch calls where possible.
@@ -220,7 +220,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                   before      : [type: 'string', description: 'server_transform add_method: insert before this method (optional)'],
                                   raw         : [type: 'boolean', description: 'action=write only (append never unescapes): skip the escape pass entirely so backslash-n/t/r in content survive verbatim. USE THIS FOR SOURCE CODE -- a Groovy string literal containing \\n is otherwise converted to a real newline and will not compile. The response reports an `unescaped` block whenever the pass changed something.'],
                                   allowStructuralEdit: [type: 'boolean', description: 'replace|patch|multi_replace: bypass the brace/paren delta guard, e.g. to repair orphaned braces (FS 0.9.6)'],
-                                  suppressCodeAppendWarning: [type: 'boolean', description: 'append on .groovy/.java/.kt: suppress the code_append_warning']
+                                  suppressCodeAppendWarning: [type: 'boolean', description: 'append on a code file: allow it (otherwise refused CODE_APPEND, nothing written)']
                               ]]
                 ],
                 required  : ['action', 'path']
