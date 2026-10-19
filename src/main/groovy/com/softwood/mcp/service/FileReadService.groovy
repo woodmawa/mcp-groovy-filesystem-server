@@ -92,9 +92,8 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     // So the text mandated a threshold on a number that is absent by design -- this arc's shape
     // in its third face: not an unreachable guard, but an unmeasurable obligation, repeated to
     // every model on every connect. What remains says what knownHash DOES and how to get one.
-    // The narrow signal survives untouched: ContextServerClient.writeMissingKnownHashObservationAsync
-    // still fires when a cached file is re-read without a hash, because THAT case is real,
-    // reachable, and specific.
+    // FS 0.9.108 (decision 385): the missing-knownHash advisory that used to fire here is deleted too -- the
+    // served ledger answers a repeat read whether or not the caller passed a hash.
     // DEFAULT_DESC kept in sync with tool_desc_file_read section_key in help_sections.
     // Update via: context_lifecycle execute_sql UPDATE help_sections SET content=? WHERE section_key='tool_desc_file_read'
     private static final String DEFAULT_DESC = '''\
@@ -500,13 +499,6 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                 'Method ' + options.get('method') + ' was already sent to this chat. ' + SERVED_FORCE_HINT, null)
                         }
                     }
-                    // FS 0.9.30 -- W2: the missing-knownHash advisory moves to the layer that RUNS.
-                    // It lived in FileContentReader.doGetMethod, the wrapper this very line
-                    // bypasses, so get_method has never once emitted it in production -- while
-                    // MKH-9 proved it worked, by calling the wrapper. Same shape as the gate: a
-                    // thing that only ever ran in the test. Captured before the read, because the
-                    // read populates the cache it is compared against.
-                    String gmPreCachedHash = responseHelper?.peekStructureCache(pathService.normalizePath(path))
                     McpResponse r = structureReader.doGetMethod(path, options, requestId)
                     if (r.error == null && contextServerClient != null) {
                         String h = structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(r)
@@ -519,19 +511,6 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                             if (rsl >= 1 && rel >= rsl) contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)
                             if (options.get('method')) contextServerClient.recordServedKeyAsync(path, gmKey, h)
                         }
-                    }
-                    if (r != null && r.error == null && responseHelper != null) {
-                        try {
-                            Map<String, Object> gmPayload = parseResponsePayload(r)
-                            if (gmPayload != null) {
-                                responseHelper.maybeWarnMissingKnownHash(
-                                    gmPayload, pathService.normalizePath(path), options,
-                                    'get_method', gmPreCachedHash)
-                                if (gmPayload.containsKey('_missing_knownhash')) {
-                                    return textResponse(requestId, gmPayload)
-                                }
-                            }
-                        } catch (Exception ignored) { } // fail-open
                     }
                     return r
                 }

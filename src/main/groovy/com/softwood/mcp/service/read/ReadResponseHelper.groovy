@@ -106,17 +106,8 @@ class ReadResponseHelper extends AbstractFileService {
      */
     @Value('${mcp.filesystem.ontology-gate.enforced:true}')
     boolean ontologyGateEnforced
-    /**
-     * FS 0.9.9: feature flag for missing-knownHash advisory detection on whole-file reads.
-     * When {@code true} (default), {@code doRead} and {@code doGetMethod} inject
-     * {@code _missing_knownhash} into the response and fire a correction observation
-     * when the caller omitted {@code options.knownHash} but {@link StructureCache}
-     * already holds a hash for the file. Advisory only -- does NOT block the read.
-     */
-    // FS 0.9.40 K2: off by default. The served ledger answers repeats without a caller-supplied hash, so a
-    // read without knownHash is no longer a violation -- the advisory nagged and filed a false correction.
-    @Value('${mcp.filesystem.missing-kh-warn.enabled:false}')
-    boolean missingKhWarnEnabled
+    // FS 0.9.108 (decision 385): the missing-knownHash advisory and its flag are deleted. The served ledger answers
+    // repeats without a caller-supplied hash, so a read without knownHash is not a mistake to report.
 
     ReadResponseHelper(PathService pathService) {
         super(pathService)
@@ -488,65 +479,6 @@ class ReadResponseHelper extends AbstractFileService {
     }
 
     // -----------------------------------------------------------------------
-    // FS 0.9.9: missing-knownHash advisory detection
-    // -----------------------------------------------------------------------
-
-    /**
-     * Advisory check for missing {@code options.knownHash} on whole-file reads.
-     * Called from {@link FileContentReader#doRead} and {@link FileContentReader#doGetMethod}
-     * AFTER content has been successfully read and the response map assembled.
-     *
-     * <p>If {@link StructureCache} already has a hash for this file and the caller did NOT
-     * supply {@code options.knownHash}, injects {@code _missing_knownhash} into the response,
-     * fires a correction observation async, and increments the session counter.
-     * Does NOT modify the read result -- purely additive.</p>
-     *
-     * <p>Skipped when: flag disabled; no CS client; file not in cache; knownHash was supplied;
-     * or this is the first time the file has been seen (nothing to cache-hit against).</p>
-     *
-     * @param response   the assembled response map to enrich (mutated in place)
-     * @param normalized normalized absolute file path
-     * @param options    tool call options map (checks {@code knownHash})
-     * @param action         the file_read action ("read" or "get_method")
-     * @param preCachedHash  hash from {@link #peekStructureCache} captured BEFORE the read
-     *                       (null means file was not in cache at call entry -- no violation)
-     */
-    void maybeWarnMissingKnownHash(Map<String, Object> response, String normalized,
-                                    Map<String, Object> options, String action,
-                                    String preCachedHash) {
-        if (!missingKhWarnEnabled) return
-        if (options?.containsKey('knownHash')) return           // caller passed it -- no violation
-        if (!preCachedHash) return                              // file was not in cache at call entry
-
-        // Violation: file was already known to the cache but knownHash was omitted.
-        response.put('_missing_knownhash',
-            ("KNOWNHASH DISCIPLINE: pass options.knownHash='${preCachedHash}' on this read " +
-             "to get {unchanged:true} (~15 tok) instead of full content. " +
-             "Source: StructureCache (session-local). Practice #497." as String))
-
-        // Fire correction observation async (fail-open -- CS may be down)
-        if (contextServerClient != null && contextServerClient.isCsReachable()) {
-            String stem = new File(normalized).name.replaceFirst(/\.[^.]+$/, '')
-            contextServerClient.writeMissingKnownHashObservationAsync(stem, action)
-        }
-
-        // Increment session counter for telemetry
-        if (telemetryService != null) telemetryService.incrementMissingKhCount()
-    }
-
-    /**
-     * Convenience wrapper: peek at the StructureCache for this path WITHOUT computing
-     * a hash from disk. Returns the cached hash if the file was already seen this session
-     * and the entry is still valid, or {@code null} otherwise.
-     * Call BEFORE the read so the check reflects pre-read cache state.
-     *
-     * @param normalized  normalised absolute path
-     * @return cached hash or null
-     */
-    String peekStructureCache(String normalized) {
-        if (structureCache == null || !normalized) return null
-        return structureCache.peekHash(pathService.normalizePath(normalized))
-    }
     // Chunk read actions
     // -----------------------------------------------------------------------
 

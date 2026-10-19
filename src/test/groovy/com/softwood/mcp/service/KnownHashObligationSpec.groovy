@@ -23,13 +23,13 @@ import spock.lang.Specification
  * absent by design -- not an unreachable guard this time, but an unmeasurable obligation,
  * repeated to every model on every connect.</p>
  *
- * <h3>Why KH-3 and KH-4 exist</h3>
+ * <h3>Why KH-3 exists</h3>
  *
  * <p>Cutting text is easy to overdo. KH-3 keeps the range caveat, which is real: passing a
  * hash to action=range returns unchanged:true INSTEAD of content, and a caller who does not
- * know that loses a read. KH-4 keeps the narrow observation, which fires only when a file
- * already in the StructureCache is re-read without a hash -- a specific, reachable and
- * genuinely wasteful case. The mandate went; the mechanics and the real signal stayed.</p>
+ * know that loses a read. KH-4 kept a narrow missing-knownHash observation; FS 0.9.108
+ * (decision 385) deleted it -- the served ledger answers repeat reads without a hash, so a read
+ * without one is not a mistake to report. ServedReadDedupSpec SRD-10 pins its absence.</p>
  *
  * @since FS 0.9.33
  */
@@ -81,15 +81,5 @@ class KnownHashObligationSpec extends Specification {
 
         expect: 'a hash on action=range returns unchanged:true INSTEAD of content'
         desc.contains('Do NOT pass options.knownHash to action=range')
-    }
-
-    def 'KH-4: the narrow signal survives -- it fires on a case that actually happens'() {
-        given:
-        String client = read('ContextServerClient.groovy')
-
-        expect: 'a cached file re-read without a hash is specific, reachable and wasteful'
-        client.contains('writeMissingKnownHashObservationAsync')
-        client.contains('KNOWNHASH MISSING')
-        client.contains('despite the file being in the session StructureCache')
     }
 }

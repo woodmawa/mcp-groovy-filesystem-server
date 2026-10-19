@@ -104,10 +104,6 @@ class FileContentReader extends AbstractFileService {
         // this asked the same question a second time, one CS round trip per read, and made the
         // gate look covered at two layers when only one of them decides.
 
-        // FS 0.9.9: capture pre-read cache state for missing-knownHash detection.
-        // Must be checked BEFORE checkKnownHash/storeAndHintKnownHash populate the cache.
-        String preCachedHash = helper.peekStructureCache(normalized)
-
         // FIX-KH-AUTO: doRead is a whole-file action -- pass autoLookup=true
         McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId, true)
         if (unchanged != null) return unchanged
@@ -178,8 +174,6 @@ class FileContentReader extends AbstractFileService {
         helper.injectSessionTokenMeter(resp, content.length())
         // FIX-KH-AUTO: autoStore=true for whole-file read
         helper.storeAndHintKnownHash(resp, normalized, options, true)
-        // FS 0.9.9: missing-knownHash advisory -- injects hint + fires correction obs if hash omitted
-        helper.maybeWarnMissingKnownHash(resp, normalized, options, 'read', preCachedHash)
         return textResponse(requestId, resp)
     }
 

@@ -2720,3 +2720,32 @@ Paired with CS 1.1.100.
   removed. OntologyGuardHintSpec deleted with its subject.
 - `NoAdviceOnSuccessSpec` (integration): NA-1/3/4/5 red on 0.9.106 (stash A/B), NA-2 control. Full suite single fork
   780/0, checkTiering OK.
+
+
+## [0.9.108] (2026-10-19) -- the brace/paren guard judges the whole file; the missing-knownHash advisory goes (chain 43e2fdb5, decision 385)
+
+**StructuralGuard, whole-file.** Probed live on 0.9.107, the snippet guard (removed text vs new text, net counts)
+had four defects: F1 a code brace swapped for one inside a string passed (raw counts matched, so the literal strip
+never ran); F2 a closing brace moved ahead of its opener passed (net count only, no order); F3 a Groovy slashy regex
+holding a brace was refused (no slashy support); WF-8 an edit inside a SQL text block whose snippet held no quote
+was refused.
+
+- New `CodeDelimiterScanner.profile(text, groovy)` lexes a whole file -- line/block comments, ' " ''' """ strings,
+  GString `${}` with nested quotes, slashy and dollar-slashy (Groovy only), slash-as-division after an identifier,
+  digit or closer -- and returns final and minimum brace/paren depth, or null when it cannot lex with confidence.
+- New `StructuralGuard.checkEdit(original, updated, removed, newText, path, allow)`: refuses when the edit changes a
+  final depth, or takes a depth below zero where the original did not. A file already unbalanced takes unrelated
+  edits; it cannot get worse. replace, multi_replace and patch all use it (patch previews the bottom-up result).
+- When either file cannot be lexed, the snippet checks decide -- now strip-first: the literal-aware deltas decide
+  whenever both snippets strip, raw counts only otherwise (F1 fixed in the fallback too).
+- Limit, stated: a brace moved INSIDE a nesting that still balances (method closes early, block re-balances) is
+  delimiter-identical to splitting a method, which is legitimate; the compiler catches the former. WF-11 pins the split.
+- allowStructuralEdit and the bare box-drawing check are unchanged.
+- Specs: StructuralGuardWholeFileSpec WF-1..11 (WF-1..5, WF-8 red on 0.9.107; controls green both ways),
+  CodeDelimiterScannerSpec CDS-1..6.
+
+**Missing-knownHash advisory deleted (decision 385).** It was off by default since 0.9.40; the served ledger answers
+repeat reads without a hash. Removed `missingKhWarnEnabled`, `maybeWarnMissingKnownHash`, `peekStructureCache`, the
+get_method call site, `ContextServerClient.writeMissingKnownHashObservationAsync` and the telemetry counter.
+MissingKnownHashDetectionSpec deleted; KnownHashObligationSpec KH-4 removed; ServedReadDedupSpec SRD-10 now checks at
+runtime that a cached re-read carries no `_missing_knownhash`.

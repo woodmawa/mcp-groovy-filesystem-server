@@ -1308,63 +1308,6 @@ class ContextServerClient {
         } as Runnable)
     }
 
-    /**
-     * Writes a {@code session_observations} correction entry to CS asynchronously, recording
-     * that a {@code file_read} was issued without {@code options.knownHash} on a file already
-     * seen this session. Fire-and-forget. Feeds the distillation pipeline so the discipline
-     * gap surfaces at next bootstrap via the learning loop.
-     *
-     * @param fileStem  file name without extension
-     * @param action    the file_read action ("read" or "get_method")
-     */
-    void writeMissingKnownHashObservationAsync(String fileStem, String action) {
-        if (!isCsReachable()) return
-        String stem = fileStem
-        String act  = action
-        String sid  = resolveSessionId() ?: 'unknown'
-        asyncWriter.submit({
-            try {
-                Map<String, Object> body = [
-                    jsonrpc: '2.0', method: 'tools/call', id: 1,
-                    params : [
-                        name     : 'context_write',
-                        arguments: [
-                            scope             : 'session',
-                            type              : 'observation',
-                            action            : 'add',
-                            component         : 'FileContentReader',
-                            tool_called       : "file_read:${act}",
-                            signal_type       : 'gate',
-                            source            : 'system',
-                            fault             : 'caller',
-                            description       : "KNOWNHASH MISSING: file_read action=${act} on '${stem}' was issued without options.knownHash " +
-                                               'despite the file being in the session StructureCache. ' +
-                                               'Pass file_content_hash from the prior read response as options.knownHash to get {unchanged:true} and save tokens.',
-                            correction_applied: 'Response enriched with _missing_knownhash hint. Pass the hash on the next read to eliminate token waste.',
-                            severity          : 'warn',
-                            sessionId         : sid
-                        ]
-                    ]
-                ] as Map<String, Object>
-                URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = openCs(url)
-                try {
-                    conn.requestMethod = 'POST'
-                    conn.doOutput     = true
-                    conn.connectTimeout = 2000
-                    conn.readTimeout    = 3000
-                    conn.setRequestProperty('Content-Type', 'application/json')
-                    conn.outputStream.withWriter('UTF-8') { Writer w ->
-                        w.write(groovy.json.JsonOutput.toJson(body))
-                    }
-                    conn.responseCode  // consume
-                } finally { conn.disconnect() }
-            } catch (Exception e) {
-                log.debug('writeMissingKnownHashObservation async failed [{}:{}]: {}', stem, act, e.message)
-            }
-        } as Runnable)
-    }
-
     @PreDestroy
     void shutdown() {
         asyncWriter.shutdown()

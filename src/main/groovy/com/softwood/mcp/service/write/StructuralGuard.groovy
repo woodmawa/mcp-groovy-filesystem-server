@@ -61,11 +61,12 @@ final class StructuralGuard {
         int newClose     = newText.count('}')
         int removedDelta = removedOpen  - removedClose
         int newDelta     = newOpen      - newClose
-        if (removedDelta == newDelta) return null
-
-        // Conservative string-strip: remove string literal content before re-checking.
-        // Prevents false positives on SQL WHERE clauses, GString expressions etc.
-        if (strippedDeltaBalanced(removedContent, newText, '{', '}')) return null
+        // FS 0.9.108 (F1, chain 43e2fdb5): the literal-aware counts decide whenever both snippets can be stripped.
+        // Raw counts used to decide first, so a code brace swapped for one inside a string ('}' -> "}") matched on
+        // raw counts and the strip never ran. Raw counts decide only when a snippet cannot be stripped.
+        Boolean stripped = strippedDeltaVerdict(removedContent, newText, '{', '}')
+        if (stripped != null) { if (stripped) return null }
+        else if (removedDelta == newDelta) return null
 
         String fname = filePath.tokenize('/\\').last()
         return ('brace structure mismatch on ' + fname + ': ' +
@@ -100,16 +101,16 @@ final class StructuralGuard {
         int newClose     = newText.count(')')
         int removedDelta = removedOpen  - removedClose
         int newDelta     = newOpen      - newClose
-        if (removedDelta == newDelta) return null
-        int diff = removedDelta - newDelta
-        if (Math.abs(diff) < 1) return null
+        // FS 0.9.108 (F1): as checkBraceDelta -- stripped counts decide when both snippets can be stripped.
+        Boolean strippedParen = strippedDeltaVerdict(removedContent, newText, '(', ')')
+        if (strippedParen != null) { if (strippedParen) return null }
+        else if (removedDelta == newDelta) return null
 
         // FS 0.9.62: the same literal/comment strip the brace check uses. Until now the paren check
         // stripped nothing ('too risky for triple-quote context'), so removing code that held a
         // string like 'recordPracticeUse(practices,' was refused (CS chain 2eb2555e) and the only way
         // through was allowStructuralEdit, which switches off the checks that are right as well.
         // The strip is now comment-aware, which is what made it safe to share (SG-L4).
-        if (strippedDeltaBalanced(removedContent, newText, '(', ')')) return null
 
         String fname = filePath.tokenize('/\\').last()
         return ('paren structure mismatch on ' + fname + ': ' +
@@ -209,6 +210,78 @@ final class StructuralGuard {
     }
 
     // -----------------------------------------------------------------------
+    // checkEdit -- the whole-file guard (FS 0.9.108)
+    // -----------------------------------------------------------------------
+
+    /**
+     * FS 0.9.108 (Will, 2026-10-19; chain 43e2fdb5): judge an edit by the WHOLE FILE before and after it.
+     *
+     * <p>The snippet guard compared the delimiter counts of the removed text and the new text. Probed live on 0.9.107 it
+     * let two corruptions through -- a code brace swapped for one inside a string, and a closing brace moved above its
+     * opener -- and refused two correct edits: a Groovy slashy regex holding a brace, and an edit inside a SQL text
+     * block whose snippet held no quote. {@link CodeDelimiterScanner} reads both files as code, and an edit is refused
+     * when it changes a final brace or paren depth, or takes a depth below zero where the original did not. A file that
+     * was already unbalanced is not blocked from an unrelated edit, only from getting worse.</p>
+     *
+     * <p>When either file cannot be lexed with confidence, the snippet checks decide, as before. allowStructuralEdit
+     * skips the delimiter checks; the bare box-drawing check always runs.</p>
+     */
+    static String checkEdit(String original, String updated, String removedContent, String newText,
+                            String filePath, boolean allowStructuralEdit) {
+        if (!isCodeFile(filePath)) return null
+        if (!allowStructuralEdit) {
+            String err = wholeFileLexable(original, updated, filePath)
+                ? wholeFileError(original, updated, filePath)
+                : (checkBraceDelta(removedContent, newText, filePath) ?: checkParenDelta(removedContent, newText, filePath))
+            if (err) return err
+        } else {
+            String diag = wholeFileLexable(original, updated, filePath) ? wholeFileError(original, updated, filePath)
+                                                                         : checkBraceDelta(removedContent, newText, filePath)
+            if (diag) log.warn('StructuralGuard bypassed (allowStructuralEdit=true): {}', diag)
+        }
+        return checkBareBoxDrawing(updated, filePath)
+    }
+
+    /** True when both files lex with confidence, so {@link #wholeFileError} can decide. */
+    static boolean wholeFileLexable(String original, String updated, String filePath) {
+        boolean groovy = isGroovy(filePath)
+        return CodeDelimiterScanner.profile(original, groovy) != null && CodeDelimiterScanner.profile(updated, groovy) != null
+    }
+
+    /** The whole-file verdict: an error, or null. Call only when {@link #wholeFileLexable}. */
+    static String wholeFileError(String original, String updated, String filePath) {
+        boolean groovy = isGroovy(filePath)
+        int[] a = CodeDelimiterScanner.profile(original, groovy)
+        int[] b = CodeDelimiterScanner.profile(updated, groovy)
+        if (a == null || b == null) return null
+        String fname = filePath.tokenize('/\\').last()
+        return depthVerdict('brace', '{', '}', a[CodeDelimiterScanner.BRACE_FINAL], a[CodeDelimiterScanner.BRACE_MIN],
+                            b[CodeDelimiterScanner.BRACE_FINAL], b[CodeDelimiterScanner.BRACE_MIN], fname) ?:
+               depthVerdict('paren', '(', ')', a[CodeDelimiterScanner.PAREN_FINAL], a[CodeDelimiterScanner.PAREN_MIN],
+                            b[CodeDelimiterScanner.PAREN_FINAL], b[CodeDelimiterScanner.PAREN_MIN], fname)
+    }
+
+    private static String depthVerdict(String kind, String open, String close, int aFinal, int aMin,
+                                       int bFinal, int bMin, String fname) {
+        if (bFinal != aFinal) {
+            return (kind + ' structure mismatch on ' + fname + ': this edit changes the file\'s net ' + kind + ' depth from ' +
+                    aFinal + ' to ' + bFinal + ', counting only code (comments and strings excluded) -- a ' +
+                    (bFinal < aFinal ? "'" + close + "' too many or an '" + open + "' lost" : "'" + open + "' too many or a '" + close + "' lost") +
+                    '. Make the new text close every block it opens. File NOT modified.').toString()
+        }
+        if (bMin < 0 && bMin < aMin) {
+            return (kind + ' structure mismatch on ' + fname + ': this edit closes a ' + kind + " before it is opened (a '" +
+                    close + "' now comes ahead of its '" + open + "'; depth reaches " + bMin + ').' +
+                    ' The net count is unchanged but the nesting is not. File NOT modified.').toString()
+        }
+        return null
+    }
+
+    private static boolean isGroovy(String path) {
+        return path != null && path.toLowerCase(Locale.ROOT).endsWith('.groovy')
+    }
+
+    // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
 
@@ -237,14 +310,14 @@ final class StructuralGuard {
      *
      * This is not a full lexer -- it misses slashy strings. Phase 4 will replace it with CodeDelimiterScanner.
      */
-    private static boolean strippedDeltaBalanced(String removed, String newText,
-                                                  String open, String close) {
+    /** FS 0.9.108: TRUE balanced, FALSE unbalanced, NULL when either snippet cannot be stripped with confidence. */
+    private static Boolean strippedDeltaVerdict(String removed, String newText, String open, String close) {
         String strippedRemoved = stripLiteralsAndComments(removed)
         String strippedNew     = stripLiteralsAndComments(newText)
-        if (strippedRemoved == null || strippedNew == null) return false
+        if (strippedRemoved == null || strippedNew == null) return null
         int rDelta = strippedRemoved.count(open) - strippedRemoved.count(close)
         int nDelta = strippedNew.count(open)     - strippedNew.count(close)
-        return rDelta == nDelta
+        return Boolean.valueOf(rDelta == nDelta)
     }
 
     /**

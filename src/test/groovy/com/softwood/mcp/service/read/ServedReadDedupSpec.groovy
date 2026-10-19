@@ -198,10 +198,18 @@ class ServedReadDedupSpec extends Specification {
         !r.containsKey('_knownhash_hint')
     }
 
-    def 'SRD-10: the missing-knownHash advisory is off by default -- a read without a hash is not a violation'() {
-        expect:
-        ReadResponseHelper.getDeclaredField('missingKhWarnEnabled')
-            .getAnnotation(org.springframework.beans.factory.annotation.Value).value()
-            .endsWith(':false}')
+    def 'SRD-10: a cached file re-read without a hash carries no missing-knownHash advice (FS 0.9.108, decision 385)'() {
+        given: 'the StructureCache stub already holds a hash for every file'
+        File f = tempDir.resolve('K.groovy').toFile()
+        f.text = 'class K {\n    void a() { }\n}\n'
+        String p = f.absolutePath.replace('\\', '/')
+        call('read', p)
+        when:
+        Map again = call('read', p, [force: true])
+        Map gm    = call('get_method', p, [method: 'a', force: true])
+        then:
+        !again.containsKey('_missing_knownhash')
+        !gm.containsKey('_missing_knownhash')
+        !ReadResponseHelper.declaredFields*.name.contains('missingKhWarnEnabled')
     }
 }

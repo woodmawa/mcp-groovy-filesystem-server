@@ -199,26 +199,45 @@ class FilePatchService extends AbstractFileService {
         // FS 0.9.6 / fix #142: options.allowStructuralEdit=true bypasses brace/paren delta;
         // checkBareBoxDrawing is never bypassed.
         boolean allowStructEdit = options.containsKey('allowStructuralEdit') ? (options.allowStructuralEdit as boolean) : false
+        // FS 0.9.108 (chain 43e2fdb5): the whole file before and after the patch decides (StructuralGuard.checkEdit).
+        // The per-replacement snippet checks run only when the file cannot be lexed with confidence.
         if (StructuralGuard.isCodeFile(normalized)) {
+            List<String> preview = new ArrayList<String>(lines)
             for (Map<String, Object> rep : sorted) {
-                int s = (rep.startLine as int) - 1
-                int e = (rep.endLine   as int) - 1
-                String removedContent = lines[s..e].join('\n')
-                String newContent     = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
-                if (!allowStructEdit) {
-                    String braceErr = StructuralGuard.checkBraceDelta(removedContent, newContent, normalized)
-                    if (braceErr) {
-                        log.warn('patch: brace guard REJECTED {} -- {}', normalized, braceErr)
-                        return McpResponse.toolError(requestId, 'patch: ' + braceErr)
+                int ps = (rep.startLine as int) - 1
+                int pe = (rep.endLine   as int) - 1
+                String pNew = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+                preview[ps..pe] = pNew ? new ArrayList<String>(Arrays.asList(pNew.split('\n', -1))) : [] as List<String>
+            }
+            String original = lines.join('\n')
+            String updatedPreview = preview.join('\n')
+            if (StructuralGuard.wholeFileLexable(original, updatedPreview, normalized)) {
+                String err = StructuralGuard.checkEdit(original, updatedPreview, '', '', normalized, allowStructEdit)
+                if (err) {
+                    log.warn('patch: structural guard REJECTED {} -- {}', normalized, err)
+                    return McpResponse.toolError(requestId, 'patch: ' + err)
+                }
+            } else {
+                for (Map<String, Object> rep : sorted) {
+                    int s = (rep.startLine as int) - 1
+                    int e = (rep.endLine   as int) - 1
+                    String removedContent = lines[s..e].join('\n')
+                    String newContent     = (rep.newText as String ?: '').replace('\r\n', '\n').replace('\r', '\n')
+                    if (!allowStructEdit) {
+                        String braceErr = StructuralGuard.checkBraceDelta(removedContent, newContent, normalized)
+                        if (braceErr) {
+                            log.warn('patch: brace guard REJECTED {} -- {}', normalized, braceErr)
+                            return McpResponse.toolError(requestId, 'patch: ' + braceErr)
+                        }
+                        String parenErr = StructuralGuard.checkParenDelta(removedContent, newContent, normalized)
+                        if (parenErr) {
+                            log.warn('patch: paren guard REJECTED {} -- {}', normalized, parenErr)
+                            return McpResponse.toolError(requestId, 'patch: ' + parenErr)
+                        }
+                    } else {
+                        String braceDiag = StructuralGuard.checkBraceDelta(removedContent, newContent, normalized)
+                        if (braceDiag) log.warn('patch: StructuralGuard bypassed (allowStructuralEdit=true): {}', braceDiag)
                     }
-                    String parenErr = StructuralGuard.checkParenDelta(removedContent, newContent, normalized)
-                    if (parenErr) {
-                        log.warn('patch: paren guard REJECTED {} -- {}', normalized, parenErr)
-                        return McpResponse.toolError(requestId, 'patch: ' + parenErr)
-                    }
-                } else {
-                    String braceDiag = StructuralGuard.checkBraceDelta(removedContent, newContent, normalized)
-                    if (braceDiag) log.warn('patch: StructuralGuard bypassed (allowStructuralEdit=true): {}', braceDiag)
                 }
             }
         }

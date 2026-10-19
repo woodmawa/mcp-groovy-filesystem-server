@@ -195,7 +195,8 @@ class FileReplaceService extends AbstractFileService {
         // FS 0.9.6 / fix #142: options.allowStructuralEdit=true bypasses brace/paren delta only;
         // checkBareBoxDrawing is never bypassed.
         boolean allowStructEdit = options.containsKey('allowStructuralEdit') ? (options.allowStructuralEdit as boolean) : false
-        String structErr = StructuralGuard.checkAll(oldText, newText, updated, normalized, allowStructEdit)
+        // FS 0.9.108: the whole file before (current) and after (updated) decides; snippets only as fallback.
+        String structErr = StructuralGuard.checkEdit(current, updated, oldText, newText, normalized, allowStructEdit)
         if (structErr) {
             log.warn('replace: structural guard REJECTED {} -- {}', normalized, structErr)
             return McpResponse.toolError(requestId, 'replace structural check failed (file NOT modified): ' + structErr)
@@ -343,7 +344,8 @@ class FileReplaceService extends AbstractFileService {
         // for multi-replace we use the overall file delta (snapshot->current).
         // FS 0.9.6 / fix #142: allowStructuralEdit also honoured for multi_replace.
         boolean allowStructEditMr = options.containsKey('allowStructuralEdit') ? (options.allowStructuralEdit as boolean) : false
-        String structErrMr = StructuralGuard.checkAll(snapshot, current, current, normalized, allowStructEditMr)
+        // FS 0.9.108: whole file before (snapshot) and after (current); the whole-file snippets are the fallback.
+        String structErrMr = StructuralGuard.checkEdit(snapshot, current, snapshot, current, normalized, allowStructEditMr)
         if (structErrMr) {
             log.warn('multi_replace: structural guard REJECTED {} -- {}', normalized, structErrMr)
             return McpResponse.toolError(requestId,
