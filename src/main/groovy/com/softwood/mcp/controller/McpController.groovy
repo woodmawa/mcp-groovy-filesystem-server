@@ -41,6 +41,10 @@ class McpController {
     private final List<ToolHandler> toolHandlers
     private final Map<String, ToolHandler> handlerMap = new LinkedHashMap<String, ToolHandler>()
     private List<Map<String, Object>> cachedToolDefinitions = []
+    /** WP1 (FS 0.9.106): each tool's SOURCE definition, by name -- what ArgsSchemaGuard judges a call against. */
+    private final Map<String, Map<String, Object>> toolDefsByName = new LinkedHashMap<String, Map<String, Object>>()
+    /** WP1 test seam: null = refuse unread keys on the chat's stdio process only; true/false forces it. */
+    Boolean refuseUnreadArgs
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     FilesystemTelemetryService telemetryService
@@ -185,6 +189,25 @@ class McpController {
         buildHandlerMap()
     }
 
+    /**
+     * WP1: advertise the UNREAD_ARG escape on every tool that declares its properties, so a caller can send it.
+     * A copy: the handler's own definition is left as it is.
+     */
+    private static Map<String, Object> withAllowUnread(Map<String, Object> toolDef) {
+        Object schema = toolDef.get('inputSchema')
+        if (!(schema instanceof Map)) return toolDef
+        Object props = ((Map) schema).get('properties')
+        if (!(props instanceof Map) || ((Map) props).isEmpty()) return toolDef
+        Map<String, Object> p = new LinkedHashMap<String, Object>((Map<String, Object>) props)
+        p.put(com.softwood.mcp.service.ArgsSchemaGuard.ALLOW_UNREAD, [type: 'boolean', description:
+            'Pass true only when an UNREAD_ARG refusal named a key this tool genuinely reads on a branch its schema does not describe. A key the tool does not read is refused before anything runs, so a value sent under the wrong name is never silently dropped.'] as Map<String, Object>)
+        Map<String, Object> s = new LinkedHashMap<String, Object>((Map<String, Object>) schema)
+        s.put('properties', p)
+        Map<String, Object> d = new LinkedHashMap<String, Object>(toolDef)
+        d.put('inputSchema', s)
+        return d
+    }
+
     private void buildHandlerMap() {
         List<Map<String, Object>> allDefs = []
         toolHandlers.each { ToolHandler handler ->
@@ -194,7 +217,8 @@ class McpController {
                     log.warn("Duplicate tool name '{}'  overwriting with {}", name, handler.class.simpleName)
                 }
                 handlerMap[name] = handler
-                allDefs << toolDef
+                toolDefsByName.put(name, toolDef)
+                allDefs << withAllowUnread(toolDef)
                 log.debug("Registered tool: {}  {}", name, handler.class.simpleName)
             }
         }
@@ -335,7 +359,13 @@ class McpController {
         }
 
         log.debug('Dispatching tool: {}', toolName)
-        McpResponse response = handler.handleToolCall(toolName, arguments, request.id)
+        // WP1 (FS 0.9.106, decisions 382/383): a key the tool does not read is refused BEFORE dispatch -- nothing runs --
+        // instead of being dropped while the call answers a different question. Chat stdio process only.
+        boolean refuseUnread = refuseUnreadArgs != null ? refuseUnreadArgs.booleanValue() : isStdioProcess()
+        String unreadRefusal = refuseUnread ?
+            com.softwood.mcp.service.ArgsSchemaGuard.check(toolDefsByName.get(toolName), arguments) : null
+        McpResponse response = unreadRefusal ? McpResponse.toolError(request.id, unreadRefusal)
+                                              : handler.handleToolCall(toolName, arguments, request.id)
 
         // FS 0.9.77: measured for the global cap whether or not telemetry is wired. It was computed only inside the
         // telemetry branch, so with no telemetry bean (absent whenever -Dmcp.usage.db-path is missing) the cap compared

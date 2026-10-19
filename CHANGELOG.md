@@ -2680,3 +2680,21 @@ every class given a tool change stopped recurring and every lesson-only class re
   claude-sync/briefs, or a CHANGELOG.md, skips ONTOLOGY-GATE. It refused them six times in a week and every refusal
   was answered by an override or a locate of the same lines. Code, CLAUDE.md and asciidoc chapters stay gated.
   `ProseGateExemptionSpec` PG-1/2 red on 0.9.104, PG-3/4 controls. 41/0 with the PLAN-GATE and gate specs.
+
+## [0.9.106] (2026-10-19) -- inputs that cannot be ignored: refuse a key the tool does not read (WP1, decisions 382/383)
+
+The 2026-10-19 assessment found that only refusals change what Claude does under pressure; a key FS did not read was
+dropped and the call answered a different question, with nothing to say so. Paired with CS 1.1.99 and AW 1.30.109.
+- **UNREAD_ARG -- an unknown key is refused before dispatch.** `ArgsSchemaGuard`, called from
+  `McpController.handleToolsCall` on the chat's stdio process only: after file_read's own case-fix and top-level
+  promotion (0.9.46), a top-level or `options` key the tool's declared inputSchema does not have -- and no code of
+  that tool reads (`EXTRA_TOP` / `EXTRA_OPTIONS`: aliases, promotion sources, transform and office plan keys) -- is
+  refused with a did-you-mean, and nothing runs. Schema-derived, not a ledger of reads: file_read iterates its args
+  and copies options by design, so a recording map fails open on the most-used tool; and the check is in-memory, so
+  the stdio hot path gains no I/O (#260). Accepted gap: a key valid for another action of the same tool passes.
+  `allowUnread=true` is the escape and is advertised on every tool schema. The companion keeps today's behaviour.
+- **KNOWNHASH_ON_RANGE.** `options.knownHash` on file_read action=range is refused with the fix: the key is read
+  there and turns the answer into `{unchanged:true}` instead of the lines asked for.
+- `UnreadArgSchemaGuardSpec`: AG-1/2/3 red on 0.9.105; AG-4..8 controls; AG-9 re-scans each tool's source for the
+  keys it reads and proves every one passes the guard (mutation-checked: dropping `headingStyle` from the file_write
+  extras turned AG-9 red on exactly that key).
