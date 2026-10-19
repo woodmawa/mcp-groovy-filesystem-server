@@ -2756,3 +2756,16 @@ runtime that a cached re-read carries no `_missing_knownhash`.
 - **file_write / file_read source descriptions** now state the CODE_APPEND refusal (live since 0.9.107) and the directory expansion. NOTE: FS serves descriptions from CS help_sections (`tool_desc_file_*`); the source text is only the fallback, which is why the stale append warning outlived 0.9.107. The `tool_desc_file_write(_verbose)` rows were corrected 2026-10-19; `tool_desc_file_read` is updated once this release is live.
 - **checkSpecLint** (`gradle/spec-lint.gradle`, shared verbatim with CS and AW) runs before every test run: SPEC_CALL_METHOD, NON_CLASS_PROPERTIES, MOCK_RETURNS_SHARED_COLLECTION (mistake class `spec-lint`). FS: 108 files clean.
 - Full suite: 801 tests, 0 failures, single fork; checkTiering OK.
+
+
+## [0.9.110] -- 2026-10-19 -- optimised-learning WP3: a flow node's gradle call reaches PLAN-GATE
+- **PlanGateGuard asks for flow nodes** (obs 13000, chain 1e7cd887). A flow node's call arrives on the HTTP companion,
+  whose own active session is null, and the guard took its session only from there -- so no flow-node call ever asked
+  PLAN-GATE (every `plan_gate` telemetry row in 3 days came from a stdio process). R3 (CS 1.1.98) and its same-batch half
+  (CS 1.1.101) therefore never covered gradle-test-summary, the route of every edit-test-same-batch mistake; the live
+  proof of 1.1.101 showed it. A call carrying an AW run/node (`AwCallContext`) now asks as the session the flow declared
+  (X-Mcp-Caller-Session), flagged `flowNode`; CS 1.1.102 answers it with the pending-edit checks only, because a flow
+  cannot ack. A PENDING_EDIT answer fails the node with CS's message. Chat calls are unchanged.
+  FlowNodePlanGateSpec FN-1/2 red on 0.9.109, FN-3/4 controls. Paired with CS 1.1.102.
+- Live 2026-10-19 17:29: the FS companion asked PLAN-GATE for a gradle-test-summary node as the flow's session (the first
+  flow-node ask on record). Full suite 805/0. The same-batch window itself is closed next session (CS obs 13009).

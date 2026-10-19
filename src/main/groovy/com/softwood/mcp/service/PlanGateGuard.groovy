@@ -315,7 +315,17 @@ class PlanGateGuard {
         long t0 = System.nanoTime()
         boolean reported = false
         try {
-            try { sid = telemetryService?.readActiveSessionId() } catch (Exception ignored) { }
+            // FS 0.9.110 (obs 13000, chain 1e7cd887): a flow node's call arrives on the companion, whose own session is
+            // null, so it never asked -- R3 could not refuse gradle-test-summary, the route every edit-test-same-batch row
+            // used. A call carrying an AW run/node asks as the session the flow declared, flagged flowNode: CS answers it
+            // with the pending-edit checks only, because a flow cannot ack. FlowNodePlanGateSpec.
+            String flowSid = (AwCallContext.run() && AwCallContext.node()) ? AwCallContext.session() : null
+            if (flowSid) {
+                sid = flowSid
+                args.put('flowNode', (Object) Boolean.TRUE)
+            } else {
+                try { sid = telemetryService?.readActiveSessionId() } catch (Exception ignored) { }
+            }
             t0 = System.nanoTime()
             Map<String, Object> answer = (contextServerClient != null && sid) ?
                 contextServerClient.planGateCheck(args, sid) : null
