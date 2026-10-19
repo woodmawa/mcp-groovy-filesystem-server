@@ -352,8 +352,10 @@ class FileReplaceService extends AbstractFileService {
 
         Path target = Paths.get(normalized)
         if (backup) WriteUtils.makeBackup(target)
-        if (hasCrLf) current = current.replace('\n', '\r\n')
-        WriteCommitter.CommitResult crMr = WriteCommitter.commit(ctxMr, current.getBytes(encoding), requestId)
+        // FS 0.9.103 (B5, Will 2026-10-19 "LF everywhere"): one line-ending policy for every edit. This
+        // restored CRLF unconditionally while replace and patch wrote LF for WriteUtils.LF_EXTENSIONS, so
+        // the same file came out differently by action. LineEndingPolicySpec LE-1/LE-2.
+        WriteCommitter.CommitResult crMr = WriteCommitter.commit(ctxMr, ctxMr.toBytes(current), requestId)
         if (!crMr.succeeded()) return crMr.error
         log.info('multi_replace: {} applied in {} (line endings: {})', applied, normalized, hasCrLf ? 'CRLF' : 'LF')
 

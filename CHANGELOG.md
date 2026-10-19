@@ -2639,3 +2639,17 @@ system properties, JVM args, environment, includes/excludes, timeout) minus spec
 that run without either tag (tags read by reflection from the compiled classes, as JUnit sees them; Spock 2.4's
 `Tag.value()` is a single String). FS tags: 9 `integration` (specs that start real shells, git or javac -- the
 ExecuteService, Worktree and gradle-progress specs) and 8 `slow` (>= 0.8 s in-JVM).
+
+
+## [0.9.103] (2026-10-19) -- optimised-learning small defects B5, B6 (session 2026-10-19-10-39)
+
+- **One line-ending policy for every edit (B5; Will 2026-10-19: "LF everywhere").** `multi_replace` restored CRLF
+  unconditionally, while `replace` (WriteContext.toBytes) and `patch` (FilePatchService) write LF for
+  `WriteUtils.LF_EXTENSIONS` -- so the same CRLF .groovy file came out differently by action. `multi_replace` now
+  commits through `ctxMr.toBytes(current)` like the other two: a CRLF file of an LF extension is written LF by every
+  edit, any other CRLF file keeps CRLF. `LineEndingPolicySpec` LE-1 (x3 actions) / LE-2 (x3 CRLF .bat controls):
+  only LE-1 multi_replace red on 0.9.102; all green after, with the replace/patch/multi_replace contract specs (144/0).
+- **A cleared tool-description refusal is logged (B6).** `ToolDescriptionRegistry.report` logged the first refused
+  `record_tool_descriptions` and never the later success, so the log read as a CS still refusing after it had
+  accepted (X68 item 1). It now logs `accepted after an earlier refusal` once. `ToolDescriptionReportRecoverySpec`
+  TDR-2 red on 0.9.102, TDR-1/TDR-3 controls green both ways. Paired with AW 1.30.108 (same defect in AW).

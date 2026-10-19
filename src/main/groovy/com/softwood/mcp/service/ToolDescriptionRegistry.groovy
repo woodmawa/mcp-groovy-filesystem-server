@@ -207,6 +207,12 @@ class ToolDescriptionRegistry {
         }
         if (ok) {
             lastReportedHashes = hashes
+            // FS 0.9.103 (B6): say when a logged refusal has cleared. Without this the log read as a
+            // CS still refusing long after it had accepted (X68 item 1). ToolDescriptionReportRecoverySpec.
+            if (refusalLogged) {
+                log.info('context_lifecycle action={} accepted after an earlier refusal -- tool descriptions reported',
+                    REPORT_ACTION)
+            }
             refusalLogged = false
         } else if (!refusalLogged) {
             refusalLogged = true
