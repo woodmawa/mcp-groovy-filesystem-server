@@ -321,7 +321,8 @@ class PlanGateGuard {
                 contextServerClient.planGateCheck(args, sid) : null
             // FS 0.9.83 (chain fd3f3867): a refusal with nothing to judge is passed below; say so in the row CS
             // keeps, so a fire CS recorded and FS passed can be reconciled -- the AtomicInteger is unreadable outside.
-            boolean emptyRefusal = answer != null && answer.get('allow') == false && !(answer.get('practices') as List)
+            boolean pendingEdit  = answer != null && answer.get('allow') == false && answer.get('reason') == 'PENDING_EDIT'
+            boolean emptyRefusal = answer != null && answer.get('allow') == false && !(answer.get('practices') as List) && !pendingEdit
             if (contextServerClient != null && sid) {
                 reportAsk(sid, args, answer == null ? 'plan_gate_unavailable' :
                     emptyRefusal ? 'plan_gate_empty_refusal' : 'plan_gate_answered', t0)
@@ -332,6 +333,10 @@ class PlanGateGuard {
                 return null
             }
             if (answer.get('allow') != false) return null
+            // FS 0.9.105 R3 (decision 381): CS refuses a gradle call while this session's edit to the same repo was
+            // refused and not retried. Nothing to ack -- only landing the edit clears it -- so it carries a message,
+            // not practices, and must not fall into the SB-3 pass-through below. PendingEditRefusalSpec.
+            if (pendingEdit) return (answer.get('message') ?: 'PENDING_EDIT: an edit to this repo was refused and not retried') as String
             // FS 0.9.80 SB-3 (chains f2e7f616, ebbe59f1): a refusal that names no practice cannot be answered --
             // there is nothing to ack -- so it is not shown. Defence in depth; CS 1.1.68 no longer sends one.
             if (!(answer.get('practices') as List)) {

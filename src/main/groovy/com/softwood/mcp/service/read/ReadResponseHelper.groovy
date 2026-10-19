@@ -453,6 +453,7 @@ class ReadResponseHelper extends AbstractFileService {
     Map<String, Object> ontologyGateEntry(String normalized, Map<String, Object> options,
                                            String action) {
         if (!ontologyGateEnforced) return null
+        if (isGateExemptProse(normalized)) return null
         if (contextServerClient == null || !contextServerClient.isCsReachable()) return null
 
         // FS 0.9.26 -- ONE QUESTION, ASKED OF THE SERVER THAT OWNS BOTH FACTS.
@@ -538,6 +539,19 @@ class ReadResponseHelper extends AbstractFileService {
             hint        : hint
         ] as Map<String, Object>
         return errorMap
+    }
+
+    /**
+     * R4 (FS 0.9.105, decision 381; WS9 slice): arc briefs and CHANGELOGs are not gated. The gate refused them six
+     * times in a week and every refusal was answered by an override or a locate of the same lines -- a retry tax that
+     * taught the override reflex. Exactly these two prose kinds, nothing else: CLAUDE.md, asciidoc chapters and all
+     * code stay gated (ProseGateExemptionSpec PG-3/4).
+     */
+    static boolean isGateExemptProse(String path) {
+        if (!path) return false
+        String p = path.replace('\\', '/').toLowerCase()
+        boolean prose = p.endsWith('.md') || p.endsWith('.adoc')
+        return prose && (p.contains('/claude-sync/briefs/') || p.endsWith('/changelog.md'))
     }
 
     // -----------------------------------------------------------------------

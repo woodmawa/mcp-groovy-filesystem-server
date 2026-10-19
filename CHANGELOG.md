@@ -2666,3 +2666,17 @@ leaves `$?` true (the tool's "last command's exit code" contract), and a cmdlet'
 reports 0 as before. `ExecutePowershellExitCodeSpec` (integration): PSX-1 (last native exit 3) and PSX-2 (a .bat
 exiting 1, the gradlew shape) red on 0.9.103; PSX-3/4/5 controls (fail-then-succeed = 0, explicit exit 5, plain
 cmdlet) green both ways. 54/0 across the ExecuteService specs.
+
+## [0.9.105] (2026-10-19) -- remedies, not lessons: R3 FS half, R4 (decision 381)
+
+Will, 2026-10-19: the learning loop's output is changes to the platform. Hand classing of 71 caller corrections showed
+every class given a tool change stopped recurring and every lesson-only class recurred. Paired with CS 1.1.98.
+- **R3, FS half -- no test run on an edit that did not land.** CS now refuses a gradle call (direct, or a flow's
+  run-gradle node) while this session's edit to the same repo was refused by PLAN-GATE and not retried, reason
+  PENDING_EDIT, with a message and no practices -- nothing to ack, only landing the edit clears it. `PlanGateGuard`
+  passed every practice-less refusal (0.9.80 SB-3), which would have dropped exactly this one; it now shows a
+  PENDING_EDIT refusal and still passes any other. `PendingEditRefusalSpec` PER-1 red on 0.9.104, PER-2 control.
+- **R4 -- briefs and CHANGELOGs are not gated.** `ReadResponseHelper.isGateExemptProse`: a .md/.adoc under
+  claude-sync/briefs, or a CHANGELOG.md, skips ONTOLOGY-GATE. It refused them six times in a week and every refusal
+  was answered by an override or a locate of the same lines. Code, CLAUDE.md and asciidoc chapters stay gated.
+  `ProseGateExemptionSpec` PG-1/2 red on 0.9.104, PG-3/4 controls. 41/0 with the PLAN-GATE and gate specs.
