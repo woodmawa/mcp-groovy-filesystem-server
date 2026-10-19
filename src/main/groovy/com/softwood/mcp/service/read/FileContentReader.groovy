@@ -174,14 +174,10 @@ class FileContentReader extends AbstractFileService {
             resp._truncated = true
             resp._truncatedNote = ("Response truncated at ${readSoftCapChars} chars (~${readSoftCapChars / 4000 as int}K tokens). " +
                 "File has ~${totalChars} bytes total. Use head/range/grep for targeted reads, or use read with chunking for full content." as String)
-        } else {
-            helper.maybeAddSizeWarning(resp, content.length())
         }
         helper.injectSessionTokenMeter(resp, content.length())
         // FIX-KH-AUTO: autoStore=true for whole-file read
         helper.storeAndHintKnownHash(resp, normalized, options, true)
-        // FS 0.9.1: ontology-first guard -- warns when reading indexed .groovy/.java without prior locate
-        helper.maybeAddOntologyGuardHint(resp, normalized)
         // FS 0.9.9: missing-knownHash advisory -- injects hint + fires correction obs if hash omitted
         helper.maybeWarnMissingKnownHash(resp, normalized, options, 'read', preCachedHash)
         return textResponse(requestId, resp)
@@ -248,8 +244,6 @@ class FileContentReader extends AbstractFileService {
         if (truncated) {
             resp._truncated = true
             resp._truncatedNote = ("head output truncated at ${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Reduce lines= or use range for targeted reads." as String)
-        } else {
-            helper.maybeAddSizeWarning(resp, joined.length())
         }
         helper.injectSessionTokenMeter(resp, joined.length())
         return textResponse(requestId, resp)
@@ -292,8 +286,6 @@ class FileContentReader extends AbstractFileService {
         if (truncated) {
             resp._truncated = true
             resp._truncatedNote = ("tail output truncated at ${partialReadCapChars} chars (~${partialReadCapChars / 4000 as int}K tokens). Reduce lines= or use range for targeted reads." as String)
-        } else {
-            helper.maybeAddSizeWarning(resp, joined.length())
         }
         helper.injectSessionTokenMeter(resp, joined.length())
         return textResponse(requestId, resp)
@@ -362,8 +354,6 @@ class FileContentReader extends AbstractFileService {
             resp._truncated = true
             resp._truncatedNote = ("range output capped at ${partialReadCapChars} chars: lines ${startLine}-${endLine} sent. " +
                 "Continue with startLine=${endLine + 1}." as String)
-        } else {
-            helper.maybeAddSizeWarning(resp, joined.length())
         }
         helper.injectSessionTokenMeter(resp, joined.length())
         // range is partial-content -- no autoStore (Option A, brief §18.3)

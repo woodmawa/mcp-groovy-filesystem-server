@@ -68,8 +68,6 @@ class ReadResponseHelper extends AbstractFileService {
     @Autowired
     ChunkBufferService chunkBufferService
 
-    @Value('${mcp.filesystem.large-response-warn-chars:15000}')
-    int largeResponseWarnChars
 
     @Value('${mcp.filesystem.partial-read-cap-chars:12000}')
     int partialReadCapChars
@@ -98,9 +96,6 @@ class ReadResponseHelper extends AbstractFileService {
     @Value('${mcp.filesystem.auto-kh-hints-suppressed.enabled:true}')
     boolean autoKhHintsSuppressed
 
-    /** FS 0.9.1: feature flag for ontology-first guard on whole-file source reads (warn-only path). */
-    @Value('${mcp.filesystem.ontology-guard.enabled:true}')
-    boolean ontologyGuardEnabled
 
     /**
      * FS 0.9.8 E-5: feature flag for ONTOLOGY-GATE hard enforcement on indexed file reads.
@@ -128,41 +123,17 @@ class ReadResponseHelper extends AbstractFileService {
     }
 
     // -----------------------------------------------------------------------
-    // Size warning
-    // -----------------------------------------------------------------------
-
-    void maybeAddSizeWarning(Map<String, Object> response, int contentLength) {
-        if (contentLength > largeResponseWarnChars) {
-            long kb     = Math.round(contentLength / 1024.0f)
-            long tokens = Math.round(contentLength / 4.0f)
-            response._sizeWarning = ("NOTE: response is ${kb}KB (~${tokens} tokens). " +
-                "Consider head/range/grep for targeted reads to preserve context window." as String)
-        }
-    }
-
-    // -----------------------------------------------------------------------
     // Session token meter (FIX-B)
     // -----------------------------------------------------------------------
 
+    /**
+     * Counts this read toward the session's read-token total (telemetry). WP2 (decision 384, 2026-10-19): it no longer
+     * writes _session_read_tokens, _session_health or _session_budget_warn into the response -- advice on a success,
+     * which the token trend directive already covers. NoAdviceOnSuccessSpec NA-5.
+     */
     void injectSessionTokenMeter(Map<String, Object> response, int contentLength) {
         if (telemetryService == null) return
-        int sessionTokens = telemetryService.accumulateReadTokens(contentLength)
-        int sessionCalls  = telemetryService.getSessionReadCalls()
-        response._session_read_tokens = sessionTokens
-        // Inject ratio health when degraded (silent on OK/UNKNOWN - avoids noise)
-        Map<String, Object> health = telemetryService.getSessionHealthSummary()
-        String healthStatus = health.healthStatus as String
-        if (healthStatus == 'DEGRADED' || healthStatus == 'POOR') {
-            response._session_health = ("${healthStatus}: file_read/ctx ratio=${health.fileToContextRatio} today" +
-                " — run context_lifecycle start + context_read resume to improve" as String)
-        }
-        if (sessionTokens > 80000) {
-            response._session_budget_warn = ("CRITICAL: ${sessionTokens} tokens burned on file reads this session (${sessionCalls} calls). " +
-                "Context window at serious risk. STOP reading files - use only structure/get_method/grep from now on." as String)
-        } else if (sessionTokens > 40000) {
-            response._session_budget_warn = ("WARNING: ${sessionTokens} tokens burned on file reads this session (${sessionCalls} calls). " +
-                "Switch to structure/get_method/range to avoid context overflow." as String)
-        }
+        telemetryService.accumulateReadTokens(contentLength)
     }
 
     // -----------------------------------------------------------------------
@@ -340,47 +311,9 @@ class ReadResponseHelper extends AbstractFileService {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // FS 0.9.1: Ontology-first guard
-    // -----------------------------------------------------------------------
-
-    /**
-     * FS 0.9.1: Ontology-first guard for whole-file reads.
-     * If the target file is a .groovy/.java source file that is indexed in the ontology,
-     * injects _ontology_guard_warn to remind Claude to call scope=ontology action=locate
-     * before performing expensive whole-file reads. Non-blocking: always returns normally.
-     *
-     * Controlled by: mcp.filesystem.ontology-guard.enabled (default true).
-     * Requires CS reachable; fails silently if CS is down or isOntologyIndexed throws.
-     */
-    void maybeAddOntologyGuardHint(Map<String, Object> response, String normalized) {
-        if (!ontologyGuardEnabled) return
-        if (contextServerClient == null || !contextServerClient.isCsReachable()) return
-        if (!(normalized?.endsWith('.groovy') || normalized?.endsWith('.java'))) return
-
-        String fileStem = new File(normalized).name.replaceFirst(/\.[^.]+$/, '')
-        try {
-            // FS 0.9.2: single locate call returns both found flag and source_line/end_line bounds.
-            Map<String, Object> range = contextServerClient.getOntologyRange(fileStem)
-            if (range?.get('found') == true) {
-                response._ontology_guard_warn = (
-                    "ONTOLOGY-FIRST: '${fileStem}' is indexed. " +
-                    "Call context_read scope=ontology action=locate query=${fileStem} BEFORE whole-file reads. " +
-                    'locate returns source_line+end_line in <100 tokens -- use range instead.' as String
-                )
-                Integer sl = range.get('source_line') as Integer
-                Integer el = range.get('end_line') as Integer
-                if (sl != null && el != null) {
-                    int maxLines = el - sl + 1
-                    response._ontology_guard_hint = (
-                        "Call range startLine=${sl} maxLines=${maxLines} instead (source: ontology index)" as String
-                    )
-                }
-            }
-        } catch (Exception e) {
-            log.debug('ontology-guard probe failed (non-fatal) [{}]: {}', fileStem, e.message)
-        }
-    }
+    // FS 0.9.1's ontology-first WARNING (maybeAddOntologyGuardHint) was retired by WP2 (decision 384): it repeated, on a
+    // successful read, a decision ONTOLOGY-GATE had already made -- the gate refuses an un-located read, and a read
+    // that passed did so by a deliberate allowNoLocate.
 
     // -----------------------------------------------------------------------
     // E-5: ONTOLOGY-GATE hard enforcement (FS 0.9.8)

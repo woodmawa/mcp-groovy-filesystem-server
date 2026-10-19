@@ -46,6 +46,29 @@ class McpController {
     /** WP1 test seam: null = refuse unread keys on the chat's stdio process only; true/false forces it. */
     Boolean refuseUnreadArgs
 
+    /** WP2 C1 test seam: null = refuse mutating calls while unclaimed on the chat's stdio process only. */
+    Boolean requireClaimForWrites
+
+    /** WP2 C1: the tools whose calls change something. execute's job_* actions only read a job, so they are not. */
+    static final Set<String> MUTATING_TOOLS =
+        (['file_write', 'file_lifecycle', 'execute', 'tools', 'worktree'] as Set<String>).asImmutable()
+
+    /**
+     * WP2 C1 (decision 384, Will 2026-10-19): an unclaimed chat process refuses a mutating call before dispatch. It used
+     * to run it and append unbound_warning -- the edit or build happened, filed as unattributed, with PLAN-GATE keyed to
+     * no session. Reads still run (with the restart notice). The claim check is the in-memory one telemetry already
+     * makes on this path once claimed, so no new I/O (#260). ClaimBeforeWriteSpec. Null to proceed.
+     */
+    String notClaimedRefusal(String toolName, Map<String, Object> arguments) {
+        boolean chat = requireClaimForWrites != null ? requireClaimForWrites.booleanValue() : isStdioProcess()
+        if (!chat || !MUTATING_TOOLS.contains(toolName) || telemetryService == null) return null
+        if (toolName == 'execute' && (arguments?.get('action') as String)?.startsWith('job_')) return null
+        if (telemetryService.readActiveSessionId()) return null
+        return ('NOT_CLAIMED: this FS process holds no session claim, so this ' + toolName + ' call would run ' +
+                'unattributed and outside PLAN-GATE. Nothing ran. Claim on THIS connection first: ' +
+                'server_lifecycle action=claim_session sessionId=<id>').toString()
+    }
+
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     FilesystemTelemetryService telemetryService
 
@@ -362,8 +385,10 @@ class McpController {
         // WP1 (FS 0.9.106, decisions 382/383): a key the tool does not read is refused BEFORE dispatch -- nothing runs --
         // instead of being dropped while the call answers a different question. Chat stdio process only.
         boolean refuseUnread = refuseUnreadArgs != null ? refuseUnreadArgs.booleanValue() : isStdioProcess()
-        String unreadRefusal = refuseUnread ?
-            com.softwood.mcp.service.ArgsSchemaGuard.check(toolDefsByName.get(toolName), arguments) : null
+        String unreadRefusal = notClaimedRefusal(toolName, arguments)
+        if (unreadRefusal == null && refuseUnread) {
+            unreadRefusal = com.softwood.mcp.service.ArgsSchemaGuard.check(toolDefsByName.get(toolName), arguments)
+        }
         McpResponse response = unreadRefusal ? McpResponse.toolError(request.id, unreadRefusal)
                                               : handler.handleToolCall(toolName, arguments, request.id)
 

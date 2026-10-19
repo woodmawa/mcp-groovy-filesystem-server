@@ -2698,3 +2698,25 @@ dropped and the call answered a different question, with nothing to say so. Pair
 - `UnreadArgSchemaGuardSpec`: AG-1/2/3 red on 0.9.105; AG-4..8 controls; AG-9 re-scans each tool's source for the
   keys it reads and proves every one passes the guard (mutation-checked: dropping `headingStyle` from the file_write
   extras turned AG-9 red on exactly that key).
+
+## [0.9.107] (2026-10-19) -- every warning becomes a refusal or goes (WP2, decision 384)
+
+Advice on a successful response is read and then lost when work is busy; only a refusal changes the next call.
+Paired with CS 1.1.100.
+- **CODE_APPEND -- an append to a code file is refused** before anything is written (`FileContentWriter.doAppend`).
+  It was a warning after the fact since 0.9.6. `options.suppressCodeAppendWarning=true` is the escape.
+  StructuralGuardBypassSpec CT-SG-BYPASS-5 inverted.
+- **NOT_CLAIMED -- an unclaimed chat process refuses a mutating call** (file_write, file_lifecycle, execute, tools,
+  worktree) before dispatch; execute's job_* actions and all reads still run, and the companion is unchanged. It used
+  to run the call and append unbound_warning, filing it unattributed and outside PLAN-GATE. The claim check is the
+  in-memory one telemetry already made on this path (#260). `ClaimBeforeWriteSpec` CB-1 x5 red on 0.9.106, CB-2..5 controls.
+- **Patch responses carry data, not advice.** `boundary_warning` (generic advice on every last-line patch; the
+  duplicated-brace mistake is refused by StructuralGuard) and the "patched recently" hint (a stale patch is refused by
+  expectedHash) are gone; `tail_content` and `requires_reread` stay. A failed post-write verification still answers
+  `success:false` and now says the write LANDED and to re-read first.
+- **Reads carry no nags.** `_sizeWarning`, `_session_read_tokens`, `_session_health`, `_session_budget_warn` and the
+  ontology-first `_ontology_guard_warn`/`_hint` (which repeated a decision ONTOLOGY-GATE had already made) are gone; the
+  read-token accounting stays. `getOntologyRange`, a sync CS call made on every indexed read only for that warning, is
+  removed. OntologyGuardHintSpec deleted with its subject.
+- `NoAdviceOnSuccessSpec` (integration): NA-1/3/4/5 red on 0.9.106 (stash A/B), NA-2 control. Full suite single fork
+  780/0, checkTiering OK.

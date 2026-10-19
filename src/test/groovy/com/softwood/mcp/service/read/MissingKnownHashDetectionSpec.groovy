@@ -83,7 +83,6 @@ class MissingKnownHashDetectionSpec extends Specification {
     private ContextServerClient makeReachableStub() {
         def s = Stub(ContextServerClient)
         s.isCsReachable()           >> true
-        s.getOntologyRange(_)       >> null   // no ontology gate (not indexed)
         s
     }
 
@@ -186,7 +185,6 @@ class MissingKnownHashDetectionSpec extends Specification {
         seedCache(np)
         def csMock = Mock(ContextServerClient)
         csMock.isCsReachable()     >> true
-        csMock.getOntologyRange(_) >> null
         helper.contextServerClient = csMock
 
         when:

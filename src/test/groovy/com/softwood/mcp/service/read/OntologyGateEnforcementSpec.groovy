@@ -147,7 +147,6 @@ class OntologyGateEnforcementSpec extends Specification {
     def cleanup() {
         helper.contextServerClient = null
         helper.ontologyGateEnforced = true
-        helper.ontologyGuardEnabled = true
     }
 
     // -----------------------------------------------------------------------

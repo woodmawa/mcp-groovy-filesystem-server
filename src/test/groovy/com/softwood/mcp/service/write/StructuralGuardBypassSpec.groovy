@@ -24,7 +24,7 @@ import java.nio.file.Path
  *   CT-SG-BYPASS-2  replace: same edit WITHOUT flag rejected by brace guard
  *   CT-SG-BYPASS-3  replace: allowStructuralEdit=true does NOT suppress checkBareBoxDrawing
  *   CT-SG-BYPASS-4  StructuralGuard.checkAll unit: flag skips brace/paren, not box-drawing
- *   CT-SG-BYPASS-5  append: .groovy file returns code_append_warning in response
+ *   CT-SG-BYPASS-5  append: .groovy file is refused CODE_APPEND (WP2, decision 384 -- was a warning)
  *   CT-SG-BYPASS-6  patch: orphaned brace removed with allowStructuralEdit=true (FilePatchService)
  *   CT-SG-BYPASS-7  patch: same edit WITHOUT flag rejected by brace guard
  *   CT-SG-BYPASS-8  multi_replace: orphaned brace removed with allowStructuralEdit=true
@@ -173,7 +173,7 @@ class StructuralGuardBypassSpec extends Specification {
     // -----------------------------------------------------------------------
     // CT-SG-BYPASS-5  append soft warning present in response
     // -----------------------------------------------------------------------
-    def 'CT-SG-BYPASS-5: append on .groovy file returns code_append_warning'() {
+    def 'CT-SG-BYPASS-5: append on .groovy file is refused and nothing is appended'() {
         given:
         def f = setupFile('Appendable.groovy', 'class Appendable { void foo() { } }\n')
 
@@ -181,17 +181,12 @@ class StructuralGuardBypassSpec extends Specification {
         McpResponse r = fileWriteService.handleToolCall('file_write', [
             action: 'append', path: f.path, content: '// extra\n', options: [:]
         ], 'test')
-        Map parsed = parseResponse(r)
 
-        then: 'write succeeds'
-        r.result.isError != true
+        then: 'refused, with the guard named'
+        assertGuardFired(r, 'CODE_APPEND')
 
-        and: 'warning field present and descriptive'
-        parsed.code_append_warning != null
-        (parsed.code_append_warning as String).toLowerCase().contains('append')
-
-        and: 'the warning is advisory: the text was appended'
-        new File(f.path as String).text == 'class Appendable { void foo() { } }\n// extra\n'
+        and: 'the file is untouched'
+        new File(f.path as String).text == 'class Appendable { void foo() { } }\n'
     }
 
     // -----------------------------------------------------------------------

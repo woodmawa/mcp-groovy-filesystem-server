@@ -145,6 +145,16 @@ class FileContentWriter extends AbstractFileService {
         }
 
         String normalized = normalizeAndCheckPath(path)
+        // WP2 (decision 384, Will 2026-10-19): an append to a code file is REFUSED before anything is written. It was a
+        // warning after the fact (FS 0.9.6), and an append with no structural check is how orphaned braces got in that
+        // StructuralGuard then blocked every repair of. options.suppressCodeAppendWarning=true is the escape.
+        boolean allowCodeAppend = options.containsKey('suppressCodeAppendWarning') ?
+                                  (options.suppressCodeAppendWarning as boolean) : false
+        if (!allowCodeAppend && StructuralGuard.isCodeFile(normalized)) {
+            return McpResponse.toolError(requestId, ('CODE_APPEND: append on a code file has no structural check and can ' +
+                'orphan braces. Nothing was written. Use action=replace or server_transform add_method, or pass ' +
+                'options.suppressCodeAppendWarning=true if an append is genuinely what you want.').toString())
+        }
         String encoding   = options.encoding as String ?: 'UTF-8'
         boolean mkdirs    = options.get('mkdirs') != null ? Boolean.valueOf(options.get('mkdirs').toString()) : true
         byte[] bytes      = content.getBytes(encoding)
@@ -171,17 +181,6 @@ class FileContentWriter extends AbstractFileService {
         log.debug("append: {} bytes -> {} (locked)", bytes.length, normalized)
 
         String hash = WriteUtils.fileHash(target)
-        // FS 0.9.6 / fix #142: soft warning when appending to a code file.
-        // Append has no structural safety -- it can orphan braces that StructuralGuard
-        // will then block every repair attempt on. Advisory only; suppressible.
-        boolean suppressWarn = options.containsKey('suppressCodeAppendWarning')
-                                ? (options.suppressCodeAppendWarning as boolean) : false
-        String codeAppendWarning = (!suppressWarn && StructuralGuard.isCodeFile(normalized))
-            ? 'action=append on a code file may corrupt brace structure. ' +
-              'Prefer action=replace or server_transform add_method. ' +
-              'Set options.suppressCodeAppendWarning=true to suppress this warning.'
-            : null
-        if (codeAppendWarning) log.warn('FileContentWriter.doAppend: code file append on {}', normalized)
         if (isWriteCompact(options)) {
             // `appended` is carried on the compact response too, since FS 0.9.48. It was
             // on the verbose path only, so the single field that would have revealed a
@@ -190,7 +189,6 @@ class FileContentWriter extends AbstractFileService {
             // relies on the caller noticing; a byte count states it.
             Map<String, Object> resp = [success: true, appended: bytes.length,
                                         content_hash: hash, file_content_hash: hash]
-            if (codeAppendWarning) resp.code_append_warning = codeAppendWarning
             return textResponse(requestId, resp)
         }
         Map<String, Object> resp = [
@@ -198,7 +196,6 @@ class FileContentWriter extends AbstractFileService {
             appended: bytes.length, success: true,
             content_hash: hash, file_content_hash: hash
         ]
-        if (codeAppendWarning) resp.code_append_warning = codeAppendWarning
         return textResponse(requestId, resp)
     }
 

@@ -193,16 +193,6 @@ class FilePatchService extends AbstractFileService {
                  'For multiple changes, include all replacements[] in a SINGLE patch call.'))
         }
 
-        List<String> boundaryWarnings = []
-        sorted.each { Map<String, Object> rep ->
-            if ((rep.endLine as int) == originalLineCount) {
-                boundaryWarnings << ('replacement [' + rep.startLine + '..' + rep.endLine + '] touches the last line of the file ' +
-                    '(boundary patch). Verify newText does NOT duplicate the class closing brace or EOF line. ' +
-                    'Re-read lines ' + Math.max(1, (rep.startLine as int) - 2) + '..' + originalLineCount + ' to confirm brace ownership.')
-                log.warn('patch: boundary patch detected on {} at line {}', normalized, rep.endLine)
-            }
-        }
-
         // PR 1.3 (FS 0.9.0): delegate structural checks to StructuralGuard (D5 fix).
         // checkBraceDelta + checkParenDelta with conservative string-strip heuristic.
         // All guards are pre-write hard rejects -- no advisory path.
@@ -320,8 +310,11 @@ class FilePatchService extends AbstractFileService {
             content_hash     : resultHash,
             file_content_hash: resultHash
         ] as Map<String, Object>
-        if (verifyError) result.put('verify_warning', verifyError)
-        if (boundaryWarnings) result.put('boundary_warning', boundaryWarnings.join(' | '))
+        // WP2 (decision 384): a failed post-write verification is success:false and says the write LANDED -- a retry
+        // must start from a re-read, not resend. boundary_warning is retired: generic advice on every last-line patch,
+        // while the duplicated-brace mistake it warned of is refused by StructuralGuard. NoAdviceOnSuccessSpec NA-3.
+        if (verifyError) result.put('verify_warning', ('The write LANDED but verification failed: ' + verifyError +
+            '. Re-read the file before any further edit.').toString())
         if (hasBoundaryPatch) result.put('requires_reread', true)
         if (tailContent != null) result.put('tail_content', tailContent)
         if (removedSnippets) result.put('removed_lines', removedSnippets.join(' | ').take(300))
@@ -332,13 +325,8 @@ class FilePatchService extends AbstractFileService {
         if (verifyError == null) {
             recentPatches.put(normalized, now)
         }
-        if (shouldHint) {
-            String hint = 'CAUTION: this file was patched recently -- line numbers have shifted by ' + linesShifted + '. ' +
-                'Re-read with action=range or get_method and use the returned content_hash as expectedHash before next patch. ' +
-                'For multiple changes, pass all replacements[] in a SINGLE patch call -- never sequential patches across turns.'
-            result.put('hint', hint)
-            log.warn('patch: sequential patch detected on {} -- caller should re-read between patches', normalized)
-        }
+        // WP2 (decision 384): the 'patched recently' hint is retired -- a stale patch is refused by expectedHash.
+        if (shouldHint) log.debug('patch: sequential patch on {}', normalized)
 
         if (isWriteCompact(options)) {
             Map<String, Object> compact = [
@@ -346,10 +334,8 @@ class FilePatchService extends AbstractFileService {
                 lines_shifted: linesShifted,
                 content_hash: resultHash, file_content_hash: resultHash
             ] as Map<String, Object>
-            if (verifyError) compact.put('verify_warning', verifyError)
-            if (shouldHint) compact.put('hint', result.get('hint'))
+            if (verifyError) compact.put('verify_warning', result.get('verify_warning'))
             if (hasBoundaryPatch) compact.put('requires_reread', true)
-            if (boundaryWarnings) compact.put('boundary_warning', result.get('boundary_warning'))
             if (tailContent != null) compact.put('tail_content', tailContent)
             if (removedSnippets) compact.put('removed_lines', result.get('removed_lines'))
             return textResponse(requestId, compact)
