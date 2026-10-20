@@ -2785,3 +2785,5 @@ runtime that a cached re-read carries no `_missing_knownhash`.
   the Windows kill lands asynchronously (seen once in a full run alongside the CS and AW suites: `isAlive` true,
   `exitValue=1` by the time it printed). It now awaits the process's death, and its fixed 500 ms sleep became an
   Awaitility wait for the process to start. Full suite 809/0.
+- Live 2026-10-20 11:25: the FS companion carried `runStartedAt` on a gradle-test-summary node's ask and CS refused it
+  same-batch, 1968 ms before the run start (run 16e27e04; CS 1.1.103 CHANGELOG, decision 390 on the margin).
