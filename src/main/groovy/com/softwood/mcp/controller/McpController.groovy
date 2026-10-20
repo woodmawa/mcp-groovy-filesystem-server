@@ -269,19 +269,26 @@ class McpController {
     McpResponse handleRequest(@RequestBody McpRequest request,
                               @RequestHeader(value = 'X-Mcp-Caller-Session', required = false) String callerSession,
                               @RequestHeader(value = 'X-Aw-Run', required = false) String awRun,
-                              @RequestHeader(value = 'X-Aw-Node', required = false) String awNode) {
+                              @RequestHeader(value = 'X-Aw-Node', required = false) String awNode,
+                              @RequestHeader(value = 'X-Aw-Run-Started', required = false) String awRunStarted) {
         String declared = callerSession?.trim()
         CALLER_SESSION.set(declared ?: null)
         // FS 0.9.95: the AW run/node this call is for, so a long gradle call can post live progress to it.
         // A ThreadLocal only -- no I/O on the hot path (practice 260).
         // FS 0.9.97 (G2): and the declared session, so a job this call submits is filed under its caller.
-        com.softwood.mcp.service.AwCallContext.set(awRun, awNode, declared)
+        // WP3 (decision 389): and when the AW run started, for PLAN-GATE's same-batch check on a flow node's ask.
+        com.softwood.mcp.service.AwCallContext.set(awRun, awNode, declared, awRunStarted)
         try {
             return handleRequest(request)
         } finally {
             CALLER_SESSION.remove()
             com.softwood.mcp.service.AwCallContext.clear()
         }
+    }
+
+    /** Run and node without a start time (kept for callers and specs that predate X-Aw-Run-Started). */
+    McpResponse handleRequest(McpRequest request, String callerSession, String awRun, String awNode) {
+        return handleRequest(request, callerSession, awRun, awNode, null)
     }
 
     /** Caller session only (kept for callers and specs that predate the AW run/node headers). */

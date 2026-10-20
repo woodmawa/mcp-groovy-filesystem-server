@@ -164,7 +164,9 @@ class HttpMcpController {
         // FS 0.9.95: and the AW run/node the call is for (X-Aw-Run / X-Aw-Node) -- same route, same lesson as 0.9.59.
         McpResponse response = mcpController.handleRequest(request, callerSession,
             servletRequest?.getHeader(com.softwood.mcp.service.AwCallContext.RUN_HEADER),
-            servletRequest?.getHeader(com.softwood.mcp.service.AwCallContext.NODE_HEADER))
+            servletRequest?.getHeader(com.softwood.mcp.service.AwCallContext.NODE_HEADER),
+            // WP3 (decision 389): the run's start, for PLAN-GATE's same-batch check on a flow node's ask.
+            servletRequest?.getHeader(com.softwood.mcp.service.AwCallContext.RUN_STARTED_HEADER))
         return ResponseEntity.ok()
             .header('Mcp-Session-Id', sessionId)
             .body(response)

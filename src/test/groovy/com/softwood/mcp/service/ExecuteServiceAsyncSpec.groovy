@@ -117,14 +117,23 @@ class ExecuteServiceAsyncSpec extends Specification {
         given: 'a long job'
         Map submit = runCmd(VERY_SLOW, [async: true] as Map<String, Object>)
         String id = submit.jobId as String
-        Thread.sleep(500)
+        // 2026-10-20: was Thread.sleep(500) -- wait for the process itself instead (Awaitility, Will 2026-10-16).
+        org.awaitility.Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+                .until({ registry.get(id)?.process?.isAlive() == true } as java.util.concurrent.Callable<Boolean>)
 
         when:
         Map cancelled = job('job_cancel', [jobId: id] as Map<String, Object>)
 
-        then: 'reported cancelled, and the OS process is gone rather than orphaned'
+        then: 'reported cancelled'
         cancelled.cancelled == true
         cancelled.status == 'cancelled'
+
+        when: 'the OS kill lands -- asynchronously on Windows, so asserting isAlive the instant cancel returned raced it'
+        // 2026-10-20 (full FS run alongside CS and AW): isAlive() read true, exitValue=1 by the time it was printed.
+        org.awaitility.Awaitility.await().atMost(10, TimeUnit.SECONDS).pollInterval(20, TimeUnit.MILLISECONDS)
+                .until({ registry.get(id).process?.isAlive() == false } as java.util.concurrent.Callable<Boolean>)
+
+        then: 'the OS process is gone rather than orphaned'
         registry.get(id).process?.isAlive() == false
     }
 

@@ -2769,3 +2769,19 @@ runtime that a cached re-read carries no `_missing_knownhash`.
   FlowNodePlanGateSpec FN-1/2 red on 0.9.109, FN-3/4 controls. Paired with CS 1.1.102.
 - Live 2026-10-19 17:29: the FS companion asked PLAN-GATE for a gradle-test-summary node as the flow's session (the first
   flow-node ask on record). Full suite 805/0. The same-batch window itself is closed next session (CS obs 13009).
+
+## [0.9.111] -- 2026-10-20 -- optimised-learning WP3: a flow node's PLAN-GATE ask carries its run's start (decision 389)
+
+- 0.9.110's flow-node ask reached CS ~3 s after the batch that started the flow, past CS's 2 s same-batch window, so a
+  chat edit and a gradle-test-summary sent together still passed (CS obs 13009). AW 1.30.110 now sends when the run was
+  asked for as `X-Aw-Run-Started` (epoch ms). `HttpMcpController` (POST /mcp, the route AW uses) passes it to
+  `McpController.handleRequest`, which holds it in `AwCallContext` with the run/node pair for that request only
+  (`runStartedAt()`; anything that is not a whole number of ms is dropped). `PlanGateGuard.ask` adds it to a flow-node
+  ask as `runStartedAt`; CS 1.1.103 judges the batched edit against it. Chat asks are unchanged. The four-argument
+  `McpController.handleRequest` is kept for callers that predate the header.
+  RunStartedPlanGateSpec RSF-1/2/4 red on 0.9.110 (RSF-3 control); RSF-1 drives the real POST /mcp entry.
+  Mutation-checked: dropping `runStartedAt` from the ask turns RSF-2 red. Paired with AW 1.30.110 and CS 1.1.103.
+- ExecuteServiceAsyncSpec FS-EXEC-2c de-flaked: it asserted `isAlive() == false` the instant `job_cancel` returned, but
+  the Windows kill lands asynchronously (seen once in a full run alongside the CS and AW suites: `isAlive` true,
+  `exitValue=1` by the time it printed). It now awaits the process's death, and its fixed 500 ms sleep became an
+  Awaitility wait for the process to start. Full suite 809/0.

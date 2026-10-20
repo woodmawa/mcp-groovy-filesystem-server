@@ -323,6 +323,10 @@ class PlanGateGuard {
             if (flowSid) {
                 sid = flowSid
                 args.put('flowNode', (Object) Boolean.TRUE)
+                // WP3 (decision 389): when the run started, so CS judges a batched chat edit against the start rather
+                // than against this ask, which lands ~3 s later. RunStartedPlanGateSpec.
+                Long runStartedAt = AwCallContext.runStartedAt()
+                if (runStartedAt != null) args.put('runStartedAt', (Object) runStartedAt)
             } else {
                 try { sid = telemetryService?.readActiveSessionId() } catch (Exception ignored) { }
             }
