@@ -427,6 +427,103 @@ class FilesystemTelemetryService {
                 status          : 'claimed'] as Map<String, Object>
     }
 
+    /** FS 0.9.114 -- a (held -> caller) pair judged not-to-adopt is not re-read for this long (practice #260). */
+    static final long ADOPTION_RECHECK_MS = 600_000L
+    private final ConcurrentHashMap<String, Long> adoptionDeclinedAt = new ConcurrentHashMap<String, Long>()
+
+    /**
+     * FS 0.9.114 -- connection-neutral claims (Will, 2026-10-21; CS 1.1.113 adoptCallerSession is the same rule).
+     *
+     * <p>A chat's tool route can move to another stdio process set mid-chat, and that set's FS process may be
+     * unclaimed or still claimed to a session session-end closed. The call names its session (callerSession), so this
+     * process adopts it through {@link #claimSession} -- the same write as server_lifecycle claim_session, reattribution
+     * included -- when the caller's session exists and is not closed by a real session-end, and the held claim is
+     * absent, unknown, or closed. Never over another OPEN session's claim (two live chats may share a process; the
+     * argument already attributes each call); never on the companion. One read of the shared database per new
+     * (held, caller) pair; a declined pair is remembered. Never throws.</p>
+     *
+     * @return the claim map with {@code status:'adopted'} and {@code adopted_from}, or null when nothing changed
+     */
+    Map<String, Object> adoptCallerSession(String callerSession) {
+        if (!callerSession || isCompanionProcess() || !dbPath) return null
+        String held = sessionClaimed.get() ? claimedSessionRef.get() : null
+        if (callerSession == held) return null
+        String key = (held ?: '') + '->' + callerSession
+        long now = System.currentTimeMillis()
+        Long declined = adoptionDeclinedAt.get(key)
+        if (declined != null && now - declined.longValue() < ADOPTION_RECHECK_MS) return null
+        try {
+            boolean adopt = false
+            String group = null
+            withOwnConnection { Connection conn ->
+                PreparedStatement ps = conn.prepareStatement(
+                    'SELECT (SELECT COUNT(*) FROM sessions_index WHERE session_id = ?) AS caller_n,' +
+                    ' (SELECT session_end_version FROM sessions_index WHERE session_id = ?) AS caller_end,' +
+                    ' (SELECT COUNT(*) FROM sessions_index WHERE session_id = ?) AS held_n,' +
+                    ' (SELECT session_end_version FROM sessions_index WHERE session_id = ?) AS held_end,' +
+                    " COALESCE((SELECT group_id FROM session_claims WHERE session_id = ? AND group_id IS NOT NULL AND group_id <> ''" +
+                    ' ORDER BY claimed_at DESC LIMIT 1),' +
+                    " (SELECT group_id FROM session_group_bindings WHERE session_id = ? AND status = 'bound' ORDER BY id DESC LIMIT 1)) AS grp")
+                String h = held ?: ''
+                ps.setString(1, callerSession); ps.setString(2, callerSession)
+                ps.setString(3, h);             ps.setString(4, h)
+                ps.setString(5, callerSession); ps.setString(6, callerSession)
+                ResultSet rs = ps.executeQuery()
+                if (rs.next()) {
+                    boolean callerOpen = rs.getInt('caller_n') > 0 && !closedBySessionEnd(rs.getString('caller_end'))
+                    boolean heldDead = !held || rs.getInt('held_n') == 0 || closedBySessionEnd(rs.getString('held_end'))
+                    adopt = callerOpen && heldDead
+                    group = rs.getString('grp')
+                }
+                rs.close(); ps.close()
+            }
+            if (!adopt) {
+                adoptionDeclinedAt.put(key, now)
+                return null
+            }
+            Map<String, Object> claim = claimSession(callerSession, group)
+            log.info('FilesystemTelemetryService: ADOPTED session {} from callerSession (held {}) owner_key={}',
+                     callerSession, held ?: 'nothing', ProcessIdentity.OWNER_KEY)
+            claim.put('status', (Object) 'adopted')
+            claim.put('adopted_from', (Object) held)
+            return claim
+        } catch (Exception e) {
+            log.debug('adoptCallerSession: {} not adopted: {}', callerSession, e.message)
+            return null
+        }
+    }
+
+    private final Set<String> adoptionInFlight = ConcurrentHashMap.newKeySet()
+
+    /**
+     * FS 0.9.114 -- the controller's entry (practice #260: no blocking I/O on the MCP hot path). In-memory checks only;
+     * the read and the claim write run on the single telemetry writer thread. Safe to defer: the call's callerSession
+     * already decides its attribution, so nothing about THIS call waits on the claim. At most one adoption in flight per
+     * (held, caller) pair. Never throws.
+     */
+    void adoptCallerSessionAsync(String callerSession) {
+        if (!callerSession || isCompanionProcess() || !dbPath) return
+        String held = sessionClaimed.get() ? claimedSessionRef.get() : null
+        if (callerSession == held) return
+        String key = (held ?: '') + '->' + callerSession
+        Long declined = adoptionDeclinedAt.get(key)
+        if (declined != null && System.currentTimeMillis() - declined.longValue() < ADOPTION_RECHECK_MS) return
+        if (!adoptionInFlight.add(key)) return
+        try {
+            asyncWriter.submit {
+                try { adoptCallerSession(callerSession) }
+                finally { adoptionInFlight.remove(key) }
+            }
+        } catch (Exception e) {
+            adoptionInFlight.remove(key)
+            log.debug('adoptCallerSessionAsync: not queued: {}', e.message)
+        }
+    }
+
+    private static boolean closedBySessionEnd(String endVersion) {
+        return endVersion != null && !endVersion.isEmpty() && !endVersion.startsWith('compensated')
+    }
+
     /** Drop this process's claim, so it reads as UNBOUND rather than holding a dead session. */
     Map<String, Object> releaseClaim() {
         String was = claimedSessionRef.get()

@@ -2816,3 +2816,18 @@ runtime that a cached re-read carries no `_missing_knownhash`.
   updated to match (data).
 - OntologyGateEnforcementSpec OGE-6 now asserts no CS counter call and no block observation on an override (red on
   0.9.112). Full suite 816/0.
+
+## v0.9.114 (2026-10-21)
+
+Connection-neutral claims -- the FS half of CS 1.1.113 (Will, 2026-10-21).
+
+- **Why.** Mid-chat the tool route moved to a second stdio process set whose FS process was still claimed to a closed
+  session; it had to be re-claimed by hand.
+- **Adopt.** `FilesystemTelemetryService.adoptCallerSession`: a chat process receiving a `callerSession` that names an
+  open session adopts it, through `claimSession` (the same write as `server_lifecycle claim_session`, reattribution
+  included), when it holds no claim or one on a session a real session-end closed. Never over another open session's
+  claim; never on the companion (`isCompanionProcess`); group from the session's claims, else its binding.
+- **Off the hot path.** `McpController` calls `adoptCallerSessionAsync` (practice #260): in-memory checks only, the
+  read and write on the telemetry writer thread, one in flight per pair, a declined pair not re-read for 10 min.
+- Specs: FsClaimAdoptionSpec FCA-1..6 (FCA-1/2/6 red on 0.9.113; FCA-3/4/5 CONTROLs). Mutation-checked: a held open
+  claim treated as dead -> exactly FCA-3 red. AW book ch11 (FS part) updated in place.

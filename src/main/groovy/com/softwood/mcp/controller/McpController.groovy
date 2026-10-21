@@ -393,6 +393,13 @@ class McpController {
                 message: 'callerSession is not a session id (letters, digits and : . _ - only, at most 64 characters). ' +
                          'Pass the id session-bootstrap returned to this chat. Nothing ran.']))
         }
+        // FS 0.9.114: connection-neutral claims -- an unclaimed process, or one still holding a closed session, adopts
+        // the open session this call names. Queued, never inline (practice #260); the argument already attributes
+        // this call. Never throws.
+        if (arg && telemetryService != null) {
+            try { telemetryService.adoptCallerSessionAsync(arg) }
+            catch (Exception e) { log.debug('callerSession adoption failed (non-fatal): {}', e.message) }
+        }
         String previous = com.softwood.mcp.service.CallerSession.setArg(arg)
         try {
             return dispatchToolsCall(request, stripped)
