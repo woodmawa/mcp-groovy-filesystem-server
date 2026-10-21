@@ -442,10 +442,11 @@ class ReadResponseHelper extends AbstractFileService {
         // so a version skew degrades rather than breaks -- do not read it as still acceptable.
         String locateQuery = (gate.get('locate_query') as String) ?: fileStem
 
-        // allowNoLocate=true override -> allow, but count it, so overrides stay visible
+        // allowNoLocate=true override -> allow. Until FS 0.9.113 this also posted context_lifecycle
+        // action=increment_hard_gate_token to "count" it -- an action CS never had, so every override
+        // produced an UNKNOWN_ACTION refusal and no count was ever kept (session 2026-10-21-14-20).
         boolean override = options?.get('allowNoLocate') as boolean
         if (override) {
-            contextServerClient.incrementOntologyGateBlockedToken(fileStem)
             return null
         }
 
@@ -454,7 +455,7 @@ class ReadResponseHelper extends AbstractFileService {
 
         String hint = "Call context_read scope=ontology action=locate query=${locateQuery} BEFORE file_read to allow this read. " +
                       "locate returns source_line+end_line in <100 tokens. " +
-                      "Pass options.allowNoLocate=true to override the block (telemetry still incremented)."
+                      "Pass options.allowNoLocate=true to override the block."
         Map<String, Object> errorMap = [
             error       : 'BLOCKED_ONTOLOGY_GATE',
             locate_query: locateQuery,

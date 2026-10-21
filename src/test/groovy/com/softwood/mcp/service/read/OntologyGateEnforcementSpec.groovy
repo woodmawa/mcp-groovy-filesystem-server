@@ -246,9 +246,11 @@ class OntologyGateEnforcementSpec extends Specification {
     }
 
     // -----------------------------------------------------------------------
-    // OGE-6: allowNoLocate=true overrides block; incrementHardGateBlockedToken called
+    // OGE-6: allowNoLocate=true overrides block. It used to call incrementOntologyGateBlockedToken, which
+    // posted context_lifecycle action=increment_hard_gate_token -- an action CS never had (git -S finds no
+    // CS commit naming it): ~400 UNKNOWN_ACTION refusals in 14 days, no count ever kept. Session 2026-10-21-14-20.
     // -----------------------------------------------------------------------
-    def 'OGE-6: read with allowNoLocate=true is allowed but CS blocked-token counter is incremented'() {
+    def 'OGE-6: read with allowNoLocate=true is allowed and makes no blocked-token call to CS'() {
         given:
         File f    = writeGroovy('OverrideService.groovy')
         String np = norm(f)
@@ -266,8 +268,8 @@ class OntologyGateEnforcementSpec extends Specification {
         then: 'read proceeds (not blocked)'
         data.error == null
 
-        and: 'block-count telemetry incremented on CS exactly once'
-        1 * csMock.incrementOntologyGateBlockedToken('OverrideService')
+        and: 'no block observation (the counter call is gone with its method, FS 0.9.113)'
+        0 * csMock.writeOntologyGateObservationAsync(_, _)
     }
 
     // -----------------------------------------------------------------------

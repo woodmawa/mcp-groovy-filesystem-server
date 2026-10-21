@@ -1209,49 +1209,6 @@ class ContextServerClient {
     }
 
     /**
-     * Increments the ONTOLOGY-GATE blocked-token counter in the CS {@code memory_policy}
-     * {@code hard_gates} row via an async {@code context_lifecycle} call. Fire-and-forget.
-     * Mirrors the CS-side {@code incrementHardGateBlockedToken('199', tokenKey)} behaviour.
-     * Called when {@code options.allowNoLocate=true} overrides the block.
-     *
-     * @param fileStem  file name without extension (used as the token key)
-     */
-    void incrementOntologyGateBlockedToken(String fileStem) {
-        if (!isCsReachable() || !fileStem) return
-        String stem = fileStem
-        asyncWriter.submit({
-            try {
-                Map<String, Object> body = [
-                    jsonrpc: '2.0', method: 'tools/call', id: 1,
-                    params : [
-                        name     : 'context_lifecycle',
-                        arguments: [
-                            action  : 'increment_hard_gate_token',
-                            gateId  : '199',
-                            tokenKey: "file_read_without_locate.${stem}"
-                        ]
-                    ]
-                ] as Map<String, Object>
-                URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = openCs(url)
-                try {
-                    conn.requestMethod = 'POST'
-                    conn.doOutput     = true
-                    conn.connectTimeout = 2000
-                    conn.readTimeout    = 2000
-                    conn.setRequestProperty('Content-Type', 'application/json')
-                    conn.outputStream.withWriter('UTF-8') { Writer w ->
-                        w.write(groovy.json.JsonOutput.toJson(body))
-                    }
-                    conn.responseCode  // consume
-                } finally { conn.disconnect() }
-            } catch (Exception e) {
-                log.debug('incrementOntologyGateBlockedToken failed (non-fatal) [{}]: {}', stem, e.message)
-            }
-        } as Runnable)
-    }
-
-    /**
      * Writes a {@code session_observations} correction entry to CS asynchronously, recording
      * that an ontology-gate block occurred for {@code fileStem} on {@code action}.
      * Fire-and-forget. Mirrors the SQL-GATE observation write in

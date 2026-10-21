@@ -2803,3 +2803,16 @@ runtime that a cached re-read carries no `_missing_knownhash`.
 - FsCallerSessionArgSpec FCA-1..7 (new), red on 0.9.111 (7/7). FsRangeTelemetrySpec RT-6 updated for the detail map.
   Mutation-checked: dropping the argument from the resolution turns exactly FCA-1 red. Full suite 816/0.
 - Paired with CS 1.1.106 and AW 1.30.112.
+
+## [0.9.113] -- 2026-10-21, an allowNoLocate override stops calling an action CS never had
+
+- **Removed `ContextServerClient.incrementOntologyGateBlockedToken`.** Every `allowNoLocate=true` override posted
+  `context_lifecycle action=increment_hard_gate_token` to CS -- an action CS has never had (`git log -S` finds no CS
+  commit naming it). 397 calls in 14 days, every one refused UNKNOWN_ACTION (classified as such from 10-16; the 315
+  before that were the same failure logged without a code), and no count was ever kept. The `blocked_tokens` it was
+  meant to bump is read only as an entry count, which the seeded placeholder already satisfies.
+- Wording: the block hint no longer says "telemetry still incremented" and the `allowNoLocate` schema text no longer
+  says "the override is counted in telemetry" -- neither was ever true. CS help section `ontology_locate_mandatory`
+  updated to match (data).
+- OntologyGateEnforcementSpec OGE-6 now asserts no CS counter call and no block observation on an override (red on
+  0.9.112). Full suite 816/0.
