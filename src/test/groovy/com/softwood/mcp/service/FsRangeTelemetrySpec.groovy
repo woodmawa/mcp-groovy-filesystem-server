@@ -127,6 +127,7 @@ class FsRangeTelemetrySpec extends Specification {
 
         then:
         1 * t.recordToolCall('S', 'file_read', _, _, 'range', _, _,
-                             [req_start_line: 5, req_max_lines: 5, lines_returned: 5])
+                             [req_start_line: 5, req_max_lines: 5, lines_returned: 5,
+                              session_source: 'claim', claim_session: 'S'])
     }
 }

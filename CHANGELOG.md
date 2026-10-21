@@ -2787,3 +2787,19 @@ runtime that a cached re-read carries no `_missing_knownhash`.
   Awaitility wait for the process to start. Full suite 809/0.
 - Live 2026-10-20 11:25: the FS companion carried `runStartedAt` on a gradle-test-summary node's ask and CS refused it
   same-batch, 1968 ms before the run start (run 16e27e04; CS 1.1.103 CHANGELOG, decision 390 on the margin).
+
+## [0.9.112] -- 2026-10-21, a chat call names its session (caller-session phase 1, D1)
+- Claude Desktop runs one stdio process set for every chat, so this process's claim names whichever chat claimed last
+  (chain 98b61a2c). `McpController` now reads a chat call's `callerSession`, strips it BEFORE the unread-argument guard
+  (it is in no tool's own schema; the controller owns it) and any handler, checks its shape (`CallerSession.SHAPE`;
+  `CALLER_SESSION_INVALID`, nothing runs -- existence is CS's to check), and holds it for the call (new
+  `CallerSession`). `tools/list` advertises it on every tool.
+- While held, `FilesystemTelemetryService.readActiveSessionId` answers it first (step 0), so PLAN-GATE, the ontology
+  gate, the read ledger and every call FS makes to CS on the request thread follow the chat. Work handed to another
+  thread (an async job, the re-index writer) keeps the claim.
+- The telemetry row is filed under it: `arg ?: header ?: claim`, with `session_source` (arg|header|claim|none),
+  `claim_session` (read with the argument set aside) and `caller_session` in the detail CS stores. Without it nothing
+  changes.
+- FsCallerSessionArgSpec FCA-1..7 (new), red on 0.9.111 (7/7). FsRangeTelemetrySpec RT-6 updated for the detail map.
+  Mutation-checked: dropping the argument from the resolution turns exactly FCA-1 red. Full suite 816/0.
+- Paired with CS 1.1.106 and AW 1.30.112.

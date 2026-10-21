@@ -589,6 +589,12 @@ class FilesystemTelemetryService {
      * @return the session id this process is bound to, or {@code null} when unbound
      */
     String readActiveSessionId() {
+        // 0. Caller-session phase 1 (brief 2026-10-21 D1): the session the CHAT named on this call, held on this request
+        //    thread by McpController. Desktop shares one stdio process between every chat, so the claim below is
+        //    whichever chat claimed last. FsCallerSessionArgSpec FCA-6.
+        String fromCall = CallerSession.currentArg()
+        if (fromCall) return fromCall
+
         // 1. The in-process claim.
         String inMemory = claimedSessionRef.get()
         if (sessionClaimed.get() && inMemory) return inMemory

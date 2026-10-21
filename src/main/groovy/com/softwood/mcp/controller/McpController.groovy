@@ -369,17 +369,43 @@ class McpController {
                 tools = cachedToolDefinitions
             }
         }
+        // Caller-session phase 1: the controller owns callerSession (stripped before any guard or handler), so it adds it.
+        tools = tools.collect { Map<String, Object> d -> com.softwood.mcp.service.CallerSession.withArg(d) }
         log.debug("tools/list returning {} tools", tools.size())
         return McpResponse.success(request.id, [tools: tools] as Map<String, Object>)
     }
 
+    /**
+     * Caller-session phase 1 (brief 2026-10-21 D1): a chat call's {@code callerSession} is read and STRIPPED here,
+     * before the unread-argument guard (it is in no tool's own schema) and any handler, its shape is checked (CS checks
+     * existence when it writes the row -- FS does not own sessions_index), and it is held for this call only
+     * ({@link com.softwood.mcp.service.CallerSession}). Absent, nothing changes. FsCallerSessionArgSpec.
+     */
     private McpResponse handleToolsCall(McpRequest request) {
+        Map<String, Object> raw = (request.params?.arguments as Map<String, Object>) ?: [:] as Map<String, Object>
+        if (!raw.containsKey(com.softwood.mcp.service.CallerSession.ARG)) return dispatchToolsCall(request, raw)
+        String arg = (raw.get(com.softwood.mcp.service.CallerSession.ARG) as String)?.trim() ?: null
+        Map<String, Object> stripped = new LinkedHashMap<String, Object>(raw)
+        stripped.remove(com.softwood.mcp.service.CallerSession.ARG)
+        if (arg && !com.softwood.mcp.service.CallerSession.wellFormed(arg)) {
+            return McpResponse.toolError(request.id, groovy.json.JsonOutput.toJson([success: false,
+                error: 'CALLER_SESSION_INVALID', error_code: 'CALLER_SESSION_INVALID',
+                message: 'callerSession is not a session id (letters, digits and : . _ - only, at most 64 characters). ' +
+                         'Pass the id session-bootstrap returned to this chat. Nothing ran.']))
+        }
+        String previous = com.softwood.mcp.service.CallerSession.setArg(arg)
+        try {
+            return dispatchToolsCall(request, stripped)
+        } finally {
+            com.softwood.mcp.service.CallerSession.setArg(previous)
+        }
+    }
+
+    private McpResponse dispatchToolsCall(McpRequest request, Map<String, Object> arguments) {
         String toolName = request.params?.name as String
         if (!toolName) {
             return McpResponse.toolError(request.id, "tools/call missing required param: name")
         }
-
-        Map<String, Object> arguments = (request.params?.arguments as Map<String, Object>) ?: [:] as Map<String, Object>
 
         ToolHandler handler = handlerMap[toolName]
         if (!handler) {
@@ -420,13 +446,25 @@ class McpController {
                 // as unattributed. It was being silently coalesced to 'unknown' and thrown away.
                 // FS 0.9.58: a session the caller declared wins; then this process's own claim.
                 String declared  = CALLER_SESSION.get()
-                String resolved  = declared ?: telemetryService.readActiveSessionId()
+                // Caller-session phase 1 (brief 2026-10-21 D1): the chat's own callerSession first; then the header a
+                // flow node declared; then this process's claim -- read with the argument set aside, because
+                // readActiveSessionId answers the argument first, and the row must also say what the claim alone said.
+                String arg = com.softwood.mcp.service.CallerSession.currentArg()
+                String held = com.softwood.mcp.service.CallerSession.setArg(null)
+                String claim
+                try { claim = telemetryService.readActiveSessionId() } finally { com.softwood.mcp.service.CallerSession.setArg(held) }
+                String resolved  = arg ?: declared ?: claim
+                String source    = arg ? 'arg' : (declared ? 'header' : (claim ? 'claim' : 'none'))
                 unbound = (resolved == null)
                 callSession = resolved
                 // FS 0.9.80 SB-2: unbound still warns (above), but the row names who made it rather than 'unknown'.
                 String sessionId = resolved ?: 'system:fs-unclaimed'
                 // FS 0.9.67 item 3: requested window + lines returned, for range calls only.
                 Map<String, Object> detail = RangeTelemetry.detail(toolName, arguments, responseText(response))
+                detail = detail ? new LinkedHashMap<String, Object>(detail) : new LinkedHashMap<String, Object>()
+                detail.put('session_source', (Object) source)
+                if (claim) detail.put('claim_session', (Object) claim)
+                if (arg) detail.put('caller_session', (Object) arg)
                 // optimised-learning B3: the refusal code rides to CS as telemetry.error_code (outcome unchanged).
                 String errorCode = errorCodeOf(response)
                 if (errorCode) {
