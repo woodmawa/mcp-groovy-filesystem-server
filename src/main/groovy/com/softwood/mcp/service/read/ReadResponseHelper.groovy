@@ -476,8 +476,16 @@ class ReadResponseHelper extends AbstractFileService {
         if (!path) return false
         String p = path.replace('\\', '/').toLowerCase()
         boolean prose = p.endsWith('.md') || p.endsWith('.adoc')
-        return prose && (p.contains('/claude-sync/briefs/') || p.endsWith('/changelog.md'))
+        if (prose && (p.contains('/claude-sync/briefs/') || p.endsWith('/changelog.md'))) return true
+        // productive-learning WP1 1a (FS 0.9.115, Will 2026-10-22): config and data files have no "where in the file"
+        // for a locate to answer, so a refusal can only be overridden -- obs 13190/13191 on claude_desktop_config.json.
+        // ProseGateExemptionSpec PG-5. CLAUDE.md and asciidoc are not in this list and stay gated (PG-4).
+        return CONFIG_DATA_EXTENSIONS.any { String ext -> p.endsWith(ext) }
     }
+
+    /** FS 0.9.115 (WP1 1a): config and data files the ONTOLOGY-GATE never refuses. */
+    static final List<String> CONFIG_DATA_EXTENSIONS = ['.json', '.yml', '.yaml', '.properties', '.toml', '.xml',
+                                                         '.csv', '.txt', '.html'].asImmutable()
 
     // -----------------------------------------------------------------------
     // Chunk read actions

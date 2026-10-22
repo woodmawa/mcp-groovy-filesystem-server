@@ -2831,3 +2831,14 @@ Connection-neutral claims -- the FS half of CS 1.1.113 (Will, 2026-10-21).
   read and write on the telemetry writer thread, one in flight per pair, a declined pair not re-read for 10 min.
 - Specs: FsClaimAdoptionSpec FCA-1..6 (FCA-1/2/6 red on 0.9.113; FCA-3/4/5 CONTROLs). Mutation-checked: a held open
   claim treated as dead -> exactly FCA-3 red. AW book ch11 (FS part) updated in place.
+
+## v0.9.115 (2026-10-22)
+
+productive-learning WP1 1a (decision 403; `claude-sync/briefs/productive-learning/DESIGN-2026-10-22-productive-learning.md`).
+
+- **ONTOLOGY-GATE never refuses config and data files**: `.json .yml .yaml .properties .toml .xml .csv .txt .html`
+  (`ReadResponseHelper.CONFIG_DATA_EXTENSIONS`, checked in `isGateExemptProse`). A locate answers "where in the file" for
+  code and long prose, but a config or data file has no such place, so its refusal could only ever be overridden. The
+  one non-code refusal since R4 was `claude_desktop_config.json` (obs 13190/13191). R4's briefs and CHANGELOG exemption
+  is unchanged; CLAUDE.md and asciidoc chapters stay gated (PG-4).
+- Spec: ProseGateExemptionSpec PG-5 (10 cases, red on 0.9.114); PG-1..4 unchanged and green.
