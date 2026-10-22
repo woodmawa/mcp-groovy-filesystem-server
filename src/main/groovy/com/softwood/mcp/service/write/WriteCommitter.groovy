@@ -77,6 +77,10 @@ final class WriteCommitter {
                 ])))
         }
 
+        // FS 0.9.116 remedy 2b: a platform build.gradle version line is bump-baseline's to change, with its other stamps.
+        String versionRefusal = VersionLineGuard.check(ctx.normalized, currentBytes, resultBytes)
+        if (versionRefusal != null) return CommitResult.err(McpResponse.toolError(requestId, versionRefusal))
+
         // Atomic write
         try {
             WriteUtils.atomicWrite(Paths.get(ctx.normalized), resultBytes)

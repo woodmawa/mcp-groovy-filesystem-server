@@ -2842,3 +2842,22 @@ productive-learning WP1 1a (decision 403; `claude-sync/briefs/productive-learnin
   one non-code refusal since R4 was `claude_desktop_config.json` (obs 13190/13191). R4's briefs and CHANGELOG exemption
   is unchanged; CLAUDE.md and asciidoc chapters stay gated (PG-4).
 - Spec: ProseGateExemptionSpec PG-5 (10 cases, red on 0.9.114); PG-1..4 unchanged and green.
+
+
+## v0.9.116 (2026-10-22)
+
+productive-learning round 1b (decisions 403/404; `claude-sync/briefs/productive-learning/DESIGN-2026-10-22-productive-learning.md`).
+
+- **2b -- a platform build.gradle `version` line is bump-baseline's to change** (class tool-bypass, newest instance
+  2026-10-21 got_through). `VersionLineGuard`: a write that changes the `version = '...'` line of a `build.gradle` in
+  `mcp-groovy-context-server`, `mcp-groovy-filesystem-server` or `mcp-agentic-workflow` (or a worktree named with the
+  repo as prefix) is refused `VERSION_VIA_BUMP_BASELINE`, naming the flow with its serverName, and nothing is written.
+  Wired into `WriteCommitter.commit` (replace, multi_replace, patch) and `FileContentWriter.doWrite` (full write).
+  Creating a build.gradle and every other edit to one pass. bump-baseline writes through CS, so it is never refused.
+  Not covered: server_transform's eight transformers write directly; none applies to a .gradle file except
+  replace_between / insert_before_match, carried forward.
+- **3b' -- practice #260 as a check.** `ControllerHotPathSpec` HP-1: McpController names no blocking call (file I/O,
+  JDBC, HTTP client, sleep, blocking future wait); HP-2 proves the scanner catches each form and passes in-memory
+  `ThreadLocal`/`AtomicReference` reads. Same spec in CS and AW.
+- Specs: VersionLineGuardSpec VL-1..3 red on 0.9.115, VL-4/5 CONTROLs (and every seed write is VL-6, a new
+  build.gradle passing); ControllerHotPathSpec HP-1/2.

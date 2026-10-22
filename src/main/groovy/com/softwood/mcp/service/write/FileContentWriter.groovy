@@ -94,7 +94,13 @@ class FileContentWriter extends AbstractFileService {
         String finalBody = WriteUtils.shouldNormaliseLf(target)
             ? body.replace('\r\n', '\n').replace('\r', '\n')
             : body
-        WriteUtils.atomicWrite(target, finalBody.getBytes(encoding))
+        byte[] finalBytes = finalBody.getBytes(encoding)
+        // FS 0.9.116 remedy 2b: same guard as WriteCommitter -- a full write is the other way to change the line.
+        if (Files.exists(target)) {
+            String versionRefusal = VersionLineGuard.check(normalized, Files.readAllBytes(target), finalBytes)
+            if (versionRefusal != null) return McpResponse.toolError(requestId, versionRefusal)
+        }
+        WriteUtils.atomicWrite(target, finalBytes)
         log.info("write: {} bytes -> {} (atomic, endings: {})", finalBody.length(), normalized,
             WriteUtils.shouldNormaliseLf(target) ? 'LF' : 'preserved')
 
