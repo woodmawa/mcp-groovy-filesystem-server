@@ -4,6 +4,7 @@ import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.regex.Matcher
@@ -21,6 +22,10 @@ import java.util.regex.Pattern
  * named with the repo as prefix), is refused VERSION_VIA_BUMP_BASELINE and nothing is written. Creating a new
  * build.gradle, or any other edit to one, passes. bump-baseline itself writes through CS, not FS, so it is never
  * refused here.
+ *
+ * FS 0.9.117 (productive-learning R3): server_transform's eight transformers wrote with WriteUtils.atomicWrite
+ * directly, never through WriteCommitter, so replace_between / insert_before_match could still change the line.
+ * They now write through {@link #writeChecked}, the same check on the same before/after bytes.
  */
 @CompileStatic
 final class VersionLineGuard {
@@ -46,6 +51,19 @@ final class VersionLineGuard {
         if (!dir) return null
         String key = PLATFORM_REPOS.keySet().find { String repo -> dir == repo || dir.startsWith(repo + '-') }
         return key ? PLATFORM_REPOS[key] : null
+    }
+
+    /**
+     * Writes {@code after} to the file unless that changes a platform build.gradle version line.
+     * @return the refusal JSON, with NOTHING written; or null once the bytes are written.
+     */
+    static String writeChecked(String normalizedPath, byte[] after) {
+        Path target = Paths.get(normalizedPath)
+        byte[] before = Files.exists(target) ? Files.readAllBytes(target) : null
+        String refusal = check(normalizedPath, before, after)
+        if (refusal != null) return refusal
+        WriteUtils.atomicWrite(target, after)
+        return null
     }
 
     static String versionOf(String text) {

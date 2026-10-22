@@ -3,6 +3,7 @@ package com.softwood.mcp.service.transform.transforms
 import com.softwood.mcp.service.StructureCache
 import com.softwood.mcp.service.transform.FileTransformer
 import com.softwood.mcp.service.transform.TransformResult
+import com.softwood.mcp.service.write.VersionLineGuard
 import com.softwood.mcp.service.write.WriteUtils
 import groovy.transform.CompileStatic
 import org.springframework.beans.factory.annotation.Autowired
@@ -106,7 +107,9 @@ class ReplaceMethodTransformer implements FileTransformer {
         result.addAll(Arrays.asList(parts))                               // new method body
         result.addAll(lines.subList(endLine, lines.size()))               // lines after method
 
-        WriteUtils.atomicWrite(Paths.get(normalizedPath), result.join('\n').getBytes('UTF-8'))
+        // FS 0.9.117 (R3): the same version-line guard as WriteCommitter; refused = nothing written.
+        String refused = VersionLineGuard.writeChecked(normalizedPath, result.join('\n').getBytes('UTF-8'))
+        if (refused != null) return new TransformResult(success: false, error: refused)
 
         return new TransformResult(
             success      : true,

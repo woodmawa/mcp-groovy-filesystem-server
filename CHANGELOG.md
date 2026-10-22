@@ -2861,3 +2861,6 @@ productive-learning round 1b (decisions 403/404; `claude-sync/briefs/productive-
   `ThreadLocal`/`AtomicReference` reads. Same spec in CS and AW.
 - Specs: VersionLineGuardSpec VL-1..3 red on 0.9.115, VL-4/5 CONTROLs (and every seed write is VL-6, a new
   build.gradle passing); ControllerHotPathSpec HP-1/2.
+
+## [0.9.117] (2026-10-22)
+productive-learning R3 (the 2b gap). `server_transform`'s eight transformers wrote with `WriteUtils.atomicWrite` directly, never through `WriteCommitter`, so `replace_between` / `insert_before_match` could still change a platform build.gradle version line that `write`/`replace`/`multi_replace`/`patch` refuse. They now write through `VersionLineGuard.writeChecked` -- the same check on the same before/after bytes: refused `VERSION_VIA_BUMP_BASELINE`, nothing written. VersionLineGuardSpec VL-7/VL-8 (red on 0.9.116), VL-9 CONTROL; mutation (refusal line disabled) turns exactly VL-7/VL-8 red.
