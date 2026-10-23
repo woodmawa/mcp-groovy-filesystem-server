@@ -29,6 +29,9 @@ src/main/groovy/com/softwood/mcp/
 
 - `file_read action=grep` takes a FILE; for a directory use `multi_grep` (paths may be directories) or
   `file_search action=content`. `range` takes `startLine` + `maxLines` or `endLine` (1-indexed, inclusive); at most 80 lines (default 80) -- wider is refused `RANGE_TOO_WIDE` unless `options.force=true` (0.9.118).
+  `multi` serves each file at most 80 lines; a longer one comes back `_truncated` with `total_lines` and
+  `next_startLine` (0.9.119). A directory given to `multi_grep` expands only to the default code/text
+  extensions -- for `.adoc` use `file_search action=content` with a `filePattern`.
 - Every content read is de-duplicated against what this chat was already sent (45-minute window) and answers
   `unchanged:true`; pass `options.force=true` after a compaction or when a subagent made the read.
 - Every mutating write needs `options.expectedHash`. A write's returned `content_hash` is the next `expectedHash`;
