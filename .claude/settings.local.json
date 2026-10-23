@@ -2,32 +2,23 @@
   "permissions": {
     "allow": [
       "mcp__context-server__context_lifecycle",
-      "mcp__groovy-filesystem__file_read",
       "mcp__context-server__context_read",
-      "mcp__groovy-filesystem__file_list",
       "mcp__context-server__context_write",
-      "mcp__groovy-filesystem__file_write",
-      "mcp__groovy-filesystem__tools",
+      "mcp__context-server__context_ideation",
+      "mcp__groovy-filesystem__file_read",
+      "mcp__groovy-filesystem__file_list",
       "mcp__groovy-filesystem__file_search",
-      "mcp__groovy-filesystem__execute",
+      "mcp__groovy-filesystem__file_write",
       "mcp__groovy-filesystem__file_lifecycle",
-      "Bash(python3:*)",
+      "mcp__groovy-filesystem__execute",
+      "mcp__groovy-filesystem__tools",
+      "mcp__groovy-filesystem__server_lifecycle",
+      "mcp__agentic-workflow__flow_management",
+      "mcp__agentic-workflow__agent_management",
+      "Read(//c/Users/willw/**)",
       "Bash(powershell:*)",
       "Bash(curl:*)",
-      "Bash(netstat:*)",
-      "Bash(# Check what mappings/endpoints exist\ncurl -s http://localhost:8081/actuator/mappings 2>/dev/null | python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(k\\) for k in d.get\\('contexts',{}\\).get\\('application',{}\\).get\\('mappings',{}\\).get\\('dispatcherServlet',{}\\).get\\('mappings',[]\\)]\" 2>/dev/null || curl -s \"http://localhost:8081/actuator\" 2>/dev/null)",
-      "Bash(sed -i 's/mcp-groovy-filesystem-server-0\\\\.7\\\\.45\\\\.jar/mcp-groovy-filesystem-server-0.7.46.jar/g' /c/Users/willw/.claude.json)",
-      "Read(//c/Users/willw/**)",
-      "Bash(find \"C:/Users/willw/AppData/Local\" -name \"*.log\" -newer \"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server/build.gradle\" 2>/dev/null | head -10)",
-      "Bash(find \"C:/Users/willw/AppData/Roaming/Claude\" -name \"*.log\" 2>/dev/null | head -10)",
-      "Bash(for f:*)",
-      "Bash(cd \"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server\" && cmd.exe /c \"gradlew.bat clean bootJar\" 2>&1)",
-      "Bash(cd \"C:/Users/willw/IdeaProjects/mcp-groovy-filesystem-server\" && cmd.exe /c \"gradlew.bat clean bootJar 2>&1\" && echo \"BUILD_DONE\")",
-      "Bash(powershell.exe -Command \"C:/Users/willw/claude-sync/start-mcp-services.ps1 -Deploy\" 2>&1)"
+      "Bash(netstat:*)"
     ]
-  },
-  "enabledMcpjsonServers": [
-    "groovy-filesystem",
-    "context-server"
-  ]
+  }
 }
