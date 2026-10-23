@@ -2872,3 +2872,10 @@ Range reads are kept narrow at the tool (Will, session 2026-10-23-15-28, CS deci
 - A range with no maxLines reads 80 lines (was 100): one constant, `FileContentReader.DEFAULT_RANGE_LINES`, shared with the guard. head and tail share the served-ledger path but are not range reads and are not limited.
 - Tool description and USAGE.md say so; AW book chapter 10 (FS tool surface) edited in place.
 - Specs: RangeWidthGuardSpec RW-1..3 red on 0.9.117, RW-4/5 CONTROLs. Mutation (limit raised to 100000) turns exactly RW-1/RW-2 red. ReadDedupSpec CT-RD-1/2 used 100- and 101-line windows, now refused: scaled to 80 with the same overlap shape (they prove de-duplication, not width). Full suite 847/0.
+
+
+## [0.9.119] (2026-10-23)
+A multi read is held to the range width per file (Will, session 2026-10-23-16-52, CS decision 424). 0.9.118 capped range at 80 lines, but `multi` (up to 10 files, each whole) was untouched: over the 14 days to 2026-10-23 it made 25 calls averaging 3.6k tokens, 19 over 2k, the largest 6.4k.
+- `file_read action=multi` serves each file at most 80 lines (`FileContentReader.DEFAULT_RANGE_LINES`, the range width) unless `options.force=true`. A capped file comes back `_truncated: true` with `total_lines`, `next_startLine` and a hint; servedMulti already skips `_truncated` files, so the served ledger never records a partial file as whole.
+- USAGE.md says so; AW book chapter 10 (FS tool surface) edited in place.
+- Specs: MultiWidthGuardSpec MW-1 red on 0.9.118, MW-2/MW-3 CONTROLs. Mutation (cap disabled) turns exactly MW-1 red. Full suite 850/0. Single-fork `test checkTiering`: OK, 112 spec classes, every one >= 1 s tagged (X53 FS tail confirmed closed).

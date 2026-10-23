@@ -629,6 +629,10 @@ class FileContentReader extends AbstractFileService {
                  "Use individual reads with chunking for large files." as String))
         }
 
+        // FS 0.9.119 (CS decision 424): each file is held to the range width unless force=true. multi averaged 3.6k
+        // tokens a call over the 14 days to 2026-10-23 while range was capped at 80 lines. MultiWidthGuardSpec.
+        boolean forceWide = options.force as boolean
+
         List<com.softwood.mcp.promise.Promise<Map<String, Object>>> promises = paths.collect { String p ->
             Promises.async(({ ->
                 try {
@@ -645,6 +649,17 @@ class FileContentReader extends AbstractFileService {
                         return [path: normalized, error: "File too large for multi (${fileSize} bytes > ${sizeCapBytes} cap). Use read with chunking.", success: false] as Map<String, Object>
                     }
                     String content = new File(normalized).getText(encoding)
+                    if (!forceWide) {
+                        List<String> all = content.readLines()
+                        if (all.size() > DEFAULT_RANGE_LINES) {
+                            return [path: normalized, content: sanitize(all.take(DEFAULT_RANGE_LINES).join('\n')),
+                                    size: content.length(), file_content_hash: currentHash, success: true,
+                                    _truncated: true, total_lines: all.size(), next_startLine: DEFAULT_RANGE_LINES + 1,
+                                    hint: ('multi serves ' + DEFAULT_RANGE_LINES + ' lines per file; read the rest with ' +
+                                           'range startLine=' + (DEFAULT_RANGE_LINES + 1) + ', or pass force=true') as String
+                                   ] as Map<String, Object>
+                        }
+                    }
                     return [path: normalized, content: sanitize(content),
                             size: content.length(), file_content_hash: currentHash,
                             success: true] as Map<String, Object>

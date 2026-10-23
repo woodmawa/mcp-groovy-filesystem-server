@@ -1,7 +1,7 @@
 # mcp-groovy-filesystem-server (FS)
 
-- **Current version:** `0.9.118`
-- **Baseline stack:** FS 0.9.118 / CS 1.1.125 / AW 1.30.115
+- **Current version:** `0.9.119`
+- **Baseline stack:** FS 0.9.119 / CS 1.1.126 / AW 1.30.115
 <!-- Both lines are stamped by context_lifecycle action=bump_baseline and read by contracts stamp-fs-md-current,
      stamp-fs-md-cs and stamp-fs-md-aw. Do not hand-edit them and do not append release notes to them. -->
 

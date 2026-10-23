@@ -33,7 +33,7 @@ file_read action=multi_grep options={pattern:"import org.softwood",paths:["A.gro
 → {fileCount, matchingFiles, totalMatches, results:[{path,matchCount,matches:[{line,content}]}]}
 ```
 
-**multi** — read up to 10 files in parallel. Pass `options.paths[]`. Pass `options.knownHashes {path->hash}` to skip unchanged files — zero cost.
+**multi** — read up to 10 files in parallel. Pass `options.paths[]`. Pass `options.knownHashes {path->hash}` to skip unchanged files — zero cost. Each file is served at most 80 lines (the range width); a longer one comes back `_truncated` with `total_lines` and `next_startLine` -- read the rest with `range`, or pass `options.force=true` (FS 0.9.119).
 
 **summary** / **stat** — file metadata without content. `stat` includes language detection.
 
