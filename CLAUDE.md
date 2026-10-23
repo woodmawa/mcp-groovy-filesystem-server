@@ -28,7 +28,7 @@ src/main/groovy/com/softwood/mcp/
 ## Calling FS correctly
 
 - `file_read action=grep` takes a FILE; for a directory use `multi_grep` (paths may be directories) or
-  `file_search action=content`. `range` takes `startLine` + `maxLines` or `endLine` (1-indexed, inclusive).
+  `file_search action=content`. `range` takes `startLine` + `maxLines` or `endLine` (1-indexed, inclusive); at most 80 lines (default 80) -- wider is refused `RANGE_TOO_WIDE` unless `options.force=true` (0.9.118).
 - Every content read is de-duplicated against what this chat was already sent (45-minute window) and answers
   `unchanged:true`; pass `options.force=true` after a compaction or when a subagent made the read.
 - Every mutating write needs `options.expectedHash`. A write's returned `content_hash` is the next `expectedHash`;
