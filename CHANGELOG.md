@@ -2864,3 +2864,11 @@ productive-learning round 1b (decisions 403/404; `claude-sync/briefs/productive-
 
 ## [0.9.117] (2026-10-22)
 productive-learning R3 (the 2b gap). `server_transform`'s eight transformers wrote with `WriteUtils.atomicWrite` directly, never through `WriteCommitter`, so `replace_between` / `insert_before_match` could still change a platform build.gradle version line that `write`/`replace`/`multi_replace`/`patch` refuse. They now write through `VersionLineGuard.writeChecked` -- the same check on the same before/after bytes: refused `VERSION_VIA_BUMP_BASELINE`, nothing written. VersionLineGuardSpec VL-7/VL-8 (red on 0.9.116), VL-9 CONTROL; mutation (refusal line disabled) turns exactly VL-7/VL-8 red.
+
+
+## [0.9.118] (2026-10-23)
+Range reads are kept narrow at the tool (Will, session 2026-10-23-15-28, CS decision 422). The read guards stopped whole-file reads (full_read_pct 0 across the CS trend window) and repeats, but nothing limited range width: session 2026-10-23-13-06 made 9 range reads averaging 149 lines and 2.1k tokens, and avg_read_tok read regressing. A remedy, not a lesson (2026-10-19).
+- `file_read action=range` refuses a span wider than 80 lines with `RANGE_TOO_WIDE` -- nothing read; the message names locate, get_method and grep. `options.force=true` reads the full width. The endLine form is checked after its conversion to maxLines, so it is caught too.
+- A range with no maxLines reads 80 lines (was 100): one constant, `FileContentReader.DEFAULT_RANGE_LINES`, shared with the guard. head and tail share the served-ledger path but are not range reads and are not limited.
+- Tool description and USAGE.md say so; AW book chapter 10 (FS tool surface) edited in place.
+- Specs: RangeWidthGuardSpec RW-1..3 red on 0.9.117, RW-4/5 CONTROLs. Mutation (limit raised to 100000) turns exactly RW-1/RW-2 red. ReadDedupSpec CT-RD-1/2 used 100- and 101-line windows, now refused: scaled to 80 with the same overlap shape (they prove de-duplication, not width). Full suite 847/0.

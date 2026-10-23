@@ -223,7 +223,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
     private static final Map<String, Object> READ_OPTION_SCHEMA = [
                                   lines       : [type: 'integer', description: 'Lines for head/tail (default 50)'],
                                   startLine   : [type: 'integer', description: 'Start line for range, 1-indexed (required for range)'],
-                                  maxLines    : [type: 'integer', description: 'Max lines for range (default 100)'],
+                                  maxLines    : [type: 'integer', description: 'Max lines for range (default 80). FS 0.9.118: more than 80 is refused RANGE_TOO_WIDE unless options.force=true -- locate, get_method or grep instead.'],
                                   pattern     : [type: 'string',  description: 'Regex for grep (required for grep)'],
                                   maxMatches  : [type: 'integer', description: 'Max grep matches (default 10; multi_grep: per file, default 5)'],
                                   contextLines: [type: 'integer', description: 'Lines of context before/after each grep match (default 0)'],
@@ -376,7 +376,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 case 'read' : return servedRead(path, options, requestId)
                 case 'head' : return servedHeadTail(path, options, requestId, false)
                 case 'tail' : return servedHeadTail(path, options, requestId, true)
-                case 'range': return dedupedRange(path, options, requestId)
+                case 'range': return rangeWidthRefusal(options, requestId) ?: dedupedRange(path, options, requestId)
                 case 'grep'         : {
                     // FS 0.9.35 G4c: the same grep on unchanged content is not re-sent.
                     String gh = null
@@ -820,6 +820,24 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
     }
 
     /**
+     * FS 0.9.118 (Will, 2026-10-23, CS decision 422): the widest range a chat may ask for without force=true, and the
+     * width a range with no maxLines reads. Whole-file reads and repeats were already guarded; range width was not,
+     * and session 2026-10-23-13-06 read 9 ranges averaging 149 lines. Pinned by RangeWidthGuardSpec.
+     */
+    static final int MAX_RANGE_LINES = FileContentReader.DEFAULT_RANGE_LINES
+
+    /** FS 0.9.118: RANGE_TOO_WIDE for a range over {@link #MAX_RANGE_LINES} lines without force=true, else null. */
+    private static McpResponse rangeWidthRefusal(Map<String, Object> options, Object requestId) {
+        Integer asked = options.get('maxLines') as Integer
+        boolean force = Boolean.parseBoolean(String.valueOf(options.get('force') ?: 'false'))
+        if (asked == null || asked <= MAX_RANGE_LINES || force) return null
+        return McpResponse.toolError(requestId, ('RANGE_TOO_WIDE: ' + asked + ' lines asked; a range reads at most ' +
+            MAX_RANGE_LINES + ' lines. Narrow it: context_read scope=ontology action=locate gives a symbol\'s exact ' +
+            'lines, file_read get_method reads one method whole, grep with contextLines finds the spot. ' +
+            'Nothing was read. options.force=true reads the full width when it is genuinely needed.') as String)
+    }
+
+    /**
      * FS 0.9.40 K2: the served-ledger range path, shared by range, head and tail.
      */
     private McpResponse dedupedRange(String path, Map<String, Object> options, Object requestId) {
@@ -841,7 +859,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 fileHash = structureCache?.getHash(pathService.normalizePath(path))
             }
             int csl = (options.get('startLine') as Integer) ?: 1
-            int cml = (options.get('maxLines') as Integer) ?: 100
+            int cml = (options.get('maxLines') as Integer) ?: MAX_RANGE_LINES
             boolean force = Boolean.parseBoolean(String.valueOf(options.get('force') ?: 'false'))
             if (fileHash && force) {
                 // K2: a forced re-read of lines the chat already holds is the waste the ledger measures
@@ -894,7 +912,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 String h = structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(r)
                 Map<String, Object> rp = parseResponsePayload(r)
                 int rsl = (rp?.get('startLine') as Integer) ?: ((options.get('startLine') as Integer) ?: 1)
-                int rel = (rp?.get('endLine') as Integer) ?: (rsl + ((options.get('maxLines') as Integer) ?: 100) - 1)
+                int rel = (rp?.get('endLine') as Integer) ?: (rsl + ((options.get('maxLines') as Integer) ?: MAX_RANGE_LINES) - 1)
                 // FS 0.9.35: record the lines ACTUALLY returned (a window past EOF is
                 // shorter than asked), so coverage never claims lines nobody saw.
                 if (h && rel >= rsl) contextServerClient.recordRangeCacheAsync(path, rsl, rel, h)

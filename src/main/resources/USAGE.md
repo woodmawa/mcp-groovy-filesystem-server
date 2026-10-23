@@ -23,7 +23,7 @@ _Retrieve this with: `file_read action=help topic=<tool>` or `topic=all`_
 
 **tail** — last N lines (default 30).
 
-**range** — line slice: `options.startLine` (1-indexed), `options.maxLines` (default 100).
+**range** — line slice: `options.startLine` (1-indexed), `options.maxLines` (default 80). More than 80 lines is refused `RANGE_TOO_WIDE` unless `options.force=true` -- use locate, `get_method` or `grep` to narrow it.
 
 **grep** — regex search within a **FILE** path only (hard error on directory path). `options.pattern` required. `options.contextLines=N` for surrounding context. For directory-wide search use `file_search action=content`.
 

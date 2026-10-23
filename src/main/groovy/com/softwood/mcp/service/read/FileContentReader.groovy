@@ -49,6 +49,9 @@ import java.util.regex.Pattern
 @CompileStatic
 class FileContentReader extends AbstractFileService {
 
+    /** FS 0.9.118 (CS decision 422): a range with no maxLines reads this many lines; FileReadService refuses wider. */
+    static final int DEFAULT_RANGE_LINES = 80
+
     @Autowired
     ChunkBufferService chunkBufferService
 
@@ -309,7 +312,7 @@ class FileContentReader extends AbstractFileService {
         McpResponse unchanged = helper.checkKnownHash(normalized, options, requestId)
         if (unchanged != null) return unchanged
         int startLine   = (options.startLine as Integer) ?: 1
-        int maxLines    = (options.maxLines as Integer) ?: 100
+        int maxLines    = (options.maxLines as Integer) ?: DEFAULT_RANGE_LINES
         String encoding = options.encoding as String ?: 'UTF-8'
 
         if (maxLines > 500) maxLines = 500

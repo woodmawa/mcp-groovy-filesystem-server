@@ -94,7 +94,8 @@ class ReadDedupSpec extends Specification {
     def 'CT-RD-1: a range inside served lines is unchanged'() {
         given:
         def f = file('a.txt', 200)
-        call('range', f, [startLine: 1, maxLines: 100, allowNoLocate: true])
+        // FS 0.9.118: ranges are at most 80 lines (RangeWidthGuardSpec); the windows here were 100/101.
+        call('range', f, [startLine: 1, maxLines: 80, allowNoLocate: true])
 
         when:
         Map p = payload(call('range', f, [startLine: 20, maxLines: 30, allowNoLocate: true]))
@@ -108,19 +109,19 @@ class ReadDedupSpec extends Specification {
     def 'CT-RD-2: an overlapping range returns only the new lines'() {
         given:
         def f = file('b.txt', 200)
-        call('range', f, [startLine: 1, maxLines: 100, allowNoLocate: true])
+        call('range', f, [startLine: 1, maxLines: 80, allowNoLocate: true])
 
         when:
-        Map p = payload(call('range', f, [startLine: 50, maxLines: 101, allowNoLocate: true]))
+        Map p = payload(call('range', f, [startLine: 50, maxLines: 80, allowNoLocate: true]))
 
         then:
-        p.startLine == 101
-        p.endLine == 150
-        (p.content as String).startsWith('line101')
-        p.already_served == ['1-100']
+        p.startLine == 81
+        p.endLine == 129
+        (p.content as String).startsWith('line81')
+        p.already_served == ['1-80']
 
         and: 'and the new lines are now served too'
-        payload(call('range', f, [startLine: 120, maxLines: 20, allowNoLocate: true])).unchanged == true
+        payload(call('range', f, [startLine: 100, maxLines: 20, allowNoLocate: true])).unchanged == true
     }
 
     def 'CT-RD-3: force returns the full range'() {
