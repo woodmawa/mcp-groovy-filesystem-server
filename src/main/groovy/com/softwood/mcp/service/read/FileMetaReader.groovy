@@ -116,6 +116,12 @@ class FileMetaReader extends AbstractFileService {
 
     McpResponse doExists(String path, Object requestId) {
         String normalized = pathService.normalizePath(path)
+        // FS 0.9.121 (X86 P3-6.1, SecretFileGuardSpec SF-7): the secret file is REFUSED, not absent. Answering
+        // exists:false told the caller something untrue about the disk; say it is not allowed, and why.
+        if (com.softwood.mcp.service.SecretFiles.isSecret(normalized)) {
+            return textResponse(requestId, [action: 'exists', path: normalized, allowed: false,
+                                            reason: com.softwood.mcp.service.SecretFiles.REASON])
+        }
         boolean allowed   = isPathAllowed(normalized)
         boolean exists    = allowed && Files.exists(Paths.get(normalized))
         String type       = exists ? (Files.isDirectory(Paths.get(normalized)) ? 'directory' : 'file') : null

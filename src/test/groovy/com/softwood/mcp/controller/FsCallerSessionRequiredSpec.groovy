@@ -68,7 +68,7 @@ class FsCallerSessionRequiredSpec extends Specification {
     def 'FCR-1 (RED): a chat call without callerSession is refused CALLER_SESSION_REQUIRED and nothing runs'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'
 
         when:
         McpResponse r = controller(t).handleRequest(call('tools', 'gradle'))
@@ -94,7 +94,7 @@ class FsCallerSessionRequiredSpec extends Specification {
     def 'FCR-3 CONTROL: with callerSession the call runs'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'
 
         when:
         controller(t).handleRequest(call('tools', 'gradle', [callerSession: X]))
@@ -135,7 +135,7 @@ class FsCallerSessionRequiredSpec extends Specification {
         given:
         ContextServerClient client = Mock()
         FilesystemTelemetryService t = Spy(FilesystemTelemetryService)
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'   // X86 P3-3: the claim evidence comes from the claim record
         t.dbPath = 'configured'
         t.contextServerClient = client
         List<List> sent = new CopyOnWriteArrayList<>()

@@ -202,14 +202,13 @@ class FilesystemTelemetryService {
         // v0.8.39: resolve real session ID lazily on first call -- one JDBC read per session, cached thereafter
         // McpController passes 'unknown' because it cannot intercept context_lifecycle (a context-server tool).
         // readActiveSessionId() opens a short-lived read-only connection -- safe from asyncWriter thread.
+        // X86 P3-3: an absent session resolves through the ATTRIBUTION resolver only (this call's arg or declared
+        // header). It used to fall back to trackedSessionId -- whichever session the PREVIOUS call was filed under --
+        // and then to the process claim; both filed this call under another chat's session.
         String resolvedId = sessionId
         if (!resolvedId || resolvedId == 'unknown') {
-            if (trackedSessionId && trackedSessionId != 'unknown') {
-                resolvedId = trackedSessionId  // already resolved this session
-            } else {
-                String fromDb = readActiveSessionId()
-                if (fromDb) resolvedId = fromDb
-            }
+            String attributed = readActiveSessionId()
+            resolvedId = attributed ?: null
         }
 
         // Reset repeat cache and token accumulator when session changes
@@ -295,7 +294,7 @@ class FilesystemTelemetryService {
                 ] as Map<String, Object>
                 if (detail) row.putAll(detail)
                 String claim = null
-                try { claim = readActiveSessionId()?.trim() } catch (Exception ignored) { }
+                try { claim = processClaim()?.trim() } catch (Exception ignored) { }   // X86 P3-3: evidence only
                 if (claim && claim != 'unknown') row.put('claim_session', (Object) claim)
                 if (contextServerClient) {
                     contextServerClient.recordToolCall('unknown', row)
@@ -616,7 +615,7 @@ class FilesystemTelemetryService {
                 server              : ProcessIdentity.SERVER,
                 pid                 : ProcessIdentity.PID,
                 jvm_started_at      : ProcessIdentity.JVM_STARTED_AT,
-                this_process_session: readActiveSessionId(),
+                this_process_session: processClaim(),   // X86 P3-3: the claim record, never a call's session
                 this_process_group  : claimedGroupRef.get(),
                 claimed             : sessionClaimed.get() && claimedSessionRef.get() != null
                ] as Map<String, Object>
@@ -713,40 +712,47 @@ class FilesystemTelemetryService {
     }
 
     /**
-     * Resolve the session this process is serving.
+     * The ATTRIBUTION resolver: the session THIS CALL is for.
      *
-     * <p><b>FS 0.9.17 WP-5 -- claim-scoped, in three steps:</b>
+     * <p><b>X86 caller-session phase 3, P3-3:</b></p>
      * <ol>
-     *   <li>the in-process claim -- authoritative, no TTL, no query;</li>
-     *   <li>if unclaimed, THIS process's own row in {@code session_claims};</li>
-     *   <li>otherwise UNBOUND.</li>
+     *   <li>the session the chat named on this call ({@code callerSession}), held on the request thread by
+     *       McpController -- or carried onto a worker by {@link CallerSession#carrying};</li>
+     *   <li>else the session a flow node DECLARED on this thread ({@link AwCallContext#session}, set by the controller
+     *       from {@code X-Mcp-Caller-Session});</li>
+     *   <li>else null.</li>
      * </ol>
      *
-     * <p>It used to read {@code active_session ORDER BY id DESC LIMIT 1} -- one row for the whole
-     * machine, shared by every FS JVM (five were running on 2026-09-03). Every tool call's
-     * telemetry and every range-cache key was therefore attributed to whichever chat bootstrapped
-     * most recently. With two chats open, one chat's reads were filed under the other's session,
-     * and because the range cache is keyed by session id they also missed.
+     * <p>NEVER the process claim. Desktop runs one stdio process set for every chat, so the claim names whichever chat
+     * claimed last; filing a call under it filed one chat's work under another's. Since phase 2 every chat call names
+     * its session (bar the exempt server_lifecycle claim calls), so a call that names none -- a background thread, a
+     * companion call with no header -- is attributed to nothing. Callers that send to CS then name themselves
+     * ({@code X-Mcp-Actor: system:fs-unclaimed}, {@link ContextServerClient#applyCaller}). The claim itself is
+     * {@link #processClaim}: for the claim record and as evidence only. NoClaimAttributionSpec NCA-1..3.</p>
      *
-     * <p>Step 3 does NOT fall back to {@code active_session}. Telemetry tolerates a null by
-     * recording {@code 'unknown'}, which makes the fallback tempting -- and it is precisely the
-     * defect: a wrong session id is worse than an absent one, because downstream it is
-     * indistinguishable from correct data.
+     * <p>Before P3-3 this answered the claim after the arg (FS 0.9.17 WP-5 made that claim-scoped rather than the
+     * machine-wide {@code active_session} row; it still never falls back to that row).</p>
      *
-     * @return the session id this process is bound to, or {@code null} when unbound
+     * @return the session the current call is for, or {@code null} when it names none
      */
     String readActiveSessionId() {
-        // 0. Caller-session phase 1 (brief 2026-10-21 D1): the session the CHAT named on this call, held on this request
-        //    thread by McpController. Desktop shares one stdio process between every chat, so the claim below is
-        //    whichever chat claimed last. FsCallerSessionArgSpec FCA-6.
         String fromCall = CallerSession.currentArg()
         if (fromCall) return fromCall
+        String declared = AwCallContext.session()?.trim()
+        if (declared && declared != 'unknown') return declared
+        return null
+    }
 
-        // 1. The in-process claim.
+    /**
+     * X86 P3-3: the PROCESS CLAIM alone -- the in-process claim, else this process's own {@code session_claims} row,
+     * else null. Never the call's callerSession, never a header. For the claim record only (claim_status, the restart
+     * notice, "is this process claimed" checks) and as EVIDENCE (the claim_session column on telemetry rows). Never an
+     * attribution source: Desktop runs one stdio process set for every chat, so the claim is whichever chat claimed
+     * last. NoClaimAttributionSpec NCA-4.
+     */
+    String processClaim() {
         String inMemory = claimedSessionRef.get()
         if (sessionClaimed.get() && inMemory) return inMemory
-
-        // 2. This process's OWN claim row -- never another process's.
         String own = readOwnClaimSessionId()
         if (own) {
             claimedSessionRef.set(own)
@@ -755,8 +761,6 @@ class FilesystemTelemetryService {
                      own, ProcessIdentity.OWNER_KEY)
             return own
         }
-
-        // 3. Unbound. Never the newest global session.
         return null
     }
 

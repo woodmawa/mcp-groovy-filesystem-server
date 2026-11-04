@@ -23,11 +23,11 @@ import java.util.concurrent.CopyOnWriteArrayList
  *
  * <ul>
  *   <li>FCA-1 (RED): claim own-claim, arg X -> row X, source arg, claim own-claim, caller_session X</li>
- *   <li>FCA-2 CONTROL: no arg -> row own-claim, source claim</li>
+ *   <li>FCA-2 (inverted, X86 P3-3): no arg -> row system:fs-unclaimed, source none, claim own-claim as evidence</li>
  *   <li>FCA-3: stripped before the unread-argument guard and the handler; held during, gone after</li>
  *   <li>FCA-4: a malformed id is refused CALLER_SESSION_INVALID and nothing runs</li>
  *   <li>FCA-5: tools/list advertises it on every tool</li>
- *   <li>FCA-6: readActiveSessionId answers the held session, then the claim again</li>
+ *   <li>FCA-6: readActiveSessionId answers the held session, then nothing again (X86 P3-3: never the claim)</li>
  *   <li>FCA-7: a declared header with no arg is recorded as header</li>
  * </ul>
  */
@@ -69,7 +69,7 @@ class FsCallerSessionArgSpec extends Specification {
     def 'FCA-1 (RED until D1): the call names X while the process is claimed by another chat -- the row is Xs'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'   // X86 P3-3: the claim is read from the claim record
 
         when:
         controller(t).handleRequest(call([callerSession: X]))
@@ -79,23 +79,25 @@ class FsCallerSessionArgSpec extends Specification {
             { Map d -> d.session_source == 'arg' && d.claim_session == 'own-claim' && d.caller_session == X })
     }
 
-    def 'FCA-2 CONTROL (phase-1 fallback): without callerSession the claim decides'() {
+    // X86 P3-3: inverted. Phase 1 let the claim decide a call with no callerSession; the claim is whichever chat claimed
+    // last, so the call is now filed under no session and the claim is kept beside it as evidence only.
+    def 'FCA-2 (inverted, X86 P3-3): without callerSession the claim does NOT decide -- no session, claim as evidence'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'
 
         when:
         controller(t).handleRequest(call())
 
         then:
-        1 * t.recordToolCall('own-claim', 'tools', _, _, _, _, _,
-            { Map d -> d.session_source == 'claim' && d.claim_session == 'own-claim' && !d.containsKey('caller_session') })
+        1 * t.recordToolCall('system:fs-unclaimed', 'tools', _, _, _, _, _,
+            { Map d -> d.session_source == 'none' && d.claim_session == 'own-claim' && !d.containsKey('caller_session') })
     }
 
     def 'FCA-3: stripped before the unread-argument guard and the handler; held during the call, gone after'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'
 
         when:
         McpResponse r = controller(t).handleRequest(call([callerSession: X]))
@@ -132,7 +134,7 @@ class FsCallerSessionArgSpec extends Specification {
         (props.get('action') as Map).get('type') == 'string'
     }
 
-    def 'FCA-6: readActiveSessionId answers the held session, then the claim again'() {
+    def 'FCA-6: readActiveSessionId answers the held session, then nothing again'() {
         given: 'a real service with no claim and no database'
         FilesystemTelemetryService real = new FilesystemTelemetryService()
 
@@ -152,7 +154,7 @@ class FsCallerSessionArgSpec extends Specification {
     def 'FCA-7: a declared header with no arg is recorded as header'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'
 
         when:
         controller(t).handleRequest(call(), 'declared-by-flow')

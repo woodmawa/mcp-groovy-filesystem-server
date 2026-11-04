@@ -116,18 +116,18 @@ class FsRangeTelemetrySpec extends Specification {
         h.canHandle(_) >> true
         h.handleToolCall(_, _, _) >> McpResponse.success(1, [content: [[type: 'text', text: rangeBody(5, 9)]]])
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'S'
+        t.processClaim() >> 'S'
         McpController c = new McpController([h])
         c.telemetryService = t
         c.globalResponseCapChars = 64000
 
-        when:
+        when: 'X86 P3-3: the claim no longer attributes a call, so the call names its session as every chat call does'
         c.handleRequest(new McpRequest(id: 1, method: 'tools/call', params: [name: 'file_read',
-            arguments: [action: 'range', path: 'C:/x', options: [startLine: 5, maxLines: 5]]]), null)
+            arguments: [action: 'range', path: 'C:/x', options: [startLine: 5, maxLines: 5], callerSession: 'S']]), null)
 
         then:
         1 * t.recordToolCall('S', 'file_read', _, _, 'range', _, _,
                              [req_start_line: 5, req_max_lines: 5, lines_returned: 5,
-                              session_source: 'claim', claim_session: 'S'])
+                              session_source: 'arg', claim_session: 'S', caller_session: 'S'])
     }
 }

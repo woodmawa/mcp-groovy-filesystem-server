@@ -16,8 +16,13 @@ import java.util.regex.Pattern
  * session_source arg and the claim beside it. Absent, nothing changes (phase 1).</p>
  *
  * <p>FS does not own sessions_index: it checks SHAPE here (practice #38) and leaves existence and closure to CS, whose
- * telemetry write files a row for an unknown or closed session as such. Work FS hands to another thread (an async job,
- * the re-index writer) does not carry it -- it falls back to the claim, as before.</p>
+ * telemetry write files a row for an unknown or closed session as such.</p>
+ *
+ * <p>FS 0.9.121 (X86 P3-4): work handed to another thread carries it. A ThreadLocal does not cross to a worker, so
+ * an async CS call queued by a chat's call (re-index, invalidate, range cache, file registry) used to resolve the
+ * session on the writer thread and send the PROCESS CLAIM -- another chat's, with one shared stdio set. {@link #carrying}
+ * wraps an executor so each task runs with the session that was held when it was submitted, and nothing else
+ * (ContextServerClientCallerHeaderSpec CH-4/CH-5). Async execute jobs read it at submit (ExecuteJobVisibilitySpec JV-1b).</p>
  */
 @CompileStatic
 final class CallerSession {
@@ -57,6 +62,39 @@ final class CallerSession {
 
     static void clear() {
         HELD.remove()
+    }
+
+    /** An executor whose tasks run holding the session that was held on the SUBMITTING thread (or none). */
+    static java.util.concurrent.ExecutorService carrying(java.util.concurrent.ExecutorService delegate) {
+        return new CarryingExecutor(delegate)
+    }
+
+    /** Captures at execute() -- which AbstractExecutorService.submit calls on the submitting thread -- and restores after. */
+    static final class CarryingExecutor extends java.util.concurrent.AbstractExecutorService {
+        private final java.util.concurrent.ExecutorService delegate
+
+        CarryingExecutor(java.util.concurrent.ExecutorService delegate) { this.delegate = delegate }
+
+        @Override
+        void execute(Runnable task) {
+            // X86 P3-3: the call's ATTRIBUTION -- its arg, else the session a flow node declared on this thread. The
+            // header lives in AwCallContext, which does not cross threads either; with the claim no longer a fallback,
+            // a flow node's queued CS work would otherwise go out unattributed.
+            final String sid = currentArg() ?: AwCallContext.session()
+            delegate.execute({ ->
+                String previous = setArg(sid)
+                try { task.run() }
+                finally { setArg(previous) }
+            } as Runnable)
+        }
+
+        @Override void shutdown() { delegate.shutdown() }
+        @Override List<Runnable> shutdownNow() { return delegate.shutdownNow() }
+        @Override boolean isShutdown() { return delegate.isShutdown() }
+        @Override boolean isTerminated() { return delegate.isTerminated() }
+        @Override boolean awaitTermination(long timeout, java.util.concurrent.TimeUnit unit) {
+            return delegate.awaitTermination(timeout, unit)
+        }
     }
 
     /** One property added to a tool definition's input schema. Copies; never changes the source map. */

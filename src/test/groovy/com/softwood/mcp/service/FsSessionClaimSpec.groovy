@@ -114,7 +114,10 @@ class FsSessionClaimSpec extends Specification {
         singletonHolds('2026-09-04-09-30')
 
         expect: 'invisible here'
-        svc.readActiveSessionId() == '2026-09-04-09-00'
+        svc.processClaim() == '2026-09-04-09-00'
+
+        and: 'X86 P3-3 (inverted): the claim is not an attribution source -- a call naming no session is attributed to none'
+        svc.readActiveSessionId() == null
     }
 
     def "an unclaimed FS process does NOT adopt the newest global session"() {
@@ -123,6 +126,7 @@ class FsSessionClaimSpec extends Specification {
         singletonHolds('2026-09-04-09-30')
 
         expect: 'unbound -- a wrong session id is worse than an absent one'
+        svc.processClaim() == null
         svc.readActiveSessionId() == null
     }
 
@@ -135,7 +139,7 @@ class FsSessionClaimSpec extends Specification {
         FilesystemTelemetryService reborn = serviceForOwnProcess()
 
         then:
-        reborn.readActiveSessionId() == '2026-09-04-09-00'
+        reborn.processClaim() == '2026-09-04-09-00'   // X86 P3-3: the claim rule lives in processClaim()
     }
 
     def "releasing leaves the process unbound rather than holding a dead session"() {
@@ -148,7 +152,7 @@ class FsSessionClaimSpec extends Specification {
         svc.releaseClaim()
 
         then:
-        svc.readActiveSessionId() == null
+        svc.processClaim() == null
     }
 
     // -------------------------------------------------------------------------

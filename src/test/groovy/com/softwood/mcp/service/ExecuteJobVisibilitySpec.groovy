@@ -109,11 +109,48 @@ class ExecuteJobVisibilitySpec extends Specification {
     }
 
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
-    def 'JV-2 CONTROL: with no declared session the job still falls back to this process claim'() {
+    def 'JV-1b (RED, X86 P3-4): a job submitted on a call naming callerSession=X is filed under X, though this process claims Y'() {
+        given: 'a strict AW, and a process whose claim is ANOTHER chat -- Desktop shares one stdio set between chats'
+        StrictAw aw = new StrictAw().start()
+        AwJobEventClient client = new AwJobEventClient(awUrl: aw.url())
+        client.telemetryService = claimedTo('claim-Y')   // X86 P3-3: the real resolver, not a stub of it
+        registry.jobEventSink = client
+        CountDownLatch release = new CountDownLatch(1)
+
+        when: 'the chat call carries callerSession (the ARG, not the header) and the work runs on another thread'
+        CallerSession.setArg('chat-X')
+        ExecuteJob job = registry.submit('powershell', 'gradle test', workDir, { ExecuteJob j ->
+            release.await(10, TimeUnit.SECONDS)
+            [success: true, exitCode: 0] as Map<String, Object>
+        } as Closure<Map<String, Object>>)
+        CallerSession.clear()
+        release.countDown()
+
+        then: 'both events name the caller, never the claim'
+        waitFor(10000) { aw.of('record_job_event').size() == 2 }
+        aw.of('record_job_event')*.sessionId == ['chat-X', 'chat-X']
+        job.callerSession == 'chat-X'
+
+        cleanup:
+        CallerSession.clear()
+        aw.stop()
+    }
+
+    /** X86 P3-3: a real telemetry service claimed (in memory, no database) to {@code sid}. */
+    private static FilesystemTelemetryService claimedTo(String sid) {
+        FilesystemTelemetryService real = new FilesystemTelemetryService()
+        real.claimSession(sid, 'grp')
+        return real
+    }
+
+    // X86 P3-3: inverted. A job with no declared session used to fall back to this process's claim -- whichever chat
+    // claimed last. The claim is no attribution source: the job's events carry no session.
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    def 'JV-2 (inverted, X86 P3-3): with no declared session the job is filed under NO session, never the process claim'() {
         given:
         StrictAw aw = new StrictAw().start()
         AwJobEventClient client = new AwJobEventClient(awUrl: aw.url())
-        client.telemetryService = Stub(FilesystemTelemetryService) { readActiveSessionId() >> 'claimed-chat' }
+        client.telemetryService = claimedTo('claimed-chat')
         registry.jobEventSink = client
 
         when:
@@ -122,7 +159,7 @@ class ExecuteJobVisibilitySpec extends Specification {
 
         then:
         waitFor(10000) { aw.of('record_job_event').size() == 2 }
-        aw.of('record_job_event')*.sessionId == ['claimed-chat', 'claimed-chat']
+        aw.of('record_job_event')*.sessionId == [null, null]
 
         cleanup:
         aw.stop()

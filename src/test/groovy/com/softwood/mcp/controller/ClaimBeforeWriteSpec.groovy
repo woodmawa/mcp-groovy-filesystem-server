@@ -44,7 +44,7 @@ class ClaimBeforeWriteSpec extends Specification {
         McpController c = new McpController([handler(tool)] as List<ToolHandler>)
         c.globalResponseCapChars = 64000
         FilesystemTelemetryService t = Stub(FilesystemTelemetryService)
-        t.readActiveSessionId() >> claimed
+        t.processClaim() >> claimed   // X86 P3-3: the claimed check asks the claim record, not the attribution resolver
         c.telemetryService = t
         seam(c, 'requireClaimForWrites', chat)
         c

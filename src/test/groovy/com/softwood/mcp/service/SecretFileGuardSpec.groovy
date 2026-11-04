@@ -27,6 +27,8 @@ import java.nio.file.Path
  *   <li>SF-4 (RED): file_read refuses it and returns none of its content; the sibling project file reads</li>
  *   <li>SF-5 (RED): file_write refuses it and the file is unchanged</li>
  *   <li>SF-6 (RED): a content search over a tree that holds it never returns its lines; a sibling's match still comes back</li>
+ *   <li>SF-7 (RED, X86 P3-6.1): exists on it answers allowed:false with the reason, never a bare exists:false; the
+ *       project file still answers exists:true</li>
  * </ul>
  */
 @groovy.transform.CompileDynamic
@@ -145,5 +147,31 @@ class SecretFileGuardSpec extends Specification {
         then:
         out.contains('project-placeholder')
         !out.contains('sf-spec-not-a-real-password')
+    }
+
+    def 'SF-7 (RED): exists on the secret file says not allowed and why; the project file still exists'() {
+        given:
+        Path secret = secretFile()
+        Path project = projectFile()
+
+        when: 'the tool payload is the text of the first content block'
+        Map refused = payload(fileReadService.handleToolCall('file_read', [action: 'exists', path: p(secret)], 1))
+        Map served  = payload(fileReadService.handleToolCall('file_read', [action: 'exists', path: p(project)], 2))
+
+        then: 'the secret file is reported as refused, with the reason -- not as absent'
+        refused.allowed == false
+        (refused.reason as String).contains('signing and Sonatype credentials')
+        !refused.containsKey('exists')
+        !JsonOutput.toJson(refused).contains('sf-spec-not-a-real-password')
+
+        and: 'the project gradle.properties is unaffected'
+        served.exists == true
+        !served.containsKey('allowed')
+    }
+
+    private static Map payload(Object response) {
+        Map outer = new groovy.json.JsonSlurper().parseText(JsonOutput.toJson(response)) as Map
+        String text = (((outer.result as Map).content as List)[0] as Map).text as String
+        return new groovy.json.JsonSlurper().parseText(text) as Map
     }
 }

@@ -46,6 +46,8 @@ class AwJobEventClient implements JobEventSink {
         try {
             // FS 0.9.97 (G2): the session the job was started FOR wins over this process's claim -- the FS companion
             // a flow calls holds none, and its jobs went to AW with sessionId null, invisible to progress.
+            // X86 P3-3: the fallback is the ATTRIBUTION resolver (arg/header on this thread), never the process claim --
+            // a job that named no session is filed under none (ExecuteJobVisibilitySpec JV-2).
             String sid = job.callerSession ?: telemetryService?.readActiveSessionId()
             Map<String, Object> payload = payloadFor(job, status, sid)
             sender.submit({ send(payload) } as Runnable)

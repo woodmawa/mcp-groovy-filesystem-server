@@ -22,7 +22,8 @@ import spock.lang.Specification
  * <h3>Scope: attribution only</h3>
  * The declared session is used for the TELEMETRY row and the unbound warning, nothing else.
  * PLAN-GATE and the read ledger still read this process's own claim -- a flow node's gradle call
- * must not start being gated because its caller declared a session.
+ * must not start being gated because its caller declared a session. (Superseded: FS 0.9.110 gates flow nodes as the
+ * declared session; X86 P3-3 makes the claim no attribution source at all -- NoClaimAttributionSpec.)
  *
  * <h3>Contracts</h3>
  * <ul>
@@ -30,7 +31,7 @@ import spock.lang.Specification
  *       not append the unbound warning</li>
  *   <li>CS-2 CONTROL: unclaimed and no header -- system:fs-unclaimed (FS 0.9.80 SB-2; 'unknown' before) and the warning</li>
  *   <li>CS-3 the header wins over this process's own claim: the caller says whose work it is</li>
- *   <li>CS-4 a blank header is no header</li>
+ *   <li>CS-4 a blank header is no header -- and (X86 P3-3, inverted) the claim does not stand in for it</li>
  *   <li>CS-5 the declared session does not leak into the NEXT request on the same thread</li>
  * </ul>
  */
@@ -61,7 +62,7 @@ class FsCallerSessionSpec extends Specification {
     def 'CS-1 an unclaimed process attributes a declared call to the declared session'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> null
+        t.processClaim() >> null
         McpController c = controller(t)
 
         when:
@@ -75,7 +76,7 @@ class FsCallerSessionSpec extends Specification {
     def 'CS-2 CONTROL: unclaimed with no header files as unknown and warns'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> null
+        t.processClaim() >> null
         McpController c = controller(t)
 
         when:
@@ -89,7 +90,7 @@ class FsCallerSessionSpec extends Specification {
     def 'CS-3 the declared session wins over this process own claim'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'
         McpController c = controller(t)
 
         when:
@@ -99,23 +100,26 @@ class FsCallerSessionSpec extends Specification {
         1 * t.recordToolCall('declared-by-caller', 'tools', _, _, _, _, _, _)
     }
 
-    def 'CS-4 a blank header is no header'() {
+    // X86 P3-3: inverted. A blank header used to fall through to the process claim; the claim is whichever chat
+    // claimed last, so the call now files no session (system:fs-unclaimed), source none, the claim kept as evidence.
+    def 'CS-4 a blank header is no header -- and the claim does not stand in for it (X86 P3-3)'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> 'own-claim'
+        t.processClaim() >> 'own-claim'
         McpController c = controller(t)
 
         when:
         c.handleRequest(call(), '   ')
 
         then:
-        1 * t.recordToolCall('own-claim', 'tools', _, _, _, _, _, _)
+        1 * t.recordToolCall('system:fs-unclaimed', 'tools', _, _, _, _, _,
+            { Map d -> d.session_source == 'none' && d.claim_session == 'own-claim' })
     }
 
     def 'CS-5 the declared session does not leak into the next request'() {
         given:
         FilesystemTelemetryService t = Mock()
-        t.readActiveSessionId() >> null
+        t.processClaim() >> null
         McpController c = controller(t)
 
         when:

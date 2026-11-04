@@ -70,7 +70,10 @@ class McpController {
         boolean chat = requireClaimForWrites != null ? requireClaimForWrites.booleanValue() : isStdioProcess()
         if (!chat || !MUTATING_TOOLS.contains(toolName) || telemetryService == null) return null
         if (toolName == 'execute' && (arguments?.get('action') as String)?.startsWith('job_')) return null
-        if (telemetryService.readActiveSessionId()) return null
+        // X86 P3-3: a call that names its session is attributed and gated under it; otherwise the process claim is the
+        // liveness question ("is this process claimed"), asked of processClaim() -- the claim record, not attribution.
+        if (com.softwood.mcp.service.CallerSession.currentArg() || com.softwood.mcp.service.AwCallContext.session()) return null
+        if (telemetryService.processClaim()) return null
         return ('NOT_CLAIMED: this FS process holds no session claim, so this ' + toolName + ' call would run ' +
                 'unattributed and outside PLAN-GATE. Nothing ran. Claim on THIS connection first: ' +
                 'server_lifecycle action=claim_session sessionId=<id>').toString()
@@ -499,15 +502,18 @@ class McpController {
                 // FS 0.9.58: a session the caller declared wins; then this process's own claim.
                 String declared  = CALLER_SESSION.get()
                 // Caller-session phase 1 (brief 2026-10-21 D1): the chat's own callerSession first; then the header a
-                // flow node declared; then this process's claim -- read with the argument set aside, because
-                // readActiveSessionId answers the argument first, and the row must also say what the claim alone said.
+                // flow node declared. X86 P3-3: never the process claim -- Desktop runs one stdio set for every chat, so
+                // the claim is whichever chat claimed last. The one call filed source 'claim' is the exempt
+                // server_lifecycle claim_session, under the session it claims (its own sessionId argument). The claim
+                // is still read, as EVIDENCE (claim_session column) and for the unbound notice. NoClaimAttributionSpec.
                 String arg = com.softwood.mcp.service.CallerSession.currentArg()
-                String held = com.softwood.mcp.service.CallerSession.setArg(null)
-                String claim
-                try { claim = telemetryService.readActiveSessionId() } finally { com.softwood.mcp.service.CallerSession.setArg(held) }
-                String resolved  = arg ?: declared ?: claim
-                String source    = arg ? 'arg' : (declared ? 'header' : (claim ? 'claim' : 'none'))
-                unbound = (resolved == null)
+                String claim = telemetryService.processClaim()
+                String claiming = (toolName == 'server_lifecycle' && action == 'claim_session') ?
+                    ((arguments.sessionId as String)?.trim() ?: null) : null
+                String resolved  = arg ?: declared ?: claiming
+                String source    = arg ? 'arg' : (declared ? 'header' : (claiming ? 'claim' : 'none'))
+                // Unbound = the PROCESS holds no claim and the call named nobody: the restart notice is about the claim.
+                unbound = (resolved == null && claim == null)
                 callSession = resolved
                 // FS 0.9.80 SB-2: unbound still warns (above), but the row names who made it rather than 'unknown'.
                 String sessionId = resolved ?: 'system:fs-unclaimed'

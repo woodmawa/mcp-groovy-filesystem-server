@@ -81,7 +81,7 @@ class FsUnboundLoudnessSpec extends Specification {
     private McpController controllerWith(McpResponse response, String claimedSession) {
         McpController c = new McpController([handlerReturning(response)])
         FilesystemTelemetryService t = Stub(FilesystemTelemetryService)
-        t.readActiveSessionId() >> claimedSession
+        t.processClaim() >> claimedSession   // X86 P3-3: unbound asks the claim record, not the attribution resolver
         c.telemetryService = t
         c.globalResponseCapChars = 64000
         return c

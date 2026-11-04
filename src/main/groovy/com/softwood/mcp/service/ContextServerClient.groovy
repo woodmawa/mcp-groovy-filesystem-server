@@ -52,11 +52,13 @@ class ContextServerClient {
 
     private static final int MAX_PERSIST_ENTRIES = 150
 
-    private final ExecutorService asyncWriter = Executors.newSingleThreadExecutor { Runnable r ->
+    // FS 0.9.121 (X86 P3-4): carrying -- each queued task holds the callerSession of the call that queued it, so
+    // openCs() declares THAT chat, not this process's claim. ContextServerClientCallerHeaderSpec CH-4/CH-5.
+    private final ExecutorService asyncWriter = CallerSession.carrying(Executors.newSingleThreadExecutor { Runnable r ->
         Thread t = new Thread(r, 'ctx-client-writer')
         t.daemon = true
         t
-    }
+    })
 
     // Active session ID — lazily resolved from context server, cached for session duration
     // package-scoped for McpController access (no private -- @CompileStatic blocks cross-class private field access)

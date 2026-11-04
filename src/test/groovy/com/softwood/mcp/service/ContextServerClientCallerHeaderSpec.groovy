@@ -65,6 +65,68 @@ class ContextServerClientCallerHeaderSpec extends Specification {
         seen == ['2026-09-23-16-22']
     }
 
+    /**
+     * X86 P3-3: a REAL telemetry service claimed to {@code claim} (in memory, no database), so the precedence under test
+     * is the shipped one rather than a stub's copy of it: the call's arg, then the declared header, never the claim.
+     */
+    private ContextServerClient clientWithClaim(String claim) {
+        ContextServerClient c = new ContextServerClient()
+        c.contextServerUrl = "http://127.0.0.1:${server.address.port}".toString()
+        c.structurePersistEnabled = true
+        FilesystemTelemetryService real = new FilesystemTelemetryService()
+        real.claimSession(claim, 'grp')
+        c.telemetryService = real
+        c
+    }
+
+    private boolean waitForSeen(int n, long ms) {
+        long end = System.currentTimeMillis() + ms
+        while (System.currentTimeMillis() < end) { if (seen.size() >= n) return true; Thread.sleep(20) }
+        return seen.size() >= n
+    }
+
+    def 'CH-4 (RED, X86 P3-4): work queued for the writer thread carries the CALLER session, not the process claim'() {
+        given: 'this process claims another chat (Desktop shares one stdio set between chats)'
+        ContextServerClient c = clientWithClaim('claim-Y')
+
+        when: 'a chat call naming callerSession=chat-X triggers a re-index, which runs on the writer thread'
+        CallerSession.setArg('chat-X')
+        try { c.reindexFileAsync('C:/tmp/x.groovy') } finally { CallerSession.clear() }
+
+        then:
+        waitForSeen(1, 5000)
+        seen == ['chat-X']
+    }
+
+    // X86 P3-3: inverted. The second task, submitted with no caller session, used to go out under the process claim
+    // (claim-Y). The claim is no attribution source: it goes out with no session header (X-Mcp-Actor names FS instead).
+    def 'CH-5 CONTROL (X86 P3-4, inverted P3-3): a carried session does not leak into the next task, and the claim does not stand in'() {
+        given:
+        ContextServerClient c = clientWithClaim('claim-Y')
+
+        when: 'one task submitted for chat-X, then one submitted with no caller session at all'
+        CallerSession.setArg('chat-X')
+        try { c.reindexFileAsync('C:/tmp/a.groovy') } finally { CallerSession.clear() }
+        c.reindexFileAsync('C:/tmp/b.groovy')
+
+        then:
+        waitForSeen(2, 5000)
+        seen == ['chat-X', '<none>']
+    }
+
+    def 'CH-6 (X86 P3-3): a flow node declared header session is carried to the writer thread too'() {
+        given:
+        ContextServerClient c = clientWithClaim('claim-Y')
+
+        when: 'a companion call declaring header-H (no arg) queues a re-index'
+        AwCallContext.set('run-1', 'node-1', 'header-H')
+        try { c.reindexFileAsync('C:/tmp/h.groovy') } finally { AwCallContext.clear() }
+
+        then:
+        waitForSeen(1, 5000)
+        seen == ['header-H']
+    }
+
     def 'CH-3: with no active session no header is invented'() {
         when:
         client(null).postWithTimeout('{"jsonrpc":"2.0","id":1,"method":"tools/call"}', 2000)

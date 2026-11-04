@@ -137,7 +137,10 @@ class ExecuteJobRegistry {
             workingDir    : workingDir,
             startedAt     : System.currentTimeMillis(),
             // FS 0.9.97 (G2): read HERE, on the request thread -- the work runs on another, where it is gone.
-            callerSession : AwCallContext.session(),
+            // FS 0.9.121 (X86 P3-4): a chat's callerSession ARG first, then a flow's declared header -- the same
+            // order readActiveSessionId uses. Before this only the header was read, so a chat's async job fell to the
+            // claim. ExecuteJobVisibilitySpec JV-1b.
+            callerSession : CallerSession.currentArg() ?: AwCallContext.session(),
             awRun         : AwCallContext.run(),
             awNode        : AwCallContext.node()
         )
