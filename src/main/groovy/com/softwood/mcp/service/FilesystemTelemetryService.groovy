@@ -271,6 +271,56 @@ class FilesystemTelemetryService {
         }
     }
 
+    /**
+     * FS 0.9.120 caller-session phase 2: record a call refused BEFORE dispatch (CALLER_SESSION_REQUIRED). Decision 436,
+     * same row as CS: filed under 'unknown' -- the call named no session, so none is credited, and unlike
+     * {@link #recordToolCall} the id is NEVER resolved to this process's claim -- with session_source none and what the
+     * claim said as claim_session, the evidence of which chat leaked it. The claim is read on the async writer, not the
+     * caller's thread (practice #260). Fire-and-forget; never throws.
+     */
+    void recordRefusedCall(String toolName, int responseChars, Map<String, Object> args,
+                           String action, String outcome, Map<String, Object> detail) {
+        if (!dbPath) return   // persistence not configured  silent no-op
+        asyncWriter.submit {
+            try {
+                Map<String, Object> row = [
+                    tool_name  : toolName,
+                    server_name: 'filesystem-server',
+                    char_count : responseChars,
+                    is_repeat  : false,
+                    args_hash  : buildArgsHash(args),
+                    action     : action,
+                    outcome    : outcome ?: 'error',
+                    owner_key  : ProcessIdentity.OWNER_KEY
+                ] as Map<String, Object>
+                if (detail) row.putAll(detail)
+                String claim = null
+                try { claim = readActiveSessionId()?.trim() } catch (Exception ignored) { }
+                if (claim && claim != 'unknown') row.put('claim_session', (Object) claim)
+                if (contextServerClient) {
+                    contextServerClient.recordToolCall('unknown', row)
+                } else {
+                    log.debug('refusal telemetry dropped -- no ContextServerClient wired (standalone mode)')
+                }
+            } catch (Exception e) {
+                log.debug('Filesystem refusal telemetry failed (non-fatal): {}', e.message)
+            }
+        }
+    }
+
+    /**
+     * Test seam (FS 0.9.120): wait until every write queued before this call has run. The single-thread writer runs
+     * in order, so a no-op submitted now finishing means everything ahead of it has. True if it drained in time.
+     */
+    boolean drainWrites(long timeoutMs) {
+        try {
+            asyncWriter.submit({ -> null } as java.util.concurrent.Callable).get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+            return true
+        } catch (Exception e) {
+            return false
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Lifecycle
     // -------------------------------------------------------------------------

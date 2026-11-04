@@ -142,6 +142,12 @@ class SecurityService {
         validateWorkingDir(workingDir)
         checkDangerousPatterns(script, executorType)
         checkRestrictedPaths(script)
+        // FS 0.9.120: never let a script read the user-home gradle.properties (secrets). SecretFileGuardSpec SF-2.
+        String secret = SecretFiles.scriptRefusal(script, workingDir)
+        if (secret) {
+            log.warn('Script refused: it names the user-home .gradle/gradle.properties')
+            throw new SecurityException("Script names .gradle/gradle.properties: ${secret}".toString())
+        }
         log.debug('Script validation passed (workingDir={} executor={})', workingDir, executorType)
     }
 

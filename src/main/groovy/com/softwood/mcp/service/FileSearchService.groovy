@@ -140,6 +140,8 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
         (Files.walk(Paths.get(path)) as Stream<Path>).withCloseable { Stream<Path> stream ->
             stream
                 .filter { Path p -> !Files.isDirectory(p) }
+                // FS 0.9.120: never search inside the user-home gradle.properties (secrets). SecretFileGuardSpec SF-6.
+                .filter { Path p -> !SecretFiles.isSecret(p.toString()) }
                 .filter { Path p -> !filePattern || (p.fileName.toString() =~ filePattern) }
                 .each { Path p ->
                     if (results.size() >= maxResults) return  // early exit per-file once cap met

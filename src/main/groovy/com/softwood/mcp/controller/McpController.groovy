@@ -49,6 +49,13 @@ class McpController {
     /** WP2 C1 test seam: null = refuse mutating calls while unclaimed on the chat's stdio process only. */
     Boolean requireClaimForWrites
 
+    /** FS 0.9.120 caller-session phase 2 test seam: null = refuse a call without callerSession on the chat's stdio process only. */
+    Boolean requireCallerSession
+
+    /** FS 0.9.120: tool:action pairs a chat makes before it has a session id, or to find out whether it holds one. */
+    static final Set<String> CALLER_SESSION_EXEMPT =
+        (['server_lifecycle:claim_session', 'server_lifecycle:claim_status', 'server_lifecycle:status'] as Set<String>).asImmutable()
+
     /** WP2 C1: the tools whose calls change something. execute's job_* actions only read a job, so they are not. */
     static final Set<String> MUTATING_TOOLS =
         (['file_write', 'file_lifecycle', 'execute', 'tools', 'worktree'] as Set<String>).asImmutable()
@@ -383,8 +390,13 @@ class McpController {
      */
     private McpResponse handleToolsCall(McpRequest request) {
         Map<String, Object> raw = (request.params?.arguments as Map<String, Object>) ?: [:] as Map<String, Object>
-        if (!raw.containsKey(com.softwood.mcp.service.CallerSession.ARG)) return dispatchToolsCall(request, raw)
-        String arg = (raw.get(com.softwood.mcp.service.CallerSession.ARG) as String)?.trim() ?: null
+        boolean present = raw.containsKey(com.softwood.mcp.service.CallerSession.ARG)
+        String arg = present ? ((raw.get(com.softwood.mcp.service.CallerSession.ARG) as String)?.trim() ?: null) : null
+        if (arg == null) {
+            McpResponse refused = callerSessionRequiredRefusal(request, raw)
+            if (refused != null) return refused
+        }
+        if (!present) return dispatchToolsCall(request, raw)
         Map<String, Object> stripped = new LinkedHashMap<String, Object>(raw)
         stripped.remove(com.softwood.mcp.service.CallerSession.ARG)
         if (arg && !com.softwood.mcp.service.CallerSession.wellFormed(arg)) {
@@ -406,6 +418,39 @@ class McpController {
         } finally {
             com.softwood.mcp.service.CallerSession.setArg(previous)
         }
+    }
+
+    /**
+     * FS 0.9.120 caller-session phase 2 (same rule as CS 1.1.127): a chat's own stdio process refuses a call that does
+     * not say whose it is -- CALLER_SESSION_REQUIRED, nothing runs. Null to proceed. The companion (http) serves flow
+     * nodes and every chat and is never refused; server_lifecycle claim_session / claim_status / status are exempt.
+     * The refusal leaves one telemetry row (decision 436), queued on the async writer -- nothing here waits on I/O
+     * (practice #260). FsCallerSessionRequiredSpec.
+     */
+    private McpResponse callerSessionRequiredRefusal(McpRequest request, Map<String, Object> raw) {
+        boolean chat = requireCallerSession != null ? requireCallerSession.booleanValue() : isStdioProcess()
+        if (!chat) return null
+        String toolName = request.params?.name as String
+        String action = raw?.get('action') as String
+        if (CALLER_SESSION_EXEMPT.contains(toolName + ':' + action)) return null
+        McpResponse refused = McpResponse.toolError(request.id, groovy.json.JsonOutput.toJson([success: false,
+            error: 'CALLER_SESSION_REQUIRED', error_code: 'CALLER_SESSION_REQUIRED',
+            message: 'This call does not say which session it is for: pass callerSession=<the id session-bootstrap ' +
+                     'returned to this chat>; if this chat has none, run session-bootstrap (server_lifecycle ' +
+                     'claim_session, claim_status and status are exempt). Nothing ran.']))
+        if (telemetryService != null) {
+            try {
+                int chars = 0
+                try { chars = estimateResponseSize(refused) } catch (Exception ignored) { }
+                Map<String, Object> args = new LinkedHashMap<String, Object>(raw ?: [:] as Map<String, Object>)
+                args.remove(com.softwood.mcp.service.CallerSession.ARG)
+                Map<String, Object> detail = [error_code: 'CALLER_SESSION_REQUIRED', session_source: 'none'] as Map<String, Object>
+                telemetryService.recordRefusedCall(toolName, chars, args, action, extractOutcome(refused), detail)
+            } catch (Exception e) {
+                log.debug('CALLER_SESSION_REQUIRED telemetry failed (non-fatal): {}', e.message)
+            }
+        }
+        return refused
     }
 
     private McpResponse dispatchToolsCall(McpRequest request, Map<String, Object> arguments) {

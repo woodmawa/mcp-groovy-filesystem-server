@@ -224,6 +224,9 @@ class FsUnboundLoudnessSpec extends Specification {
         System.setProperty('spring.profiles.active', 'stdio')
         McpController c = controllerWith(payloadResponse([ok: true]), null)
         c.contextServerClient = Mock(com.softwood.mcp.service.ContextServerClient)
+        // FS 0.9.120: a chat call without callerSession is now refused before dispatch; in production the notice is
+        // reached through the exempt server_lifecycle claim_status. This spec is about the notice, so the guard is off.
+        c.requireCallerSession = Boolean.FALSE
 
         when:
         McpResponse first  = c.handleRequest(readRequest())
@@ -246,6 +249,7 @@ class FsUnboundLoudnessSpec extends Specification {
         System.setProperty('spring.profiles.active', 'stdio')
         McpController c = controllerWith(payloadResponse([ok: true]), null)
         c.contextServerClient = Mock(com.softwood.mcp.service.ContextServerClient)
+        c.requireCallerSession = Boolean.FALSE   // FS 0.9.120: see RN-1
 
         when:
         McpResponse first  = c.handleRequest(readRequest())
@@ -284,6 +288,7 @@ class FsUnboundLoudnessSpec extends Specification {
         System.setProperty('spring.profiles.active', 'stdio')
         McpController c = controllerWith(payloadResponse([ok: true]), '2026-10-09-10-20')
         c.contextServerClient = Mock(com.softwood.mcp.service.ContextServerClient)
+        c.requireCallerSession = Boolean.FALSE   // FS 0.9.120: else the refusal would pass this vacuously; see RN-1
 
         when:
         McpResponse out = c.handleRequest(readRequest())
@@ -291,6 +296,7 @@ class FsUnboundLoudnessSpec extends Specification {
         then:
         0 * c.contextServerClient.claimPredecessor(_, _, _)
         contentOf(out).size() == 1
+        !groovy.json.JsonOutput.toJson(out).contains('CALLER_SESSION_REQUIRED')
 
         cleanup:
         if (prior == null) System.clearProperty('spring.profiles.active') else System.setProperty('spring.profiles.active', prior)

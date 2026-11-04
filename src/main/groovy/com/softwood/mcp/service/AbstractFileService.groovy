@@ -197,6 +197,12 @@ abstract class AbstractFileService {
                 resolvedPath = absPath.normalize()
             }
 
+            // FS 0.9.120: the user-home gradle.properties holds secrets -- never served, by any name. SecretFileGuardSpec.
+            if (SecretFiles.isSecret(normalized) || SecretFiles.isSecret(resolvedPath.toString())) {
+                log.warn('Path not allowed: the user-home .gradle/gradle.properties is never served')
+                return false
+            }
+
             return allowedDirectories.any { allowedDir ->
                 String normalizedAllowed = pathService.normalizePath(allowedDir)
                 Path allowedAbs = Paths.get(normalizedAllowed).toAbsolutePath()
