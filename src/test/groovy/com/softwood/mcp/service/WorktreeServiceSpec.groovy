@@ -19,8 +19,8 @@ import java.nio.file.Path
  * AW's code harness (agents-working-together WP3) was first written with AW editing files in the worktree itself.
  * Will, 2026-10-09 12:52: better that FS does it, so the protections built into FS apply. This pins both halves:
  * every action against a REAL temporary git repository, asserted on the files and on git's own answers; and the
- * three Claude-facing mechanisms that must not fire on a worktree copy -- the ontology re-index after a write,
- * ONTOLOGY-GATE on a read, PLAN-GATE on a write or a build -- each with its control on a path outside the root.
+ * Claude-facing mechanisms that must not fire on a worktree copy -- the ontology re-index after a write, and
+ * PLAN-GATE on a write or a build -- each with its control on a path outside the root.
  */
 @groovy.transform.CompileDynamic
 @SpringBootTest
@@ -407,40 +407,18 @@ class WorktreeServiceSpec extends Specification {
         PlanGateGuard.isPlannedArtefact(insideFile)
 
         when:
-        String w = guard.checkWrite('replace', insideFile)
+        guard.noteWrite('replace', insideFile)
         String x = guard.checkExecute('gradlew test', wt)
 
         then:
-        w == null
         x == null
         0 * cs.planGateCheck(_, _)
 
         when: 'the control: the same calls on the repository'
-        guard.checkWrite('replace', repo.resolve(FOO).toString())
+        guard.noteWrite('replace', repo.resolve(FOO).toString())
         guard.checkExecute('gradlew test', repo.toString())
 
         then:
         2 * cs.planGateCheck(_, 'sid-1') >> [allow: true]
-    }
-
-    def 'WT-11: ONTOLOGY-GATE is not consulted for a read inside a worktree; outside it is'() {
-        given:
-        String wt = create()
-        ReadResponseHelper helper = Mock()
-        fileReadService.responseHelper = helper
-
-        when:
-        fileReadService.handleToolCall('file_read', [action: 'range', path: Path.of(wt).resolve(FOO).toString(),
-                                                     options: [startLine: 1, maxLines: 2]] as Map<String, Object>, 'wt-gate-in')
-
-        then:
-        0 * helper.checkOntologyGate(*_)
-
-        when: 'the control'
-        fileReadService.handleToolCall('file_read', [action: 'range', path: repo.resolve(FOO).toString(),
-                                                     options: [startLine: 1, maxLines: 2]] as Map<String, Object>, 'wt-gate-out')
-
-        then:
-        1 * helper.checkOntologyGate(*_)
     }
 }

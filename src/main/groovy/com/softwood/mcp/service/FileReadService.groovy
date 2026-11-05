@@ -67,7 +67,6 @@ class FileReadService extends AbstractFileService implements ToolHandler {
     // required=false so unit/integration tests without a live StructureCache bean can run.
     @Autowired(required = false) StructureCache structureCache
     /** FS 0.9.78: a worktree copy shares its stem with the indexed source; the gate is about the source. */
-    @Autowired(required = false) WorktreeRoots worktreeRoots
 
     /** Setter for test injection without ReflectionTestUtils (field is @CompileStatic). */
     void setContextServerClient(ContextServerClient c) { this.contextServerClient = c }
@@ -239,20 +238,16 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   compact     : [type: 'boolean', description: 'Minimal response - omits action/path echo, returns content+hash only. Supported by read, head, tail, range, grep, structure (methods only, no endLine)'],
                                   knownHash   : [type: 'string',  description: 'Optional. file_content_hash from a prior read, for action=read or get_method: unchanged file = {unchanged:true}. Repeats are de-duplicated without it. Do NOT pass to action=range.'],
                                   force       : [type: 'boolean', description: 'Re-send content this chat was already sent (after compaction, or when a subagent made the read). Also overrides the >200-line refusal on action=read.'],
-                                  allowNoLocate: [type: 'boolean', description: 'Read an ontology-indexed file without a prior context_read scope=ontology action=locate. Only content actions are gated (read, head, tail, range, get_method, summary, diff, multi, read_office); grep, multi_grep and structure never need it. Use it when the file is small or non-code.'],
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
                                   toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.'],
                                   endLine     : [type: 'integer', description: 'End line for range, 1-indexed INCLUSIVE -- alternative to maxLines. Accepted because every read response (range, get_method, structure) REPORTS endLine, and file_write action=patch accepts it.']
     ] as Map<String, Object>
 
-    // Keys the read path genuinely reads but the schema has never declared. Each is arguably a
-    // schema bug rather than a legitimate exception, which is why they are named here instead of
-    // being folded silently into the derived set -- a list of four is auditable, a permissive
-    // allowlist is not. knownFileHash is an undeclared alias for knownHash (see dedupedRange);
-    // _blocked is set by this class after dispatch, not by a caller.
+    // Keys the read path genuinely reads but the schema has never declared, named here rather than folded into the
+    // derived set so the list stays auditable. knownFileHash is an undeclared alias for knownHash (see dedupedRange).
     private static final Set<String> UNDECLARED_OPTION_KEYS =
-        ['knownFileHash', '_blocked', 'allowNoLocate', 'intent'] as Set<String>
+        ['knownFileHash'] as Set<String>
 
     private static final Set<String> READ_OPTION_KEYS =
         ((READ_OPTION_SCHEMA.keySet() as Set<String>) + UNDECLARED_OPTION_KEYS) as Set<String>
@@ -335,42 +330,6 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 return McpResponse.toolError(requestId, "file_read '${action}' requires a 'path' parameter (received null).")
             }
 
-            // FS 0.9.26 -- ONTOLOGY-GATE AT DISPATCH, not from a per-action list.
-            //
-            // The gate used to be applied inside doRead, doRange and doGetMethod. Everything else
-            // that returns file content -- grep, head, tail, structure, summary -- walked straight
-            // past it, and those are the CHEAP calls, which is to say the ones actually used. Three
-            // gated actions out of eight was gating the exception. This is the same correction CS
-            // 1.0.52 made when it moved the knowledge dirty-flag into dispatch, ahead of the
-            // handler-registry fast path, for exactly the same reason.
-            //
-            // The exempt set is named EXPLICITLY rather than left to fall through, so an action
-            // added later is gated by default and has to be argued out of the set instead of
-            // quietly missing it. Exempt because they return no file content (exists, stat, info,
-            // checksum, normalize, project_root, allowed_dirs, list, help) or because they carry
-            // no single path (multi, multi_grep, chunk_read, finalise_read). The two multi-path
-            // actions are NOT ungated -- FS 0.9.30 gates both per path inside their own cases,
-            // through the same ReadResponseHelper decision this guard calls. They are named here
-            // because dispatch has no single `path` to ask about, which is a different thing from
-            // being exempt; until 0.9.30 multi_grep really was exempt, and that was the last hole.
-            if (responseHelper != null && path && !(worktreeRoots?.contains(path)) &&
-                // FS 0.9.43 N11: 'grep' joins the exempt set. It is the navigation primitive the
-                // gate should be sending people TO -- it returns matching lines with their numbers,
-                // which is what locate returns -- and gating it made the cheapest way to find a
-                // symbol cost a locate first. Its hits are recorded as locate evidence below.
-                // FS 0.9.52: 'structure' joins it -- it returns signatures and line numbers, not
-                // content, and practice #78 tells the caller to use it INSTEAD of reading. Gating
-                // the recommended navigation call behind a locate is the ceremony this session
-                // measured on a 31-line interface and a file the chat had written seconds before.
-                !(action in ['exists', 'stat', 'info', 'checksum', 'normalize', 'project_root',
-                             'allowed_dirs', 'list', 'help', 'chunk_read', 'finalise_read',
-                             'grep', 'multi', 'multi_grep', 'structure'])) {
-                String gateNorm = pathService.normalizePath(path)
-                McpResponse gateBlock =
-                    responseHelper.checkOntologyGate(gateNorm, options, requestId, action)
-                if (gateBlock != null) return gateBlock
-            }
-
             switch (action) {
                 // FS 0.9.40 K2 (decision 206): every content action asks the served ledger.
                 case 'read' : return servedRead(path, options, requestId)
@@ -397,51 +356,10 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         String h2 = gh ?: structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(gr)
                         if (h2) contextServerClient.recordServedKeyAsync(path, gkey, h2)
                     }
-                    recordGrepEvidence(gr, path)   // FS 0.9.54: a grep hit is locate evidence (N11)
                     return gr
                 }
-                case 'multi_grep'   : {
-                    // FS 0.9.30 -- W3 gated multi_grep here, per path, as "the last file_read action
-                    // that returned file content with no gate at all". FS 0.9.43 N11 then exempted
-                    // single-file grep because matching lines ARE the navigation the gate exists to
-                    // send people to. multi_grep returns the same lines across several files, so the
-                    // two positions could not both stand: on 2026-09-22 one grep per file was free
-                    // and the same pattern across eight files was refused eight times, with eight
-                    // locate calls demanded that could not answer the question the grep asked.
-                    // FS 0.9.52: multi_grep is exempt on the same terms as grep. `multi` (whole files)
-                    // stays gated below.
-                    McpResponse mg = servedMultiGrep(options, requestId)
-                    recordGrepEvidence(mg, null)   // FS 0.9.54: each file with matches is locate evidence
-                    return mg
-                }
-                case 'multi'        : {
-                    // Fix D (v0.8.54) guarded this case with a SECOND, different gate: it asked
-                    // isOntologyIndexed(stem), returned BLOCKED_UNRANGED_INDEXED_READ, and handed
-                    // back a bare file stem as the locate_query. That stem is the defect CS 1.0.62
-                    // shipped to remove -- 6 files named CLAUDE.md, 2,012 names shared across
-                    // source_files -- so the hint resolved to a different file and left the caller
-                    // blocked. FS 0.9.30 routes this case through the one decision every other
-                    // action uses, and the hint is now the node_id CS resolved.
-                    //
-                    // The hash-only exemptions are kept: a knownHash supplied for the path, or
-                    // compact=true, means the caller wants change detection, not content, and no
-                    // content tokens are at risk. They are passed for `multi` only -- multi_grep
-                    // has no hash-only mode, so there is nothing there to exempt.
-                    Map<String, Object> mr = gateMultiPaths(
-                        (options.paths as List<String>) ?: [], options, 'multi', true)
-                    List<Map> blocked = mr.get('blocked') as List<Map>
-                    if (blocked) {
-                        List<String> allowed = mr.get('allowed') as List<String>
-                        if (!allowed) return McpResponse.toolError(requestId,
-                            groovy.json.JsonOutput.toJson([error  : 'BLOCKED_ONTOLOGY_GATE',
-                                blocked: blocked,
-                                hint   : 'All requested files are ontology-indexed and unlocated. locate each locate_query below, then retry.']))
-                        options = new HashMap<String, Object>(options as Map<String, Object>)
-                        options.paths = allowed
-                        options._blocked = blocked
-                    }
-                    return servedMulti(options, requestId)
-                }
+                case 'multi_grep'   : return servedMultiGrep(options, requestId)
+                case 'multi'        : return servedMulti(options, requestId)
                 case 'info'         : return metaReader.doInfo(path, requestId)
                 case 'summary'      : return metaReader.doSummary(path, requestId)
                 case 'stat'         : return metaReader.doStat(path, requestId)
@@ -533,57 +451,6 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
             log.error('file_read error: {}', sanitize(e.message), e)
             return McpResponse.toolError(requestId, sanitize(e.message))
         }
-    }
-
-    /**
-     * FS 0.9.30 -- W3: the ontology gate for the two multi-path read actions.
-     *
-     * <p>Asks {@link ReadResponseHelper#ontologyGateEntry} once per path -- the same decision the
-     * dispatch guard makes for single-path actions -- and splits the request into what may proceed
-     * and what is blocked. It replaces Fix D (v0.8.54), which asked a different question of a
-     * different method and answered with a bare file stem.</p>
-     *
-     * <p>Fails open, per path: a path that throws is allowed through, exactly as Fix D did. A gate
-     * that cannot reach its evidence must not stop work.</p>
-     *
-     * @param hashOnlyExempt {@code true} for {@code multi}, where a supplied {@code knownHashes}
-     *        entry or {@code compact=true} means the caller wants change detection rather than
-     *        content. {@code multi_grep} has no such mode, so it passes {@code false} rather than
-     *        inheriting an exemption that would mean nothing there.
-     * @return {@code [allowed: List<String>, blocked: List<Map>]}
-     */
-    private Map<String, Object> gateMultiPaths(List<String> rawPaths, Map<String, Object> options,
-                                               String action, boolean hashOnlyExempt) {
-        List<String> allowed = []
-        List<Map> blocked    = []
-        if (responseHelper == null || !rawPaths) {
-            return [allowed: rawPaths, blocked: blocked] as Map<String, Object>
-        }
-        Map knownHashMap = (options.knownHashes instanceof Map) ? (options.knownHashes as Map) : [:]
-        boolean compactMode = options.compact as boolean ?: false
-        rawPaths.each { String p ->
-            try {
-                String np = pathService.normalizePath(p)
-                if (hashOnlyExempt) {
-                    boolean hasKnownHash = knownHashMap.containsKey(np) || knownHashMap.containsKey(p)
-                    if (hasKnownHash || compactMode) { allowed << p; return }
-                }
-                Map<String, Object> entry = responseHelper.ontologyGateEntry(np, options, action)
-                if (entry == null) { allowed << p; return }
-                Map<String, Object> blockedEntry = new LinkedHashMap<String, Object>(entry)
-                blockedEntry.put('file', p)
-                if (hashOnlyExempt && contextServerClient != null) {
-                    // FS 0.8.69 FIX-6A carried forward: hand back the hash so the caller can retry
-                    // with options.knownHashes and get the ~15-token unchanged response.
-                    String knownHash = contextServerClient.getKnownHashForPath(np)
-                    if (knownHash) blockedEntry.put('known_hash', knownHash)
-                }
-                blocked << blockedEntry
-            } catch (Exception ignored) {
-                allowed << p
-            }
-        }
-        return [allowed: allowed, blocked: blocked] as Map<String, Object>
     }
 
     private void fireRegistryUpsert(String path, McpResponse resp) {
@@ -719,7 +586,6 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
         if (!held.isEmpty() && send.isEmpty()) {
             Map<String, Object> resp = [action: 'multi', count: held.size(), unchanged_count: held.size(), files: held,
                 hint: 'Every file that could be read was already sent to this chat. ' + SERVED_FORCE_HINT] as Map<String, Object>
-            if (options.get('_blocked')) resp.put('blocked', options.get('_blocked'))
             return textResponse(requestId, resp)
         }
         Map<String, Object> narrowed = options
@@ -750,37 +616,6 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
     }
 
     /** multi_grep: a path this grep already ran on (same content) is not searched again. */
-    /**
-     * FS 0.9.54 -- the files a grep or multi_grep actually found matches in become locate evidence.
-     *
-     * <p>N11 exempted both from ONTOLOGY-GATE because a match names the file and the line, which is
-     * what locate returns -- but only file_search recorded its hits, so the very next get_method on a
-     * file grep had just found was refused (live 2026-09-22; WP5d read 14). Paths are normalised with
-     * pathService, the form the gate checks against. A file with no match is not evidence of anything,
-     * so it is not recorded. Never fails the read.</p>
-     */
-    private void recordGrepEvidence(McpResponse r, String singlePath) {
-        if (r == null || r.error != null || responseHelper == null) return
-        try {
-            Map<String, Object> payload = parseResponsePayload(r)
-            if (payload == null) return
-            List<String> found = []
-            if (singlePath != null) {
-                if (((payload.get('matchCount') ?: 0) as int) > 0) found << pathService.normalizePath(singlePath)
-            } else {
-                ((payload.get('results') ?: []) as List).each { Object o ->
-                    Map m = o as Map
-                    if (((m.get('matchCount') ?: 0) as int) > 0 && m.get('path')) {
-                        found << pathService.normalizePath(m.get('path') as String)
-                    }
-                }
-            }
-            if (found) responseHelper.recordLocateEvidence(found)
-        } catch (Exception e) {
-            log.debug('recordGrepEvidence failed (non-fatal): {}', e.message)
-        }
-    }
-
     private McpResponse servedMultiGrep(Map<String, Object> options, Object requestId) {
         List<String> paths = (options.get('paths') as List<String>) ?: []
         if (contextServerClient == null || !paths || !options.get('pattern')) return contentReader.doMultiGrep(options, requestId)
@@ -799,7 +634,6 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
         if (send.isEmpty()) {
             Map<String, Object> resp = [action: 'multi_grep', pattern: options.get('pattern'), fileCount: 0,
                 matchingFiles: 0, totalMatches: 0, results: []] as Map<String, Object>
-            if (options.get('_blocked')) resp.put('blocked', options.get('_blocked'))
             r = textResponse(requestId, resp)
         } else if (!held.isEmpty()) {
             Map<String, Object> narrowed = new HashMap<String, Object>(options)

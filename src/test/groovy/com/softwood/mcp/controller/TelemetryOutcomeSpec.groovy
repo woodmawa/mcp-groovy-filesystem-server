@@ -125,15 +125,6 @@ class TelemetryOutcomeSpec extends Specification {
         McpController.extractOutcome(resp) == 'plan_gate_fired'
     }
 
-    def 'CT-M3-2: an ontology-gate toolError is refused, and CT-16B-4 above is the control that error still exists'() {
-        given:
-        McpResponse resp = McpResponse.toolError(1,
-            '{"error":"BLOCKED_ONTOLOGY_GATE","blocked":[],"hint":"locate first"}')
-
-        expect:
-        McpController.extractOutcome(resp) == 'refused'
-    }
-
     // =========================================================================
     // CT-16B-5 — truncated response
     // =========================================================================
@@ -163,11 +154,6 @@ class TelemetryOutcomeSpec extends Specification {
         McpController.extractOutcome(buildTextResponse([unchanged: true, already_served: ['1-10']])) == 'unchanged'
     }
 
-    def 'CT-K2-3: an ontology-gate refusal is refused, not a successful read'() {
-        expect:
-        McpController.extractOutcome(buildTextResponse([error: 'BLOCKED_ONTOLOGY_GATE', locate_query: 'x'])) == 'refused'
-    }
-
     // optimised-learning B3: the code FS sends to CS as telemetry.error_code (tool_call_telemetry.error_code),
     // so WS4 can count caller mistakes from telemetry. outcome is unchanged -- lights read it.
     // Proven end to end only live, after the restart (practice #3454): Release 1 checkpoint item 4.
@@ -188,7 +174,7 @@ class TelemetryOutcomeSpec extends Specification {
 
     def 'CT-OL-2: a content-level refusal is coded, an ordinary success is not'() {
         expect:
-        McpController.errorCodeOf(buildTextResponse([error: 'BLOCKED_ONTOLOGY_GATE', locate_query: 'x'])) == 'BLOCKED_ONTOLOGY_GATE'
+        McpController.errorCodeOf(buildTextResponse([error: 'RANGE_TOO_WIDE', hint: 'x'])) == 'RANGE_TOO_WIDE'
         McpController.errorCodeOf(buildTextResponse([content: 'class A {}', file_content_hash: 'abc'])) == null
         McpController.errorCodeOf(null) == null
     }

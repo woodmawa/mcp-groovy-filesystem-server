@@ -111,9 +111,9 @@ class SecretFileGuardSpec extends Specification {
 
         when:
         String refused = JsonOutput.toJson(fileReadService.handleToolCall('file_read',
-            [action: 'read', path: p(secret), options: [allowNoLocate: true]], 1))
+            [action: 'read', path: p(secret), options: [:]], 1))
         String served = JsonOutput.toJson(fileReadService.handleToolCall('file_read',
-            [action: 'read', path: p(project), options: [allowNoLocate: true]], 2))
+            [action: 'read', path: p(project), options: [:]], 2))
 
         then:
         !refused.contains('sf-spec-not-a-real-password')

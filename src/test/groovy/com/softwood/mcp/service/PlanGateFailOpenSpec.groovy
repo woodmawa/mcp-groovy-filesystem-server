@@ -45,10 +45,9 @@ class PlanGateFailOpenSpec extends Specification {
         client.planGateCheck(_, _) >> null
 
         when:
-        String msg = guard.checkWrite('write', repoFile)
+        guard.noteWrite('write', repoFile)
 
         then:
-        msg == null
         1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'file_write', null, 'plan_gate_unavailable',
             { Map d -> d.duration_ms instanceof Number && (d.duration_ms as long) >= 0 })
     }
@@ -59,7 +58,7 @@ class PlanGateFailOpenSpec extends Specification {
         client.planGateCheck(_, _) >> { Thread.sleep(60); null }
 
         when:
-        guard.checkWrite('write', repoFile)
+        guard.noteWrite('write', repoFile)
 
         then:
         1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'file_write', null, 'plan_gate_unavailable',
@@ -72,10 +71,9 @@ class PlanGateFailOpenSpec extends Specification {
         client.planGateCheck(_, _) >> [allow: true, reason: 'already-gated']
 
         when:
-        String msg = guard.checkWrite('replace', repoFile)
+        guard.noteWrite('replace', repoFile)
 
         then:
-        msg == null
         1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'file_write', null, 'plan_gate_answered',
             { Map d -> d.duration_ms instanceof Number })
     }
@@ -83,15 +81,15 @@ class PlanGateFailOpenSpec extends Specification {
     def 'PGF-4: a refusal is reported plan_gate_answered'() {
         given:
         telemetry.readActiveSessionId() >> 'sid-1'
-        client.planGateCheck(_, _) >> [allow: false, reason: 'first-call', component: 'r/Foo',
+        client.planGateCheck(_, _) >> [allow: false, reason: 'first-call', component: 'r:git',
                                        practices: [[id: 7, title: 't', summary: 's']]]
 
         when:
-        String msg = guard.checkWrite('write', repoFile)
+        String msg = guard.checkExecute('git push origin main', tmp.resolve('repo').toString())
 
         then:
         msg != null
-        1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'file_write', null, 'plan_gate_answered', _)
+        1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'execute', null, 'plan_gate_answered', _)
     }
 
     def 'PGF-5: a throwing client is reported plan_gate_unavailable'() {
@@ -100,10 +98,9 @@ class PlanGateFailOpenSpec extends Specification {
         client.planGateCheck(_, _) >> { throw new RuntimeException('read timed out') }
 
         when:
-        String msg = guard.checkWrite('write', repoFile)
+        guard.noteWrite('write', repoFile)
 
         then:
-        msg == null
         1 * telemetry.recordToolCall('sid-1', 'plan_gate', 0, _, 'file_write', null, 'plan_gate_unavailable', _)
     }
 
@@ -112,7 +109,7 @@ class PlanGateFailOpenSpec extends Specification {
         telemetry.readActiveSessionId() >> null
 
         when:
-        guard.checkWrite('write', repoFile)
+        guard.noteWrite('write', repoFile)
 
         then:
         0 * client.planGateCheck(_, _)

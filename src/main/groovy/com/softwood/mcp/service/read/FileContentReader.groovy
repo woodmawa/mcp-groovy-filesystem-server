@@ -559,10 +559,6 @@ class FileContentReader extends AbstractFileService {
             totalMatches  : totalMatches,
             results       : results
         ] as Map<String, Object>
-        // FS 0.9.30 -- W3: paths the ontology gate refused are REPORTED, not silently dropped.
-        // options._blocked has been set by the multi guard since v0.8.54 and read by nobody, so a
-        // mixed request quietly came back with fewer files than were asked for and said nothing.
-        if (options.get('_blocked')) mgResp.put('blocked', options.get('_blocked'))
         if (dirErrors) results.addAll(dirErrors)
         if (expanded) mgResp.put('expanded', expanded)
         if (notSearched > 0) {
@@ -697,8 +693,6 @@ class FileContentReader extends AbstractFileService {
             resp._sizeCapped = true
             resp._sizeCappedNote = ("multi aggregate output capped at ${multiReadCapChars} chars (~${multiReadCapChars / 4000 as int}K tokens). Use fewer files or head/range for targeted reads." as String)
         }
-        // FS 0.9.30 -- W3: as doMultiGrep -- blocked paths are reported rather than dropped.
-        if (options.get('_blocked')) resp.put('blocked', options.get('_blocked'))
         return textResponse(requestId, resp)
     }
 

@@ -4,7 +4,8 @@ import spock.lang.Specification
 import spock.lang.Unroll
 
 /**
- * FS 0.9.56 -- the planAck description every gated tool shows names all three verdicts.
+ * FS 0.9.56 -- the planAck description every gated tool shows names all three verdicts. Since FS 0.9.122 the
+ * gated tools are execute and tools (outward git); file_write is never refused and offers no planAck.
  *
  * <p>CS 1.1.17 added {@code c} (applies, my call already complies) beside {@code y} (applies, I am
  * changing the call) and {@code n} (not about this task). CS's refusal text teaches it at the moment
@@ -53,14 +54,21 @@ class PlanAckDescriptionSpec extends Specification {
         where:
         name               | handler
         'ExecuteService'   | new ExecuteService()
-        'FileWriteService' | new FileWriteService()
         'ToolsService'     | new ToolsService()
     }
 
-    def "PAD-2: the three tools show one description, not three copies"() {
+    def "PAD-2: the two gated tools show one description, not two copies"() {
         expect:
-        [new ExecuteService(), new FileWriteService(), new ToolsService()]
+        [new ExecuteService(), new ToolsService()]
             .collect { findPlanAck(it.getToolDefinitions())?.get('description') }
             .unique().size() == 1
+    }
+
+    def "PAD-3: FS 0.9.122 -- file_write offers no planAck, because a write is never refused"() {
+        // Decision 440: PLAN-GATE gates outward git only, so a file_write has no show to acknowledge.
+        // Asserted on the runtime tool definition, the value the model is shown.
+        expect:
+        findPlanAck(new FileWriteService().getToolDefinitions()) == null
+        findPlanAck(new ExecuteService().getToolDefinitions()) != null
     }
 }

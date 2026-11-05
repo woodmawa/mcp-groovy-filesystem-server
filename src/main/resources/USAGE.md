@@ -99,7 +99,7 @@ file_read action=list path=<dir> options={knownHash:"abc123"}  → {unchanged:tr
 
 ### Rules
 - Always pass `expectedHash` on every mutating action
-- **PLAN-GATE (FS 0.9.37, ack since 0.9.44):** the first writing action per (session, file component) is refused once with a list of practices. Repeat the call with `options.planAck="<id>:y|n,..."` naming each id shown (y = applies, n = does not) and it passes; without an ack it is refused once more, then allowed and recorded unjudged. Pass `options.intent` so the practices fit the task rather than the class name
+- **No PLAN-GATE on writes (FS 0.9.122):** a write is never refused for practices. A write to a file in a repository is noted to CS so a gradle run sent in the same batch for that repo is refused (PENDING_EDIT); `planAck` and `intent` are not file_write options
 - `path` must be at TOP LEVEL of arguments, not inside options
 - Never use sequential replace calls without re-reading between them → use multi_replace
 - After any patch, re-read before next patch (line numbers shift)
@@ -163,12 +163,14 @@ Key options:
 - `options.intent` — one sentence on what a build/git call is for (FS 0.9.38). PLAN-GATE uses it to pick the practices it shows.
 - `options.grepPattern` — Java regex applied to stdout lines after execution. Only matching lines returned. Supports full Java regex including `|` alternation (unlike Windows `findstr`). Example: `"MessagesRequestBuilder\\.class$|EventsRequestBuilder\\.class$"`. Use this instead of piping to findstr for any output filtering.
 
-### PLAN-GATE (FS 0.9.37-0.9.39)
+### PLAN-GATE (FS 0.9.37; outward git only since FS 0.9.122)
 
-The first `execute` per (session, repo) whose statements run `git` or `gradlew` is refused once with
-a list of practices; **repeat the call with `options.planAck="<id>:y|n,..."` naming each id it showed and it passes**
-(FS 0.9.44; an unacked retry is refused once more, then allowed and recorded unjudged). Pass `options.intent` so the
-practices fit the task.
+FS asks CS about every `execute` whose statements run `git` or `gradlew`. CS refuses only two things: an
+**outward git** command (`push`, `tag` -- not tag listing or deletion) the first time per (session, repo), with a
+list of practices -- **repeat the call with `options.planAck="<id>:y|c|n,..."` naming each id it showed and it
+passes** (an unacked retry is refused once more, then allowed and recorded unjudged); and a gradle run sent in the
+same batch as a write to the same repo (PENDING_EDIT -- send the run on its own once the edit has returned). Every
+other git or gradle call is allowed. Pass `options.intent` so the practices fit the task.
 - Only `git`/`gradlew` in command position count - text in strings, comments, here-strings and
   heredocs does not. `cmd /c`, `powershell -Command` and `bash -c` bodies are rescanned.
 - Not gated: read-only git (status/log/diff/show/rev-parse...), listing forms (`tag -l`,
@@ -264,7 +266,7 @@ Claude does not normally call this tool. Every path is relative to the worktree 
 - `remove` worktree, repoDir -- `git worktree remove --force`, then prune.
 
 ### What is different inside a worktree
-The ontology re-index after a write, ONTOLOGY-GATE on reads and PLAN-GATE on writes and executes stand down for
+The ontology re-index after a write and PLAN-GATE on writes and executes stand down for
 paths under the worktree root (`WorktreeRoots`). Allowed directories, hashes, the structural guard and telemetry do not.
 
 ## server_lifecycle

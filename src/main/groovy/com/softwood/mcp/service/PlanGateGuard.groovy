@@ -10,10 +10,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.regex.Pattern
 
 /**
- * FS 0.9.37 C1 -- PLAN-GATE at the two mutating entry points FS owns: file_write (every action that
- * writes) and execute when the script runs gradlew or git. CS decides (it owns the corpus and the
- * per-session record); this class only asks, and turns a refusal into a tool error that names the
- * practices and says a retry passes.
+ * FS 0.9.37 C1 -- PLAN-GATE at the mutating entry points FS owns. Since FS 0.9.122 (decision 440) it refuses
+ * only outward git (push, tag) and a gradle run sent in the same batch as an edit to its repo; a file_write is
+ * noted for that same-batch check and never refused. CS decides (it owns the corpus and the per-session
+ * record); this class only asks, and turns a refusal into a tool error that names the practices and says a
+ * retry passes.
  *
  * Every uncertain path passes: no CS, no claimed session, a timeout, a malformed answer. A gate that
  * blocks on its own dependency is the W17 shape. Those passes are counted as 'unavailable' here,
@@ -74,32 +75,19 @@ class PlanGateGuard {
     final AtomicInteger emptyRefusals = new AtomicInteger()
 
     /**
-     * @param intent  FS 0.9.45 WP-2b -- what this write is FOR, in the caller's own words.
-     *
-     * <p>Until now only execute carried an intent, so a file_write was gated on the COMPONENT alone:
-     * the gate answered "what does the corpus know about ContextWriteActionRouter" when the question
-     * was "what does it know about the thing I am about to do to it", and the component is the one
-     * part of that the caller could not have got wrong. CS 1.0.96 WP-3c added the selection on
-     * intent and the fallback to the session's last stated intent; this is the parameter that makes
-     * the stated half reachable. Optional: without one the gate falls back exactly as before.</p>
-     *
-     * @return a refusal message, or null to proceed.
+     * FS 0.9.122 (CS re-architecture WP1.1, decision 440): a chat's write is never refused any more -- PLAN-GATE
+     * gates outward git only. CS is still told about the write, because the same-batch check (PENDING_EDIT) needs
+     * to know a repo was just edited when a gradle call for it arrives. Whatever CS answers is ignored: a note,
+     * not a question. planAck and intent left file_write with the refusal they existed to answer.
      */
-    String checkWrite(String action, String path, String planAck = null, String intent = null) {
-        if (!enforced || !path || NON_MUTATING_WRITE_ACTIONS.contains(action)) return null
-        // FS 0.9.52: only a write that is a PLAN is gated. On 2026-09-22 a scratch alpha.txt in
-        // claude-sync drew three CS migration practices, hello.txt drew a sandbox-tool practice,
-        // and ARC-STATE.md drew the ontology-first rule -- 24 of 43 judged shows were 'n', and the
-        // wrong half was almost entirely files that are not part of any codebase. A plan lives in
-        // a repository; a note, a probe file or a brief does not.
-        if (!isPlannedArtefact(path)) return null
-        if (worktreeRoots?.contains(path)) return null
-        Map<String, Object> args = [tool: 'file_write', path: path] as Map<String, Object>
-        // FS 0.9.44 WP-2a: the judgement DT gives at the retry, passed straight through to CS.
-        if (planAck) args.put('planAck', planAck)
-        if (intent)  args.put('intent', intent)
-        return ask(args)
+    void noteWrite(String action, String path) {
+        if (!enforced || !path || NON_MUTATING_WRITE_ACTIONS.contains(action)) return
+        // FS 0.9.52: only a file inside a repository is a plan; a note, a probe file or a brief is not.
+        if (!isPlannedArtefact(path)) return
+        if (worktreeRoots?.contains(path)) return
+        ask([tool: 'file_write', path: path] as Map<String, Object>)
     }
+
 
     /** Extensions that are never a plan, wherever they live. */
     static final Set<String> SCRATCH_EXTENSIONS =

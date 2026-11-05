@@ -81,7 +81,7 @@ class ToolSurfaceContractSpec extends Specification {
                 args.path = f.toString()
                 opts = [pattern: 'probe', paths: [f.toString()], method: 'x', compareTo: f.toString(),
                         startLine: 1, sessionId: 'no-such-read-session', chunkIndex: 0,
-                        allowNoLocate: true, topic: 'file_read']
+                        topic: 'file_read']
                 if (action == 'list' || action == 'allowed_dirs' || action == 'project_root') args.path = tempDir.toString()
                 break
             case 'file_write':
@@ -89,7 +89,7 @@ class ToolSurfaceContractSpec extends Specification {
                 args.content = 'x'
                 opts = [oldText: 'a', newText: 'b', replacements: [], sessionId: 'no-such-write-session',
                         chunkIndex: 0, totalChunks: 1, transform: 'add_import', 'import': 'java.util.List',
-                        expectedHash: '000000000000', planAck: '0:n']
+                        expectedHash: '000000000000']
                 break
             case 'file_list':
             case 'file_search':

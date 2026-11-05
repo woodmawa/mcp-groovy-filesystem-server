@@ -677,48 +677,6 @@ class ContextServerClient {
 
     // getOntologyRange (FS 0.9.2) removed by WP2 (decision 384): its only caller was the retired ontology-first warning.
 
-    // FS 0.8.69 FIX-6A: look up the known content_hash for a path from CS file_hash_registry,
-    // via context_read scope=ontology action=file-hash. Used to enrich BLOCKED_UNRANGED_INDEXED_READ
-    // errors so Claude can pass options.knownHash on a retry. Sync, 500ms hard timeout. Fail-silent.
-    String getKnownHashForPath(String normalizedPath) {
-        if (!isCsReachable() || !normalizedPath) return null
-        try {
-            Map<String, Object> callBody = [
-                jsonrpc: '2.0', method: 'tools/call', id: 1,
-                params : [name: 'context_read',
-                          arguments: [scope: 'ontology', action: 'file-hash', query: normalizedPath]]
-            ] as Map<String, Object>
-            String json = groovy.json.JsonOutput.toJson(callBody)
-            URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = openCs(url)
-            try {
-                conn.requestMethod = 'POST'
-                conn.doOutput      = true
-                conn.connectTimeout = 500
-                conn.readTimeout    = 500
-                conn.setRequestProperty('Content-Type', 'application/json')
-                conn.outputStream.withWriter('UTF-8') { it << json }
-                if (conn.responseCode == 200) {
-                    String resp = conn.inputStream.getText('UTF-8')
-                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
-                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
-                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
-                    if (text) {
-                        Map data = (Map) new groovy.json.JsonSlurper().parseText(text)
-                        if (data?.get('found') == true) {
-                            return data.get('content_hash') as String
-                        }
-                    }
-                }
-            } finally { conn.disconnect() }
-        } catch (ConnectException e) {
-            onCsConnectFailure()
-        } catch (Exception e) {
-            log.debug('getKnownHashForPath failed (non-fatal): {}', e.message)
-        }
-        return null
-    }
-
     // Fix F (v0.8.54): notify CS that a file has been written and needs reindexing.
     // Fire-and-forget via asyncWriter -- never blocks the write path.
     void invalidateFileAsync(String filePath) {
@@ -876,69 +834,9 @@ class ContextServerClient {
     }
 
 
-    // -----------------------------------------------------------------------
-    // E-5: ONTOLOGY-GATE session-locate tracking + telemetry (FS 0.9.8)
-    // -----------------------------------------------------------------------
-
-    /**
-     * FS 0.9.26 -- asks CS whether this exact PATH may be read, and takes its answer.
-     *
-     * <p>Replaces the two halves that used to live here and cancelled each other out. FS resolved
-     * the file by its bare STEM through a fuzzy locate and bailed out whenever the resolved path
-     * differed from the file being read -- and in this codebase the stem usually resolves to the
-     * SPEC, so the gate almost never fired. The other half, {@code locateCalledThisSession}, read an
-     * in-process Set whose only writer, {@code recordLocateCalled}, HAD NO CALLERS ANYWHERE. Fix one
-     * and every read blocks; fix the other and nothing changes. Measured before the repair: the gate
-     * had blocked once, on 2026-05-29, while 21 sessions in 30 days read files with zero locates.</p>
-     *
-     * <p>Neither fact belonged in this process. CS serves {@code locate} and CS owns the ontology,
-     * so CS answers both -- one question, one authority, no second copy to drift.</p>
-     *
-     * <p>{@code sessionId} is passed EXPLICITLY by the caller and must be this process's CLAIMED
-     * session. CS deliberately does not resolve it: a gate check arrives over HTTP and lands in the
-     * shared companion, which is not the chat. That is the same distinction that made owner_key
-     * useless for FB-2.</p>
-     *
-     * @return the gate answer, or {@code null} on any error/timeout/CS-down (caller fails open)
-     */
-    Map<String, Object> ontologyGateCheck(String path, String sessionId) {
-        if (!isCsReachable() || !path) return null
-        try {
-            Map<String, Object> args = [scope: 'ontology', action: 'gate_check', path: path]
-            if (sessionId) args.put('sessionId', sessionId)
-            Map<String, Object> callBody = [
-                jsonrpc: '2.0', method: 'tools/call', id: 1,
-                params : [name: 'context_read', arguments: args]
-            ] as Map<String, Object>
-            String json = groovy.json.JsonOutput.toJson(callBody)
-            URL url = new URL("${contextServerUrl}/mcp")
-            HttpURLConnection conn = openCs(url)
-            try {
-                conn.requestMethod  = 'POST'
-                conn.doOutput       = true
-                conn.connectTimeout = 500
-                conn.readTimeout    = 500
-                conn.setRequestProperty('Content-Type', 'application/json')
-                conn.outputStream.withWriter('UTF-8') { it << json }
-                if (conn.responseCode == 200) {
-                    String resp = conn.inputStream.getText('UTF-8')
-                    Map parsed = (Map) new groovy.json.JsonSlurper().parseText(resp)
-                    List content = ((parsed?.get('result') as Map)?.get('content') as List)
-                    String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
-                    if (text) return (Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)
-                }
-            } finally { conn.disconnect() }
-        } catch (ConnectException e) {
-            onCsConnectFailure()
-        } catch (Exception e) {
-            log.debug('ontologyGateCheck failed (fail-open) [{}]: {}', path, e.message)
-        }
-        return null
-    }
-
     /**
      * FS 0.9.37 C1 -- PLAN-GATE, asked of CS (which owns the corpus). Same transport and the same
-     * explicit-session rule as {@link #ontologyGateCheck}. A slightly longer read timeout: the
+     * explicit-session rule as every FS call to CS. A slightly longer read timeout: the
      * selector is a corpus query, not an index lookup.
      *
      * @return CS's answer, or {@code null} on any error/timeout/CS-down (the caller passes through)
@@ -1073,8 +971,7 @@ class ContextServerClient {
      *
      * <p>{@code session_id} and {@code owner_key} are passed as DATA. CS deliberately does not
      * resolve either: this arrives over HTTP and is served by the shared companion, which is
-     * neither this process nor this chat -- the same reason {@code ontologyGateCheck} passes
-     * {@code sessionId} explicitly.</p>
+     * neither this process nor this chat.</p>
      *
      * <p>Called from {@code FilesystemTelemetryService}'s async writer thread, never from the MCP
      * dispatch path (practice #260: zero blocking I/O on the hot path).</p>
@@ -1208,63 +1105,6 @@ class ContextServerClient {
             log.debug('recordToolDescriptions failed (ignored): {}', e.message)
         }
         return false
-    }
-
-    /**
-     * Writes a {@code session_observations} correction entry to CS asynchronously, recording
-     * that an ontology-gate block occurred for {@code fileStem} on {@code action}.
-     * Fire-and-forget. Mirrors the SQL-GATE observation write in
-     * {@code ContextLifecycleActionRouter.handleExecuteSql}.
-     *
-     * @param fileStem  file name without extension (e.g. "DistillationService")
-     * @param action    the file_read action that was blocked (e.g. "read", "range", "get_method")
-     */
-    void writeOntologyGateObservationAsync(String fileStem, String action) {
-        if (!isCsReachable()) return
-        String stem = fileStem
-        String act  = action
-        String sid  = resolveSessionId() ?: 'unknown'
-        asyncWriter.submit({
-            try {
-                Map<String, Object> body = [
-                    jsonrpc: '2.0', method: 'tools/call', id: 1,
-                    params : [
-                        name     : 'context_write',
-                        arguments: [
-                            scope             : 'session',
-                            type              : 'observation',
-                            action            : 'add',
-                            component         : 'FileContentReader',
-                            tool_called       : "file_read:${act}",
-                            // FS 0.9.42 WP-1a: a refusal is the gate working, not a correction.
-                            signal_type       : 'gate',
-                            source            : 'system',
-                            fault             : 'caller',
-                            description       : "ONTOLOGY-GATE blocked: '${stem}' is indexed but locate was not called this session. " +
-                                               "Use context_read scope=ontology action=locate query=${stem} before file_read.",
-                            correction_applied: 'Block returned BLOCKED_ONTOLOGY_GATE. Call locate first or pass allowNoLocate=true to override.',
-                            severity          : 'warn',
-                            sessionId         : sid
-                        ]
-                    ]
-                ] as Map<String, Object>
-                URL url = new URL("${contextServerUrl}/mcp")
-                HttpURLConnection conn = openCs(url)
-                try {
-                    conn.requestMethod = 'POST'
-                    conn.doOutput     = true
-                    conn.connectTimeout = 2000
-                    conn.readTimeout    = 3000
-                    conn.setRequestProperty('Content-Type', 'application/json')
-                    conn.outputStream.withWriter('UTF-8') { Writer w ->
-                        w.write(groovy.json.JsonOutput.toJson(body))
-                    }
-                    conn.responseCode  // consume
-                } finally { conn.disconnect() }
-            } catch (Exception e) {
-                log.debug('writeOntologyGateObservation async failed [{}:{}]: {}', stem, act, e.message)
-            }
-        } as Runnable)
     }
 
     @PreDestroy

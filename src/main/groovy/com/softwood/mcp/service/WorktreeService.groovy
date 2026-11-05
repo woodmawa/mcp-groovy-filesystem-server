@@ -69,7 +69,7 @@ Actions: create|read|outline|edit|diff|hashes|apply|remove. A worktree is a dire
 - hashes(worktree, files[]): SHA-256 of each file, null when missing.
 - apply(worktree, repoDir, edited{file: originalSha|new}): copy the changed files onto the main tree, only if each is unchanged there since the worktree was made. Nothing is written on a conflict. Does not commit.
 - remove(worktree, repoDir): git worktree remove.
-No ontology gate, plan gate or re-index applies inside a worktree; apply re-indexes what it changes in the main tree.'''
+No plan gate or re-index applies inside a worktree; apply re-indexes what it changes in the main tree.'''
 
     @Autowired WorktreeRoots roots
     @Autowired FileReplaceService replaceService

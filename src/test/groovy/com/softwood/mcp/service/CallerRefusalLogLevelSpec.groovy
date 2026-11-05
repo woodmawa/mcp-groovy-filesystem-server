@@ -58,7 +58,7 @@ class CallerRefusalLogLevelSpec extends Specification {
         Path dir = Files.createDirectories(tempDir.resolve('adir'))
 
         when:
-        def r = fileReadService.handleToolCall('file_read', [action: 'read', path: p(dir), options: [allowNoLocate: true]], 1)
+        def r = fileReadService.handleToolCall('file_read', [action: 'read', path: p(dir), options: [:]], 1)
 
         then:
         r != null

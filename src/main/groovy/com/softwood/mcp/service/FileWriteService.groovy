@@ -181,8 +181,6 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                   encoding    : [type: 'string',  description: 'File encoding (default UTF-8)'],
                                   backup      : [type: 'boolean', description: 'Create .backup file before writing (default false)'],
                                   expectedHash: [type: 'string',  description: 'MANDATORY for replace|patch|multi_replace|server_transform: 12-char SHA-256 prefix from prior read/write. Absent = hard error. Always read the file first and pass the returned file_content_hash.'],
-                planAck     : [type: 'string',  description: PlanGateGuard.PLAN_ACK_DESCRIPTION],
-                                  intent      : [type: 'string',  description: 'FS 0.9.45: what this write is FOR, in your own words -- "adding the reinforced stamp to the success path", not "editing a file". PLAN-GATE selects practices on it; without one it selects on the class name alone, which is the part of the question you could not have got wrong. Also kept on the retrieval ledger, so what the gate showed you can be scored afterwards. Optional, and free text.'],
                                   mkdirs      : [type: 'boolean', description: 'Create parent dirs if needed (default true)'],
                                   sessionId   : [type: 'string',  description: 'Chunk session ID (required for chunk_write, finalise_write, abort_write, chunk_status)'],
                                   chunkIndex  : [type: 'integer', description: 'Chunk index 0-based (required for chunk_write)'],
@@ -293,10 +291,8 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                     "Ensure 'content' is at the top level of the arguments object, not nested inside options.")
             }
 
-            // FS 0.9.37 C1: PLAN-GATE on the first write per component this session.
-            String planRefusal = planGateGuard?.checkWrite(action, path, options?.planAck as String,
-                                                       options?.intent as String)
-            if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
+            // FS 0.9.122: tell CS a repo was edited, for the same-batch gradle check. Never refuses.
+            planGateGuard?.noteWrite(action, path)
 
             McpResponse response
             switch (action) {

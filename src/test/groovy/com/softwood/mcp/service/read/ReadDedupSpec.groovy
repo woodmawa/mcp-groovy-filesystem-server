@@ -95,10 +95,10 @@ class ReadDedupSpec extends Specification {
         given:
         def f = file('a.txt', 200)
         // FS 0.9.118: ranges are at most 80 lines (RangeWidthGuardSpec); the windows here were 100/101.
-        call('range', f, [startLine: 1, maxLines: 80, allowNoLocate: true])
+        call('range', f, [startLine: 1, maxLines: 80])
 
         when:
-        Map p = payload(call('range', f, [startLine: 20, maxLines: 30, allowNoLocate: true]))
+        Map p = payload(call('range', f, [startLine: 20, maxLines: 30]))
 
         then:
         p.unchanged == true
@@ -109,10 +109,10 @@ class ReadDedupSpec extends Specification {
     def 'CT-RD-2: an overlapping range returns only the new lines'() {
         given:
         def f = file('b.txt', 200)
-        call('range', f, [startLine: 1, maxLines: 80, allowNoLocate: true])
+        call('range', f, [startLine: 1, maxLines: 80])
 
         when:
-        Map p = payload(call('range', f, [startLine: 50, maxLines: 80, allowNoLocate: true]))
+        Map p = payload(call('range', f, [startLine: 50, maxLines: 80]))
 
         then:
         p.startLine == 81
@@ -121,57 +121,57 @@ class ReadDedupSpec extends Specification {
         p.already_served == ['1-80']
 
         and: 'and the new lines are now served too'
-        payload(call('range', f, [startLine: 100, maxLines: 20, allowNoLocate: true])).unchanged == true
+        payload(call('range', f, [startLine: 100, maxLines: 20])).unchanged == true
     }
 
     def 'CT-RD-3: force returns the full range'() {
         given:
         def f = file('c.txt', 50)
-        call('range', f, [startLine: 1, maxLines: 50, allowNoLocate: true])
+        call('range', f, [startLine: 1, maxLines: 50])
 
         expect:
-        payload(call('range', f, [startLine: 1, maxLines: 50, force: true, allowNoLocate: true])).lines == 50
+        payload(call('range', f, [startLine: 1, maxLines: 50, force: true])).lines == 50
     }
 
     def 'CT-RD-4: a changed file is served in full'() {
         given:
         def f = file('d.txt', 50)
-        call('range', f, [startLine: 1, maxLines: 50, allowNoLocate: true])
+        call('range', f, [startLine: 1, maxLines: 50])
         hash = '112233445566'
 
         expect:
-        payload(call('range', f, [startLine: 1, maxLines: 50, allowNoLocate: true])).lines == 50
+        payload(call('range', f, [startLine: 1, maxLines: 50])).lines == 50
     }
 
     def 'CT-RD-5: get_method is keyed by the method'() {
         given:
         def f = tempDir.resolve('G.groovy').toFile()
         f.text = 'class G {\n  def alpha() {\n    1\n  }\n  def beta() {\n    2\n  }\n}\n'
-        Map first = payload(call('get_method', f, [method: 'alpha', allowNoLocate: true]))
+        Map first = payload(call('get_method', f, [method: 'alpha']))
 
         expect:
         !first.containsKey('unchanged')
-        payload(call('get_method', f, [method: 'alpha', allowNoLocate: true])).unchanged == true
-        !payload(call('get_method', f, [method: 'beta', allowNoLocate: true])).containsKey('unchanged')
+        payload(call('get_method', f, [method: 'alpha'])).unchanged == true
+        !payload(call('get_method', f, [method: 'beta'])).containsKey('unchanged')
     }
 
     def 'CT-RD-6: grep is keyed by pattern and options'() {
         given:
         def f = file('e.txt', 30)
-        call('grep', f, [pattern: 'line1', allowNoLocate: true])
+        call('grep', f, [pattern: 'line1'])
 
         expect:
-        payload(call('grep', f, [pattern: 'line1', allowNoLocate: true])).unchanged == true
-        !payload(call('grep', f, [pattern: 'line1', contextLines: 2, allowNoLocate: true])).containsKey('unchanged')
+        payload(call('grep', f, [pattern: 'line1'])).unchanged == true
+        !payload(call('grep', f, [pattern: 'line1', contextLines: 2])).containsKey('unchanged')
     }
 
     def 'CT-RD-7: a cache answer is classified unchanged'() {
         given:
         def f = file('h.txt', 20)
-        call('range', f, [startLine: 1, maxLines: 20, allowNoLocate: true])
+        call('range', f, [startLine: 1, maxLines: 20])
 
         expect:
-        McpController.extractOutcome(call('range', f, [startLine: 1, maxLines: 10, allowNoLocate: true])) == 'unchanged'
+        McpController.extractOutcome(call('range', f, [startLine: 1, maxLines: 10])) == 'unchanged'
     }
 
     def 'CT-RD-8: interval arithmetic'() {

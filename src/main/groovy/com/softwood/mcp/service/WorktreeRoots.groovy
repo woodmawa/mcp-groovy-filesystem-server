@@ -15,11 +15,9 @@ import java.nio.file.Paths
  * Claude's own reads and writes are wrong for them:</p>
  * <ul>
  *   <li>the ontology re-index after a write would index the copy as a second node for the same class;</li>
- *   <li>ONTOLOGY-GATE decides on the file's stem, so a read of the copy would be refused for want of a locate on
- *       the original;</li>
  *   <li>PLAN-GATE treats any file under a {@code .git} as a planned artefact, and a worktree has one.</li>
  * </ul>
- * Those three ask this class and stand down. Everything about file integrity -- allowed directories, the hash
+ * Those two ask this class and stand down. Everything about file integrity -- allowed directories, the hash
  * check, the structural guard, telemetry -- is unchanged there.
  */
 @Component

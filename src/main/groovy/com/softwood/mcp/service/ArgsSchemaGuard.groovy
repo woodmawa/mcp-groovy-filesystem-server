@@ -39,7 +39,7 @@ final class ArgsSchemaGuard {
 
     /** Option keys the tool's code reads that its schema does not declare (same derivation as {@link #EXTRA_TOP}). */
     static final Map<String, Set<String>> EXTRA_OPTIONS = [
-        file_read : ['_blocked', 'action', 'content', 'contentPattern', 'documentPlan', 'expectedHash', 'format',
+        file_read : ['action', 'content', 'contentPattern', 'documentPlan', 'expectedHash', 'format',
                      'headers', 'keyColumn', 'knownFileHash', 'outputFormat', 'presentationPlan', 'queryPlan', 'range',
                      'rows', 'sheet', 'slides', 'templatePath', 'workbookPlan'] as Set<String>,
         file_write: ['action', 'content', 'documentPlan', 'force', 'forceBinary', 'format', 'fromLine', 'fuzzy',

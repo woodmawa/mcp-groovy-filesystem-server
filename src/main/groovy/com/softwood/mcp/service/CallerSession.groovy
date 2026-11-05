@@ -11,7 +11,7 @@ import java.util.regex.Pattern
  * this process's claim names whichever chat claimed last. A chat now passes {@code callerSession} (the id its
  * session-bootstrap returned) on its calls. {@code McpController} reads and strips it before the unread-argument guard
  * and any handler, checks its shape, and holds it here for that call only, on the request thread.
- * {@link FilesystemTelemetryService#readActiveSessionId} answers it first, so PLAN-GATE, the ontology gate, the read
+ * {@link FilesystemTelemetryService#readActiveSessionId} answers it first, so PLAN-GATE, the read
  * ledger and every call to CS made on the request thread follow it; the call's telemetry row is filed under it with
  * session_source arg and the claim beside it. Absent, nothing changes (phase 1).</p>
  *
