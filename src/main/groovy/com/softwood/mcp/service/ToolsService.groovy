@@ -232,9 +232,19 @@ Developer toolchain. Actions:
                                                 // WS10-C (decision 375): the test tiers in gradle/test-tiers.gradle
                                                 'testFast', 'checkTiering'].asImmutable()
 
+    /**
+     * FS 0.9.125 (chain feb90148): project-defined Test tasks, by name shape -- test or integrationTest followed by an
+     * upper-case letter or digit (testJava25, integrationTestJava25), and releaseGate. A name that merely starts with the
+     * letters test (testsDeleteAll) is not one. ToolsGradleAllowlistSpec TA-5/TA-6.
+     */
+    static final java.util.regex.Pattern PROJECT_TEST_TASK =
+        java.util.regex.Pattern.compile('^(?:(?:test|integrationTest)(?:[A-Z0-9][A-Za-z0-9]*)?|releaseGate)$')
+
     /** Each token of a (possibly multi-task) subcommand that is not allowed, e.g. 'packageMcpbThin installMcpbLocal'. */
     static List<String> rejectedGradleTasks(String subcommand) {
-        return (subcommand ?: '').trim().split(/\s+/).toList().findAll { String t -> t && !(t in GRADLE_ALLOWED) }
+        return (subcommand ?: '').trim().split(/\s+/).toList().findAll { String t ->
+            t && !GRADLE_ALLOWED.contains(t) && !PROJECT_TEST_TASK.matcher(t).matches()
+        }
     }
 
     private McpResponse doGradle(String subcommand, List<String> args, String workingDir,

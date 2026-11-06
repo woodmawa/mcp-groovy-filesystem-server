@@ -2913,3 +2913,8 @@ CS re-architecture Phase 2 WP2.4, FS half (CS decision 443). Released with CS 1.
 - **NOT_CLAIMED deleted.** `McpController.notClaimedRefusal` (WP2 C1, FS 0.9.107: a mutating call on an unclaimed chat process refused before dispatch), its `requireClaimForWrites` seam and `MUTATING_TOOLS` are gone. Every chat call must name its session (`CALLER_SESSION_REQUIRED`, FS 0.9.120) and one that names it was already let through, so with both guards live it could not fire. A claim says the chat is alive; it is not needed to write.
 - Specs: ClaimOptionalForWritesSpec CW-1 (an unclaimed chat process runs a write that names its session, across all five mutating tools) and CW-2 (a write naming none is refused CALLER_SESSION_REQUIRED, never NOT_CLAIMED) -- both green on 0.9.123 with NOT_CLAIMED switched on, which is the proof it was unreachable. ClaimBeforeWriteSpec deleted with the code. Full suite 843/0.
 - AW book chapter 11 (The Session Claim and Telemetry) edited in place.
+
+## [0.9.125] (2026-11-06)
+Released with CS 1.1.135 (session 2026-11-05-13-19, chain feb90148).
+- **Project-defined test tasks are allowed.** `tools action=gradle` (and so gradle-test-summary `task=`) refused integrationTest, integrationTestJava25, testJava25 and releaseGate, which groovy-libraries defines; the caller fell back to raw gradlew through execute and lost the flow's result parsing. `ToolsService.PROJECT_TEST_TASK` allows `test` / `integrationTest` followed by an upper-case letter or digit, and `releaseGate`; a name that only starts with the letters test (testsDeleteAll) is still refused.
+- Specs: ToolsGradleAllowlistSpec TA-5, TA-6 (TA-5 red first; TA-6 is the control).

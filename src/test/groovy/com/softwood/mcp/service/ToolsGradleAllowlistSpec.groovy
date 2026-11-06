@@ -36,4 +36,23 @@ class ToolsGradleAllowlistSpec extends Specification {
         expect:
         ToolsService.rejectedGradleTasks('test') == []
     }
+
+    // FS 0.9.125 (chain feb90148): projects define their own Test tasks (groovy-libraries: integrationTest,
+    // integrationTestJava25, testJava25, releaseGate). Refused, gradle-test-summary could not run them and the
+    // caller fell back to raw gradlew through execute, losing the flow's result parsing.
+    def 'TA-5 project-defined test tasks are allowed by name shape'() {
+        expect:
+        ToolsService.rejectedGradleTasks(task) == []
+
+        where:
+        task << ['integrationTest', 'integrationTestJava25', 'testJava25', 'releaseGate', 'testFast integrationTest']
+    }
+
+    def 'TA-6 CONTROL a task that only starts with the letters test is still refused'() {
+        expect:
+        ToolsService.rejectedGradleTasks(task) == [task]
+
+        where:
+        task << ['testsDeleteAll', 'testerTask', 'integrationTestsWipe-x']
+    }
 }
