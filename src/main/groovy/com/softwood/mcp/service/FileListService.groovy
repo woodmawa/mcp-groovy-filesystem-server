@@ -146,7 +146,9 @@ action=list returns listing_hash. Pass as options.knownHash on repeat calls to g
         if (isCompact(options)) {
             List<Map<String, Object>> slim = results.collect { compactPathEntry(it) }
             // estimate size and truncate if needed
-            int estChars = slim.sum { Map m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } as int
+            // FS 0.9.126 (chain 8cc8d12f): sum{} over an EMPTY list is null, and null as int threw
+            // NPE on a zero-match pattern -- '?: 0' so no match answers count:0, entries:[].
+            int estChars = (slim.sum { Map m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } ?: 0) as int
             if (estChars > listResponseCapChars) {
                 slim = []; int acc = 0
                 for (Map<String, Object> e : results.collect { compactPathEntry(it) }) {
@@ -159,7 +161,7 @@ action=list returns listing_hash. Pass as options.knownHash on repeat calls to g
             if (childrenCapped) r._sizeCapped = true
             return textResponse(requestId, r)
         }
-        int estChars = results.sum { Map<String,Object> m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } as int
+        int estChars = (results.sum { Map<String,Object> m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } ?: 0) as int
         if (estChars > listResponseCapChars) {
             List<Map<String, Object>> trimmed = []; int acc = 0
             for (Map<String, Object> e : results) {
@@ -228,7 +230,7 @@ action=list returns listing_hash. Pass as options.knownHash on repeat calls to g
         // FIX-D: cap response size
         int totalList = results.size()
         boolean listCapped = false
-        int estChars = results.sum { Map<String,Object> m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } as int
+        int estChars = (results.sum { Map<String,Object> m -> (m.values().sum { Object v -> (v?.toString()?.length() ?: 0) } as int) + 10 } ?: 0) as int
         if (estChars > listResponseCapChars) {
             List<Map<String, Object>> trimmed = []; int acc = 0
             for (Map<String, Object> e : results) {

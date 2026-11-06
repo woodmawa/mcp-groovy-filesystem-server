@@ -267,8 +267,14 @@ Developer toolchain. Actions:
         boolean withProgress = progressFor(tasks, awEvents != null && AwCallContext.run() != null) &&
             !configurationCacheOn(workingDir)
         List<String> cmd = gradleCommand(gradleCmd, tasks, args, withProgress ? GradleProgress.initScriptFile() : null)
-        return runTool(cmd, workingDir, timeout, "gradle ${subcommand}", requestId,
-            withProgress ? "gradle ${subcommand}".toString() : null)
+        // FS 0.9.126 (decision 451): an edit under workingDir is refused REPO_BUILDING while this runs.
+        File inFlight = GradleInFlight.begin(workingDir, subcommand)
+        try {
+            return runTool(cmd, workingDir, timeout, "gradle ${subcommand}", requestId,
+                withProgress ? "gradle ${subcommand}".toString() : null)
+        } finally {
+            GradleInFlight.end(inFlight)
+        }
     }
 
     private McpResponse doMvn(String subcommand, List<String> args, String workingDir,

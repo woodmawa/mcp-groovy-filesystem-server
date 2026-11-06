@@ -218,7 +218,8 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                                   before      : [type: 'string', description: 'server_transform add_method: insert before this method (optional)'],
                                   raw         : [type: 'boolean', description: 'action=write only (append never unescapes): skip the escape pass entirely so backslash-n/t/r in content survive verbatim. USE THIS FOR SOURCE CODE -- a Groovy string literal containing \\n is otherwise converted to a real newline and will not compile. The response reports an `unescaped` block whenever the pass changed something.'],
                                   allowStructuralEdit: [type: 'boolean', description: 'replace|patch|multi_replace: bypass the brace/paren delta guard, e.g. to repair orphaned braces (FS 0.9.6)'],
-                                  suppressCodeAppendWarning: [type: 'boolean', description: 'append on a code file: allow it (otherwise refused CODE_APPEND, nothing written)']
+                                  suppressCodeAppendWarning: [type: 'boolean', description: 'append on a code file: allow it (otherwise refused CODE_APPEND, nothing written)'],
+                                  allowWhileBuilding: [type: 'boolean', description: 'FS 0.9.126: write a source or build file even though a gradle run on its repo is in flight (otherwise refused REPO_BUILDING, nothing written)']
                               ]]
                 ],
                 required  : ['action', 'path']
@@ -289,6 +290,27 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                     "file_write 'append' requires a non-empty 'content' parameter (received " +
                     (content == null ? 'null' : 'an empty string') + "). " +
                     "Ensure 'content' is at the top level of the arguments object, not nested inside options.")
+            }
+
+            // FS 0.9.126 (decision 451, class edit-test-same-batch): the other half of PENDING_EDIT -- an
+            // edit while a gradle run on the same repo is still in flight. The run compiled the old source,
+            // so its verdict would be read against code it never saw. GradleInFlight.
+            if (path && MUTATING_ACTIONS.contains(action) && !(options.allowWhileBuilding as Boolean)
+                    && GradleInFlight.guarded(path)) {
+                Map<String, Object> holder = GradleInFlight.holding(pathService.normalizePath(path))
+                if (holder != null) {
+                    return McpResponse.toolError(requestId, new groovy.json.JsonBuilder([
+                        success   : false,
+                        error     : 'REPO_BUILDING',
+                        error_code: 'REPO_BUILDING',
+                        building  : holder.workingDir,
+                        tasks     : holder.tasks,
+                        since     : holder.startedAt,
+                        hint      : ('Nothing written: gradle ' + holder.tasks + ' is still running on ' + holder.workingDir +
+                                     ' and compiled the source before this edit. Wait for the run to end, then write. ' +
+                                     'options.allowWhileBuilding=true writes anyway.').toString()
+                    ]).toString())
+                }
             }
 
             // FS 0.9.122: tell CS a repo was edited, for the same-batch gradle check. Never refuses.

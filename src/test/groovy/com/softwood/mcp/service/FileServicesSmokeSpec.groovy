@@ -92,6 +92,32 @@ class FileServicesSmokeSpec extends Specification {
     // FileListService
     // -----------------------------------------------------------------------
 
+    def "FL-NM: file_list children with a pattern that matches nothing answers count 0, not an NPE (compact=#compact, chain 8cc8d12f)"() {
+        given:
+        File dir = java.nio.file.Files.createTempDirectory('fl-nomatch').toFile()
+        dir.deleteOnExit()
+        File f = new File(dir, 'alpha.txt')
+        f.text = 'x'
+        f.deleteOnExit()
+
+        when:
+        McpResponse r = fileListService.handleToolCall('file_list', [
+            action : 'children',
+            path   : dir.absolutePath,
+            options: [compact: compact, pattern: 'zzz-no-such']
+        ], 'test-fl-nm')
+
+        then:
+        r.error == null
+        def result = new groovy.json.JsonSlurper().parseText(
+            r.result.content[0].text as String) as Map
+        result.count == 0
+        result.entries == []
+
+        where:
+        compact << [true, false]
+    }
+
     def "FileListService registers one tool definition"() {
         expect:
         fileListService.canHandle('file_list')
