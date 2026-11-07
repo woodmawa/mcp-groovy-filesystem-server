@@ -6,6 +6,8 @@ import com.softwood.mcp.service.write.FileContentWriter
 import com.softwood.mcp.service.write.FilePatchService
 import com.softwood.mcp.service.transform.FileTransformService
 import com.softwood.mcp.service.write.FileReplaceService
+import com.softwood.mcp.service.write.WriteRegion
+import com.softwood.mcp.service.read.RangeCoverage
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import jakarta.annotation.PostConstruct
@@ -51,6 +53,11 @@ class FileWriteService extends AbstractFileService implements ToolHandler {
 
     private static final Set<String> MUTATING_ACTIONS =
         ['write', 'append', 'replace', 'patch', 'multi_replace', 'finalise_write', 'server_transform', 'write_office'] as Set
+
+    /** FS 0.9.127 read efficiency (a): the edits that change PART of a file return the region they changed. */
+    private static final Set<String> REGION_ACTIONS = ['replace', 'multi_replace', 'patch', 'server_transform'] as Set
+    /** Above this the before-image is not taken and the write answers as it did before 0.9.127. */
+    private static final long REGION_MAX_BYTES = 2_000_000L
 
     // v0.8.74: DB-driven tool description -- loaded from CS help_sections at startup.
     // section_key='tool_desc_file_write' for compact, 'tool_desc_file_write_verbose' for verbose.
@@ -316,6 +323,20 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
             // FS 0.9.122: tell CS a repo was edited, for the same-batch gradle check. Never refuses.
             planGateGuard?.noteWrite(action, path)
 
+            // FS 0.9.127 (a)/(b): the file as it is before the edit, and the hash the read ledger holds it under.
+            List<String> beforeLines = null
+            String beforeHash = null
+            if (path && REGION_ACTIONS.contains(action)) {
+                try {
+                    String bnp = pathService.normalizePath(path)
+                    File bf = new File(bnp)
+                    if (isPathAllowed(bnp) && bf.isFile() && bf.length() <= REGION_MAX_BYTES) {
+                        beforeHash  = structureCache?.getHash(bnp)
+                        beforeLines = WriteRegion.linesOf(bf.getText((options.encoding as String) ?: 'UTF-8'))
+                    }
+                } catch (Exception ignored) { beforeLines = null }
+            }
+
             McpResponse response
             switch (action) {
                 case 'write'         : response = contentWriter.doWrite(path, content, options, requestId); break
@@ -349,6 +370,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                 try {
                     afterWrite(pathService.normalizePath(path), extractFileHash(response))
                 } catch (Exception ignored) {}
+                if (beforeLines != null) response = withRegion(path, beforeLines, beforeHash, options, response, requestId)
             }
             return response
 
@@ -392,6 +414,74 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                 contextServerClient.invalidateFileAsync(normalizedPath)
             }
         }
+    }
+
+    /**
+     * FS 0.9.127 read efficiency (a) and (b), handoff 2026-11-07. Measured: 8.1% of read tokens in 7 days went on a
+     * file the same session had written in the previous five minutes. A write moved the hash the read ledger is keyed
+     * on, so the chat was sent again lines it had just written and lines it already held.
+     *
+     * <p>(a) The response carries {@code region}: the changed lines plus context ({@link WriteRegion}), its line numbers
+     * and the new file_content_hash, and the ledger records that region as served at the new hash. (b) What this chat
+     * held at the old hash is carried to the new one, moved past the edit. Both records are made before the response
+     * returns ({@link ContextServerClient#recordRangeCoverageSync}), so a read straight after cannot overtake them.
+     * Only THIS chat's holdings move: the ledger is per caller session, and another chat is sent the edit.</p>
+     *
+     * <p>Never fails the write: any error here returns the response as the edit produced it.</p>
+     */
+    McpResponse withRegion(String path, List<String> beforeLines, String beforeHash, Map<String, Object> options,
+                           McpResponse response, Object requestId) {
+        try {
+            String np = pathService.normalizePath(path)
+            File f = new File(np)
+            if (!f.isFile()) return response
+            Map<String, Object> payload = parsePayload(response)
+            String newHash = structureCache?.getHash(np)
+            if (payload == null || !newHash) return response
+            WriteRegion region = WriteRegion.of(beforeLines,
+                WriteRegion.linesOf(f.getText((options.encoding as String) ?: 'UTF-8')))
+            Map<String, Object> rm = region.toResponse(newHash)
+            if (contextServerClient != null) {
+                List<List<Integer>> held = (beforeHash && beforeHash != newHash) ? heldAt(path, np, beforeHash) : []
+                List<List<Integer>> carried = region.carry(held)
+                List<List<Integer>> served = new ArrayList<List<Integer>>(region.regionInterval())
+                served.addAll(carried)
+                rm.put('served_recorded', (Object) recordServed(path, np, served, newHash))
+                if (!carried.isEmpty()) rm.put('carried_forward', (Object) RangeCoverage.describe(carried))
+            }
+            payload.put('region', (Object) rm)
+            return textResponse(requestId, payload)
+        } catch (Exception e) {
+            log.debug('withRegion skipped (non-fatal): {}', e.message)
+            return response
+        }
+    }
+
+    /** Intervals this chat holds at {@code hash}, under the path as written and as normalised (the ledger keys on the string). */
+    private List<List<Integer>> heldAt(String path, String np, String hash) {
+        List<List<Integer>> held = new ArrayList<List<Integer>>(contextServerClient.rangeCoverage(path, hash))
+        if (np != path) held.addAll(contextServerClient.rangeCoverage(np, hash))
+        return RangeCoverage.merge(held)
+    }
+
+    private boolean recordServed(String path, String np, List<List<Integer>> served, String hash) {
+        List<List<Integer>> merged = RangeCoverage.merge(served)
+        if (merged.isEmpty()) return false
+        boolean ok = contextServerClient.recordRangeCoverageSync(path, merged, hash)
+        if (np != path) ok = contextServerClient.recordRangeCoverageSync(np, merged, hash) && ok
+        return ok
+    }
+
+    private static Map<String, Object> parsePayload(McpResponse resp) {
+        try {
+            if (resp?.result == null) return null
+            List content = resp.result.get('content') as List
+            if (!content) return null
+            String text = (content[0] as Map)?.get('text') as String
+            if (!text) return null
+            Object parsed = new groovy.json.JsonSlurper().parseText(text)
+            return parsed instanceof Map ? new LinkedHashMap<String, Object>((Map<String, Object>) parsed) : null
+        } catch (Exception ignored) { return null }
     }
 
     // -----------------------------------------------------------------------

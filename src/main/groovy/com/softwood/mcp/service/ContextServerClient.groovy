@@ -563,6 +563,25 @@ class ContextServerClient {
         } as Runnable)
     }
 
+    /**
+     * FS 0.9.127 read efficiency (a)/(b): record served intervals NOW, on the caller's thread, so a read made straight
+     * after the write that served them cannot reach CS ahead of the record (the async writer gives no such order).
+     * Fails open: false when CS is unreachable, there is no session, or any record was not acknowledged.
+     */
+    boolean recordRangeCoverageSync(String filePath, List<List<Integer>> intervals, String contentHash) {
+        if (!filePath || !contentHash || !intervals || !isCsReachable()) return false
+        String sid = resolveSessionId()
+        if (!sid) return false
+        boolean all = true
+        for (List<Integer> iv : intervals) {
+            if (iv == null || iv.size() != 2 || iv[1] < iv[0]) continue
+            Map r = postRangeCache([action: 'record', sessionId: sid, sourceFile: filePath, startLine: iv[0],
+                                    endLine: iv[1], contentHash: contentHash] as Map<String, Object>, 1000)
+            if (r == null || r.get('error') != null) all = false
+        }
+        return all
+    }
+
     private Map postRangeCacheSync(Map<String, Object> body) {
         if (!isCsReachable() || !body.get('fileHash')) return null
         String sid = resolveSessionId()
@@ -673,6 +692,44 @@ class ContextServerClient {
             log.debug('isOntologyIndexed failed (non-fatal): {}', e.message)
         }
         return false
+    }
+
+    /**
+     * FS 0.9.127 read efficiency (c): CS ontology locate for one symbol, for {@code file_read range symbol=}. Goes
+     * through /mcp with the caller's session header ({@link #openCs}), so CS files it as this chat's
+     * {@code ontology:locate} -- the row RE-ranges-preceded-by-locate credits. Returns the locate answer
+     * ({found, source_file, source_line, end_line, ...} or {found:false, hint}), or null when CS did not answer.
+     */
+    Map<String, Object> locateSymbol(String query) {
+        if (!isCsReachable() || !query) return null
+        try {
+            String sid = resolveSessionId()
+            Map<String, Object> arguments = [scope: 'ontology', action: 'locate', query: query] as Map<String, Object>
+            if (sid) arguments.put('callerSession', sid)
+            String json = groovy.json.JsonOutput.toJson([jsonrpc: '2.0', method: 'tools/call', id: 1,
+                params: [name: 'context_read', arguments: arguments]])
+            HttpURLConnection conn = openCs(new URL("${contextServerUrl}/mcp"))
+            try {
+                conn.requestMethod = 'POST'
+                conn.doOutput      = true
+                conn.connectTimeout = 1500
+                conn.readTimeout    = 1500
+                conn.setRequestProperty('Content-Type', 'application/json')
+                conn.outputStream.withWriter('UTF-8') { it << json }
+                if (conn.responseCode != 200) return null
+                Map parsed = (Map) new groovy.json.JsonSlurper().parseText(conn.inputStream.getText('UTF-8'))
+                List content = ((parsed?.get('result') as Map)?.get('content') as List)
+                String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+                if (!text) return null
+                Object data = new groovy.json.JsonSlurper().parseText(text)
+                return data instanceof Map ? (Map<String, Object>) data : null
+            } finally { conn.disconnect() }
+        } catch (ConnectException e) {
+            onCsConnectFailure()
+        } catch (Exception e) {
+            log.debug('locateSymbol failed (non-fatal): {}', e.message)
+        }
+        return null
     }
 
     // getOntologyRange (FS 0.9.2) removed by WP2 (decision 384): its only caller was the retired ontology-first warning.

@@ -36,6 +36,16 @@ class RangeTelemetry {
         Integer max = toInt(opts.get('maxLines'))
         Integer end = toInt(opts.get('endLine'))
         int req = max != null && max > 0 ? max : (end != null && end >= s ? end - s + 1 : DEFAULT_MAX_LINES)
+        // FS 0.9.127 (c): a symbol read asks for no lines -- FS resolved them. The window asked IS the one returned.
+        if (opts.get('symbol') && responseText) {
+            Matcher a = START.matcher(responseText)
+            Matcher b = END_LINE.matcher(responseText)
+            if (a.find() && b.find()) {
+                s = Integer.parseInt(a.group(1))
+                int w = Integer.parseInt(b.group(1)) - s + 1
+                req = w > 0 ? w : req
+            }
+        }
 
         Map<String, Object> out = new LinkedHashMap<String, Object>()
         out.put('req_start_line', (Object) s)

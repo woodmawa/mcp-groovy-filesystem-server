@@ -102,8 +102,13 @@ Actions: read|head|tail|range|grep|multi_grep|multi|info|summary|stat|exists|pro
 REPEAT READS ARE DE-DUPLICATED FOR YOU. Every content action (read, head, tail, range, grep, multi,
 multi_grep, structure, get_method) checks what this chat was already sent: same file content, within
 the last 45 minutes. Held content answers {unchanged:true}; a partly-held range sends only the new
-lines and lists the rest in already_served. An edited file is always sent again. If you no longer
+lines and lists the rest in already_served. After your own edit (replace|multi_replace|patch|server_transform)
+you still hold what you held: the edit's response carries the changed region, and only lines you were never
+sent come back. An edit made any other way re-sends the file. If you no longer
 hold the content (context compacted, or a subagent made the read), repeat with options.force=true.
+
+READ A SYMBOL, NOT A GUESS: action=range options.symbol=Class.method (or method, or Class) reads exactly its
+lines -- resolved by ontology locate, unknown refused SYMBOL_NOT_FOUND. No startLine needed.
 
 knownHash saves re-sending content you already hold, without the ledger: pass a file_content_hash
 as options.knownHash on action=read or action=get_method. Optional -- nothing needs tracking.
@@ -242,7 +247,8 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                                   className   : [type: 'string',  description: 'Filter structure to one class subtree (returns error+availableClasses if not found)'],
                                   topic       : [type: 'string',  description: 'Help topic: tool name or "all" (for help action)'],
                                   toon        : [type: 'boolean', description: 'Encode directory listing entries in compact Toon columnar notation to save context tokens. Only applies to action=list. Default false.'],
-                                  endLine     : [type: 'integer', description: 'End line for range, 1-indexed INCLUSIVE -- alternative to maxLines. Accepted because every read response (range, get_method, structure) REPORTS endLine, and file_write action=patch accepts it.']
+                                  endLine     : [type: 'integer', description: 'End line for range, 1-indexed INCLUSIVE -- alternative to maxLines. Accepted because every read response (range, get_method, structure) REPORTS endLine, and file_write action=patch accepts it.'],
+                                  symbol      : [type: 'string',  description: 'FS 0.9.127, action=range: read one symbol exactly -- Class.method, method or Class -- instead of startLine/maxLines. Resolved by CS ontology locate (FS structure when locate has no end line or is stale); unknown is refused SYMBOL_NOT_FOUND. Up to 200 lines without force.']
     ] as Map<String, Object>
 
     // Keys the read path genuinely reads but the schema has never declared, named here rather than folded into the
@@ -336,7 +342,9 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 case 'read' : return servedRead(path, options, requestId)
                 case 'head' : return servedHeadTail(path, options, requestId, false)
                 case 'tail' : return servedHeadTail(path, options, requestId, true)
-                case 'range': return rangeWidthRefusal(options, requestId) ?: dedupedRange(path, options, requestId)
+                case 'range':
+                    if (options.get('symbol')) return symbolRange(path, options, requestId)
+                    return rangeWidthRefusal(options, requestId) ?: dedupedRange(path, options, requestId)
                 case 'grep'         : {
                     // FS 0.9.35 G4c: the same grep on unchanged content is not re-sent.
                     String gh = null
@@ -670,6 +678,61 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
             MAX_RANGE_LINES + ' lines. Narrow it: context_read scope=ontology action=locate gives a symbol\'s exact ' +
             'lines, file_read get_method reads one method whole, grep with contextLines finds the spot. ' +
             'Nothing was read. options.force=true reads the full width when it is genuinely needed.') as String)
+    }
+
+    /** FS 0.9.127 (c): a symbol's bounds are exact, so it may be wider than a guessed window; past this, force=true. */
+    static final int MAX_SYMBOL_LINES = 200
+
+    /**
+     * FS 0.9.127 read efficiency (c), handoff 2026-11-07: {@code range symbol=Class.method}. 24 locates against 622
+     * ranges in 10 days: callers guessed windows. The symbol is resolved here ({@link com.softwood.mcp.service.read.SymbolResolver}:
+     * CS locate, then FS structure), then read through the same served-ledger path as any range. Before 0.9.127 the
+     * key was silently ignored and lines 1-80 came back -- a plausible wrong answer, not an error.
+     */
+    private McpResponse symbolRange(String path, Map<String, Object> options, Object requestId) {
+        String symbol = String.valueOf(options.get('symbol')).trim()
+        String np = pathService.normalizePath(path)
+        if (!isPathAllowed(np)) return McpResponse.toolError(requestId, "Path not allowed: ${sanitize(np)}".toString())
+        File f = new File(np)
+        if (!f.isFile()) return McpResponse.toolError(requestId, "File not found: ${sanitize(np)}".toString())
+        Map<String, Object> loc = contextServerClient?.locateSymbol(symbol)
+        List<Map> structure = []
+        try { structure = (structureCache?.getStructure(np)?.get('structure') as List<Map>) ?: [] } catch (Exception ignored) {}
+        List<String> fileLines = f.readLines((options.get('encoding') as String) ?: 'UTF-8')
+        Map<String, Object> b = com.softwood.mcp.service.read.SymbolResolver.resolve(symbol, np, loc,
+            { String s -> pathService.normalizePath(s) }, fileLines, structure)
+        if (b == null) {
+            return McpResponse.toolError(requestId, new groovy.json.JsonBuilder([
+                success   : false,
+                error     : 'SYMBOL_NOT_FOUND',
+                error_code: 'SYMBOL_NOT_FOUND',
+                symbol    : symbol,
+                path      : np,
+                locate    : loc ?: 'CS did not answer the locate',
+                hint      : ('Nothing was read. Neither the ontology nor this file\'s structure has ' + symbol +
+                             '. file_read action=structure lists what the file holds; a range with startLine reads by line.')
+            ]).toString())
+        }
+        int start = b.get('startLine') as int
+        int end = b.get('endLine') as int
+        int width = end - start + 1
+        if (width > MAX_SYMBOL_LINES && !isForce(options)) {
+            return McpResponse.toolError(requestId, ('SYMBOL_TOO_WIDE: ' + symbol + ' is lines ' + start + '-' + end +
+                ' (' + width + ' lines); a symbol read sends at most ' + MAX_SYMBOL_LINES + ' without options.force=true. ' +
+                'Nothing was read. file_read action=structure options.className narrows to its members.') as String)
+        }
+        Map<String, Object> ro = new LinkedHashMap<String, Object>(options)
+        ro.remove('symbol')
+        ro.remove('endLine')
+        ro.put('startLine', start)
+        ro.put('maxLines', width)
+        McpResponse r = dedupedRange(path, ro, requestId)
+        Map<String, Object> p = parseResponsePayload(r)
+        if (p == null || (r.result as Map)?.get('isError') == true) return r
+        p.put('symbol', symbol)
+        p.put('resolved_by', b.get('resolved_by'))
+        if (p.get('startLine') == null) { p.put('startLine', start); p.put('endLine', end) }
+        return textResponse(requestId, p)
     }
 
     /**
