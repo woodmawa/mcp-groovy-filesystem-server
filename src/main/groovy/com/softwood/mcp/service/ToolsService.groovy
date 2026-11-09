@@ -41,6 +41,10 @@ class ToolsService extends AbstractFileService implements ToolHandler {
     @Autowired(required = false)
     PlanGateGuard planGateGuard
 
+    /** FS 0.9.128: tools git/gradle are covered like execute -- tools gradle packageMcpbThin names package-mcpb. */
+    @Autowired(required = false)
+    FlowCoversGuard flowCoversGuard
+
     /** FS 0.9.95: posts live gradle test progress to the AW node a flow call is made for. */
     @Autowired(required = false)
     AwJobEventClient awEvents
@@ -130,6 +134,7 @@ Developer toolchain. Actions:
                                      message   : [type: 'string'],
                                      intent    : [type: 'string', description: 'FS 0.9.40: one sentence on what this git/gradle call is for; PLAN-GATE selects on it'],
                                      planAck   : [type: 'string', description: PlanGateGuard.PLAN_ACK_DESCRIPTION],
+                                     flowAck   : [type: 'string', description: FlowCoversGuard.FLOW_ACK_DESCRIPTION],
                                      period    : [type: 'string', description: 'Stats period: today|week|month|all (default: today)']
                                  ]]
                 ],
@@ -160,7 +165,8 @@ Developer toolchain. Actions:
             // FS 0.9.50: pass the ack. Without it the retry that carried options.planAck was refused
             // again ('Second ask') and the third call recorded unjudged -- three round trips per git
             // call and a starved applicability numerator for the git component.
-            String planRefusal = planGateRefusal(action, subcommand, args, workingDir, options.intent as String, options.planAck as String)
+            String planRefusal = planGateRefusal(action, subcommand, args, workingDir, options.intent as String, options.planAck as String,
+                                                 options.flowAck as String)
             if (planRefusal) return McpResponse.toolError(requestId, planRefusal)
 
             switch (action) {
@@ -193,11 +199,16 @@ Developer toolchain. Actions:
      *
      * @return a refusal message, or null to proceed
      */
-    String planGateRefusal(String action, String subcommand, List<String> args, String workingDir, String intent, String planAck = null) {
-        if (planGateGuard == null || !(action in ['git', 'gradle'])) return null
+    String planGateRefusal(String action, String subcommand, List<String> args, String workingDir, String intent, String planAck = null,
+                           String flowAck = null) {
+        if (!(action in ['git', 'gradle'])) return null
         String head = action == 'git' ? 'git' : 'gradlew'
         String line = ([head] + (subcommand ?: '').trim().split(/\s+/).toList().findAll { it } + (args ?: []))
             .collect { String t -> t.contains(' ') ? '"' + t + '"' : t }.join(' ')
+        // FS 0.9.128: FLOW_COVERS before PLAN-GATE, on the same rendered command line.
+        String covered = flowCoversGuard?.check(line, workingDir, flowAck)
+        if (covered) return covered
+        if (planGateGuard == null) return null
         return planGateGuard.checkExecute(line, workingDir, intent, planAck)
     }
 

@@ -306,4 +306,70 @@ class WriteRegionLedgerSpec extends Specification {
         b.region.endLine == 12
         again.unchanged == true
     }
+
+    // ---------------------------------------------------------------------- FS 0.9.128 (c): one region per hunk
+    // 2026-11-07: three multi_replace edits about 230 lines apart filled the 80-line cap with unchanged lines between
+    // them, and the last edit was never returned. Each hunk is now its own region; what lies between is not re-sent.
+
+    private Map multiReplace(File f, List<Map> reps) {
+        body(fileWriteService.handleToolCall('file_write', [action: 'multi_replace', path: p(f),
+            options: [replacements: reps, expectedHash: hashOf(f)]], 'w'))
+    }
+
+    def "WR-11: two distant multi_replace edits return two regions, each with its context, and both are recorded served"() {
+        given:
+        File f = file('wr11.txt', 300)
+
+        when:
+        Map b = multiReplace(f, [[oldText: 'line 10\n', newText: 'line 10a\n'], [oldText: 'line 240\n', newText: 'line 240a\n']])
+        String newHash = hashOf(f)
+
+        then: 'two regions, neither carrying the 226 unchanged lines between'
+        b.region.regions.size() == 2
+        b.region.regions[0].startLine == 7
+        b.region.regions[0].endLine == 13
+        b.region.regions[0].changed == '10-10'
+        (b.region.regions[0].content as String).contains('line 10a')
+        b.region.regions[1].startLine == 237
+        b.region.regions[1].endLine == 243
+        (b.region.regions[1].content as String).contains('line 240a')
+        b.region.lines == 14
+        b.region.region_truncated == false
+        b.region.file_content_hash == newHash
+
+        and: 'the ledger holds both regions at the new hash, and nothing in between'
+        List<List<Integer>> rec = records(newHash).collect { [it.startLine as int, it.endLine as int] }
+        rec.contains([7, 13])
+        rec.contains([237, 243])
+        !rec.any { it[0] <= 120 && it[1] >= 120 }
+    }
+
+    def "WR-12: lines the chat held between two hunks are carried, so reading them again sends nothing"() {
+        given: 'the chat holds 1-80 and 200-280'
+        File f = file('wr12.txt', 300)
+        read(f, 1, 80)
+        read(f, 200, 80)
+
+        when: 'two edits, one in each held block'
+        multiReplace(f, [[oldText: 'line 10\n', newText: 'line 10a\nline 10b\n'], [oldText: 'line 240\n', newText: 'line 240a\n']])
+
+        then: 'unchanged held lines on both sides of each hunk come back as held'
+        read(f, 40, 30).unchanged == true
+        read(f, 211, 25).unchanged == true
+        read(f, 250, 30).unchanged == true
+    }
+
+    def "WR-13: two edits within a few lines of each other are one region, in the single-region shape"() {
+        given:
+        File f = file('wr13.txt', 60)
+
+        when:
+        Map b = multiReplace(f, [[oldText: 'line 20\n', newText: 'line 20a\n'], [oldText: 'line 24\n', newText: 'line 24a\n']])
+
+        then:
+        b.region.regions == null
+        b.region.startLine == 17
+        b.region.endLine == 27
+        b.region.changed == '20-24'
+    }
 }

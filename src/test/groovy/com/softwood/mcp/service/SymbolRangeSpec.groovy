@@ -220,4 +220,14 @@ class SymbolRangeSpec extends Specification {
         d.req_max_lines == 4
         d.lines_returned == 4
     }
+
+    def "SR-9: FS 0.9.128 -- a symbol read's telemetry carries how it was resolved; a line range carries none"() {
+        expect:
+        RangeTelemetry.detail('file_read', [action: 'range', options: [symbol: 'Foo.bar']],
+            '{"startLine":6,"endLine":9,"lines":4,"content":"x","symbol":"Foo.bar","resolved_by":"locate+structure"}').resolved_by == 'locate+structure'
+        RangeTelemetry.detail('file_read', [action: 'range', options: [symbol: 'Foo.bar']],
+            '{"startLine":6,"endLine":9,"lines":4,"content":"x","resolved_by":"structure"}').resolved_by == 'structure'
+        !RangeTelemetry.detail('file_read', [action: 'range', options: [startLine: 6, maxLines: 4]],
+            '{"startLine":6,"endLine":9,"lines":4,"content":"x","symbol":"Foo.bar"}').containsKey('resolved_by')
+    }
 }

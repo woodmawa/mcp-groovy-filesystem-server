@@ -796,7 +796,7 @@ class FilesystemTelemetryService {
      * the caller talking to the gate, not the work; they are removed before hashing. The same
      * change makes is_repeat honest for a retry that changed nothing else.</p>
      */
-    static final Set<String> GATE_ONLY_OPTION_KEYS = ['planAck', 'intent'] as Set<String>
+    static final Set<String> GATE_ONLY_OPTION_KEYS = ['planAck', 'intent', 'flowAck'] as Set<String>
 
     @groovy.transform.PackageScope
     static String buildArgsHash(Map<String, Object> args) {

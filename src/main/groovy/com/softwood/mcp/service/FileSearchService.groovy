@@ -25,6 +25,9 @@ import java.util.stream.Stream
 @CompileStatic
 class FileSearchService extends AbstractFileService implements ToolHandler {
 
+    /** FS 0.9.128 (brief 2026-11-07 item 4a): content hits in Groovy/Java name the member they sit in. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false) StructureCache structureCache
+
     @Value('${mcp.filesystem.default-file-pattern:.*\\.(groovy|java|gradle|yml|yaml|properties|xml|json|md|txt|kt|kts)$}')
     String defaultFilePattern
 
@@ -127,6 +130,12 @@ class FileSearchService extends AbstractFileService implements ToolHandler {
                     if (results.size() >= maxResults) return  // early exit per-file once cap met
                     filesScanned[0]++
                     List<Map<String, Object>> matches = searchFileContent(p, contentPattern, maxMatchesPerFile)
+                    if (matches && structureCache != null && com.softwood.mcp.service.read.EnclosingMember.isCode(p.toString())) {
+                        try {
+                            List<Map> st = (structureCache.getStructure(p.toAbsolutePath().toString().replace('\\', '/'))?.get('structure') as List<Map>) ?: []
+                            com.softwood.mcp.service.read.EnclosingMember.annotate(matches, st)
+                        } catch (Exception ignored) { }
+                    }
                     if (matches) {
                         results << ([
                             file   : sanitize(p.toAbsolutePath().toString().replace('\\', '/')),

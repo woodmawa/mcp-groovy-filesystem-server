@@ -171,6 +171,64 @@ class AwJobEventClient implements JobEventSink {
         }
     }
 
+    /**
+     * FS 0.9.128 (brief 2026-11-07 item 2): the approved flows that declare covers, by ASKING AW -- flow_management
+     * action=catalogue rows=true. AW owns its tables (decision 311): FS never reads agentic-workflow.db, and CS is not
+     * a go-between for AW's data. Null when AW cannot be asked or does not answer (FlowCoversGuard then passes).
+     */
+    List<Map<String, Object>> flowCovers() {
+        Map<String, Object> b = callForResult('catalogue', [rows: true] as Map<String, Object>)
+        Object rows = b?.get('rows')
+        if (!(rows instanceof List)) return null
+        return ((List) rows).findAll { Object r ->
+            r instanceof Map && ((Map) r).get('covers') instanceof List && !((List) ((Map) r).get('covers')).isEmpty()
+        } as List<Map<String, Object>>
+    }
+
+    /** One flow_management call whose ANSWER is wanted: the tool result's JSON text, parsed; null on any failure. */
+    Map<String, Object> callForResult(String action, Map<String, Object> args) {
+        try {
+            Map<String, Object> arguments = [action: action] as Map<String, Object>
+            arguments.putAll(args ?: [:])
+            String json = JsonOutput.toJson([jsonrpc: '2.0', method: 'tools/call', id: 3,
+                                             params : [name: 'flow_management', arguments: arguments]])
+            if (mcpSessionId == null) mcpSessionId = openSession()
+            Map<String, Object> r = postForBody(json, mcpSessionId)
+            if (((int) r.code) == 400) { mcpSessionId = openSession(); r = postForBody(json, mcpSessionId) }
+            if (((int) r.code) != 200) return null
+            String raw = (r.body ?: '') as String
+            // The companion may answer as an event stream: the JSON is on the last 'data:' line.
+            String payload = raw.readLines().findAll { String l -> l.startsWith('data:') }.collect { String l -> l.substring(5).trim() }
+                .findAll { it }.with { List<String> d -> d ? d[-1] : raw.trim() }
+            Map env = (Map) new groovy.json.JsonSlurper().parseText(payload)
+            List content = ((env?.get('result') as Map)?.get('content') as List)
+            String text = ((content?.find { (it as Map)?.get('type') == 'text' } as Map)?.get('text')) as String
+            return text ? ((Map<String, Object>) new groovy.json.JsonSlurper().parseText(text)) : null
+        } catch (Exception e) {
+            log.debug('AwJobEventClient: {} answer not read: {}', action, e.message)
+            return null
+        }
+    }
+
+    private Map<String, Object> postForBody(String json, String sessionId) {
+        HttpURLConnection conn = (HttpURLConnection) new URL("${awUrl}/mcp").openConnection()
+        try {
+            conn.requestMethod = 'POST'
+            conn.doOutput = true
+            conn.connectTimeout = 500
+            conn.readTimeout = 2000
+            conn.setRequestProperty('Content-Type', 'application/json')
+            conn.setRequestProperty('Accept', 'application/json, text/event-stream')
+            if (sessionId) conn.setRequestProperty('Mcp-Session-Id', sessionId)
+            conn.outputStream.withWriter('UTF-8') { Writer w -> w << json }
+            int code = conn.responseCode
+            String body = code == 200 ? conn.inputStream.getText('UTF-8') : null
+            return [code: code, body: body] as Map<String, Object>
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private String openSession() {
         String init = JsonOutput.toJson([jsonrpc: '2.0', method: 'initialize', id: 1,
                                          params : [protocolVersion: '2025-03-26', capabilities: [:],

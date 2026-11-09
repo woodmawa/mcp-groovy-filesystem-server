@@ -344,7 +344,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                 case 'tail' : return servedHeadTail(path, options, requestId, true)
                 case 'range':
                     if (options.get('symbol')) return symbolRange(path, options, requestId)
-                    return rangeWidthRefusal(options, requestId) ?: dedupedRange(path, options, requestId)
+                    return rangeWidthRefusal(options, requestId) ?: withSymbol(path, dedupedRange(path, options, requestId), requestId)
                 case 'grep'         : {
                     // FS 0.9.35 G4c: the same grep on unchanged content is not re-sent.
                     String gh = null
@@ -365,9 +365,9 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         String h2 = gh ?: structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(gr)
                         if (h2) contextServerClient.recordServedKeyAsync(path, gkey, h2)
                     }
-                    return gr
+                    return withMembers(gr, requestId)
                 }
-                case 'multi_grep'   : return servedMultiGrep(options, requestId)
+                case 'multi_grep'   : return withMembers(servedMultiGrep(options, requestId), requestId)
                 case 'multi'        : return servedMulti(options, requestId)
                 case 'info'         : return metaReader.doInfo(path, requestId)
                 case 'summary'      : return metaReader.doSummary(path, requestId)
@@ -738,6 +738,64 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
     /**
      * FS 0.9.40 K2: the served-ledger range path, shared by range, head and tail.
      */
+    /**
+     * FS 0.9.128 (brief 2026-11-07 item 4a): grep and multi_grep hits in Groovy/Java carry {@code in: Class.method},
+     * from FS's own structure, so the next call can be {@code range symbol=} rather than a guessed line window.
+     * Never fails the read: any error returns the response as it was.
+     */
+    private McpResponse withMembers(McpResponse r, Object requestId) {
+        if (r == null || r.error != null || structureCache == null) return r
+        try {
+            Map<String, Object> p = parseResponsePayload(r)
+            if (p == null) return r
+            int n = 0
+            if (p.get('matches') instanceof List && p.get('path')) n += annotateMembers(p.get('path') as String, p.get('matches') as List)
+            if (p.get('results') instanceof List) {
+                for (Object o : (List) p.get('results')) {
+                    if (!(o instanceof Map)) continue
+                    Map res = (Map) o
+                    String file = (res.get('file') ?: res.get('path')) as String
+                    if (file && res.get('matches') instanceof List) n += annotateMembers(file, res.get('matches') as List)
+                }
+            }
+            return n > 0 ? textResponse(requestId, p) : r
+        } catch (Exception e) {
+            log.debug('withMembers skipped (non-fatal): {}', e.message)
+            return r
+        }
+    }
+
+    private int annotateMembers(String file, List matches) {
+        if (!com.softwood.mcp.service.read.EnclosingMember.isCode(file)) return 0
+        return com.softwood.mcp.service.read.EnclosingMember.annotate(matches, structureOf(file))
+    }
+
+    private List<Map> structureOf(String file) {
+        try { return (structureCache?.getStructure(pathService.normalizePath(file))?.get('structure') as List<Map>) ?: [] }
+        catch (Exception ignored) { return [] }
+    }
+
+    /**
+     * FS 0.9.128 (brief item 4b): a line range lying inside one method carries {@code symbol} (the name
+     * {@code range symbol=} takes) and {@code symbol_lines} (its bounds). A range that leaves the method names none.
+     */
+    private McpResponse withSymbol(String path, McpResponse r, Object requestId) {
+        if (r == null || r.error != null || structureCache == null || !com.softwood.mcp.service.read.EnclosingMember.isCode(path)) return r
+        try {
+            Map<String, Object> p = parseResponsePayload(r)
+            if (p == null || p.get('content') == null || p.get('startLine') == null || p.get('endLine') == null) return r
+            Map<String, Object> m = com.softwood.mcp.service.read.EnclosingMember.spanning(structureOf(path),
+                p.get('startLine') as int, p.get('endLine') as int)
+            if (m == null) return r
+            p.put('symbol', m.get('name'))
+            p.put('symbol_lines', (m.get('startLine') as String) + '-' + (m.get('endLine') as String))
+            return textResponse(requestId, p)
+        } catch (Exception e) {
+            log.debug('withSymbol skipped (non-fatal): {}', e.message)
+            return r
+        }
+    }
+
     private McpResponse dedupedRange(String path, Map<String, Object> options, Object requestId) {
         // Fix C (v0.8.50): session range read cache.
         // knownFileHash lets us validate the cache entry against current file state.

@@ -26,6 +26,8 @@ class RangeTelemetry {
     private static final Pattern LINES    = ~/"lines"\s*:\s*(\d+)/
     private static final Pattern START    = ~/"startLine"\s*:\s*(\d+)/
     private static final Pattern END_LINE = ~/"endLine"\s*:\s*(\d+)/
+    /** FS 0.9.128 (brief item 5): how SymbolResolver found a symbol read's lines. */
+    private static final Pattern RESOLVED = ~/"resolved_by"\s*:\s*"(locate\+structure|locate|structure)"/
 
     /** Null unless this is file_read action=range. */
     static Map<String, Object> detail(String toolName, Map args, String responseText) {
@@ -51,6 +53,10 @@ class RangeTelemetry {
         out.put('req_start_line', (Object) s)
         out.put('req_max_lines', (Object) req)
         out.put('lines_returned', (Object) linesReturned(responseText))
+        if (opts.get('symbol') && responseText) {
+            Matcher how = RESOLVED.matcher(responseText)
+            if (how.find()) out.put('resolved_by', (Object) how.group(1))
+        }
         return out
     }
 

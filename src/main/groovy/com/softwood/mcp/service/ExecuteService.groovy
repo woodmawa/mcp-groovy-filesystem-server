@@ -57,6 +57,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
     @Autowired(required = false)
     PlanGateGuard planGateGuard
 
+    /** FS 0.9.128 (brief 2026-11-07 item 2): a chat's command an approved flow covers is refused FLOW_COVERS. */
+    @Autowired(required = false)
+    FlowCoversGuard flowCoversGuard
+
     @Value('${mcp.script.max-execution-time-seconds:60}')
     int maxExecutionTimeSeconds
 
@@ -136,6 +140,7 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
                                   jobId       : [type: 'string', description: 'Job id, for job_status / job_output / job_cancel.'],
                                   intent      : [type: 'string', description: 'FS 0.9.38: one sentence on what this build/git call is for. PLAN-GATE selects the practices it shows on the command plus this.'],
                 planAck     : [type: 'string', description: PlanGateGuard.PLAN_ACK_DESCRIPTION],
+                                  flowAck     : [type: 'string', description: FlowCoversGuard.FLOW_ACK_DESCRIPTION],
                                   sinceOffset : [type: 'integer', description: 'job_output: resume reading stdout from this character offset. Pass the nextOffset returned by the previous job_output call to tail without re-sending output you already have.']
                               ]]
                 ],
@@ -194,6 +199,10 @@ class ExecuteService extends AbstractFileService implements ToolHandler {
             Map<String, Object> lint = ScriptLint.check(action, script)
             if (lint.get('refusal')) return McpResponse.toolError(requestId, lint.get('refusal') as String)
             List<String> lintWarnings = (lint.get('warnings') ?: []) as List<String>
+
+            // FS 0.9.128: FLOW_COVERS first -- a command a flow covers is refused before PLAN-GATE shows it practices.
+            String flowRefusal = flowCoversGuard?.check(script, workingDir, options?.flowAck as String)
+            if (flowRefusal) return McpResponse.toolError(requestId, flowRefusal)
 
             // FS 0.9.37 C1: PLAN-GATE on the first build/git call per repo this session.
             String planRefusal = planGateGuard?.checkExecute(script, workingDir, options.intent as String, options?.planAck as String)
