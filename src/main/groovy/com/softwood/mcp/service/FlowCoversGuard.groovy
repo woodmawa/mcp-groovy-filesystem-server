@@ -33,6 +33,8 @@ class FlowCoversGuard {
         '(e.g. "the flow cannot pass --force"). Runs the command and is recorded.'
 
     static final long TTL_MS = 60_000L
+    /** FS 0.9.129: most covering flows a refusal names (each with its start call). */
+    static final int MAX_NAMED = 3
     static final Set<String> DIR_PARAMS = (['repoDir', 'workingDir', 'projectDir'] as Set<String>).asImmutable()
 
     /** The AW companion client FS already reports job events through -- here it asks AW for the covering flows. */
@@ -58,38 +60,68 @@ class FlowCoversGuard {
         List<Map<String, Object>> flows = covers()
         if (!flows) return null
         for (PlanGateGuard.GatedCommand g : cmds) {
-            Map<String, Object> hit = match(g.command, flows)
-            if (hit == null) continue
+            List<Map<String, Object>> hits = matchAll(g.command, flows)
+            if (!hits) continue
             if (flowAck?.trim()) {
                 acked.incrementAndGet()
-                log.info('FLOW_COVERS acked: {} (covered by {}:{}) -- {}', g.command, hit.get('flow'), hit.get('version'), flowAck.trim())
+                log.info('FLOW_COVERS acked: {} (covered by {}) -- {}', g.command,
+                    hits.collect { Map<String, Object> h -> "${h.get('flow')}:${h.get('version')}".toString() }.join(', '), flowAck.trim())
                 return null
             }
             refused.incrementAndGet()
-            return refusal(g, hit)
+            return refusal(g, hits)
         }
         return null
     }
 
-    /** The covering flow for one normalised command line, or null. */
+    /** The first covering flow for one normalised command line, or null. */
     static Map<String, Object> match(String command, List<Map<String, Object>> flows) {
+        List<Map<String, Object>> all = matchAll(command, flows)
+        return all ? all[0] : null
+    }
+
+    /**
+     * FS 0.9.129: EVERY covering flow, in catalogue order, at most {@link #MAX_NAMED}. Until 0.9.128 only the first
+     * was named, so `git push` named git-commit although git-release also covers it (FlowCoversGuardSpec FC-7).
+     */
+    static List<Map<String, Object>> matchAll(String command, List<Map<String, Object>> flows) {
+        List<Map<String, Object>> out = []
         for (Map<String, Object> f : flows) {
+            if (out.size() >= MAX_NAMED) break
             for (Object c : ((f.get('covers') ?: []) as List)) {
                 try {
-                    if (Pattern.compile(c.toString()).matcher(command).find()) return f
+                    if (Pattern.compile(c.toString()).matcher(command).find()) { out << f; break }
                 } catch (PatternSyntaxException ignored) { }
             }
         }
-        return null
+        return out
     }
 
     static String refusal(PlanGateGuard.GatedCommand g, Map<String, Object> f) {
-        String flow = f.get('flow') as String
+        return refusal(g, [f])
+    }
+
+    static String refusal(PlanGateGuard.GatedCommand g, List<Map<String, Object>> fs) {
+        if (fs.size() == 1) {
+            Map<String, Object> f = fs[0]
+            String flow = f.get('flow') as String
+            String line = (f.get('line') ?: '') as String
+            return 'FLOW_COVERS -- not run: `' + g.command + '` is what ' + flow + ':' + f.get('version') + ' does. Run it ' +
+                'as the flow: ' + startCall(f, g.dir) + ' -- then read its artifact. Catalogue: ' + line +
+                '. If the flow genuinely cannot do this, repeat this call with options.flowAck="<why>".'
+        }
+        List<String> names = fs.collect { Map<String, Object> f -> (f.get('flow') as String) + ':' + f.get('version') }
+        List<String> starts = []
+        fs.eachWithIndex { Map<String, Object> f, int i -> starts << ('(' + (i + 1) + ') ' + startCall(f, g.dir)) }
+        List<String> lines = fs.collect { Map<String, Object> f -> (f.get('line') ?: '') as String }
+        return 'FLOW_COVERS -- not run: `' + g.command + '` is covered by ' + names.join(', ') + '. Run it as the ' +
+            'flow that fits: ' + starts.join(' ; ') + ' -- then read its artifact. Catalogue: ' + lines.join(' | ') +
+            '. If none of them can do this, repeat this call with options.flowAck="<why>".'
+    }
+
+    static String startCall(Map<String, Object> f, String dir) {
         String line = (f.get('line') ?: '') as String
-        return 'FLOW_COVERS -- not run: `' + g.command + '` is what ' + flow + ':' + f.get('version') + ' does. Run it ' +
-            'as the flow: flow_management action=start mode=flow templateName=' + flow + ' params=' + startParams(line, g.dir) +
-            ' -- then read its artifact. Catalogue: ' + line + '. If the flow genuinely cannot do this, repeat this ' +
-            'call with options.flowAck="<why>".'
+        return 'flow_management action=start mode=flow templateName=' + (f.get('flow') as String) + ' params=' + startParams(line, dir)
     }
 
     /** The flow's required params, plus any directory param, as {name:"value"} -- the directory filled, the rest named. */

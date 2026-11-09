@@ -96,4 +96,40 @@ class FlowCoversGuardSpec extends Specification {
         client.asks == 1
         guard.refused.get() == 2
     }
+
+    def 'FC-7: a command two flows cover names both, each with its own start call -- not only the first match'() {
+        given: 'the live catalogue order: git-commit (commit|push) before git-release (commit|tag|push)'
+        StubClient two = new StubClient(answer: [
+            [flow: 'git-commit', version: '1.8', covers: ['^git (commit|push)\\b'],
+             line: 'git-commit:1.8  (message*,projectDir*,push,paths)  nodes: git-add > git-commit'],
+        ] + COVERED)
+        FlowCoversGuard g = new FlowCoversGuard(awClient: two)
+
+        when:
+        String r = g.check('git push origin HEAD --follow-tags', DIR, null)
+
+        then:
+        r.startsWith('FLOW_COVERS -- ')
+        r.contains('git-commit:1.8')
+        r.contains('git-release:1.11')
+        r.contains('templateName=git-commit params={message:"<message>", projectDir:"' + DIR + '"}')
+        r.contains('templateName=git-release params={message:"<message>", repoDir:"' + DIR + '"}')
+        !r.contains('package-mcpb')
+        g.refused.get() == 1
+    }
+
+    def 'FC-7b: at most three flows are named'() {
+        given:
+        List<Map<String, Object>> many = (1..5).collect { int i ->
+            [flow: 'f' + i, version: '1.0', covers: ['^git push\\b'], line: 'f' + i + ':1.0  (repoDir*)  x'] as Map<String, Object>
+        }
+        FlowCoversGuard g = new FlowCoversGuard(awClient: new StubClient(answer: many))
+
+        when:
+        String r = g.check('git push origin HEAD', DIR, null)
+
+        then:
+        r.contains('templateName=f1') && r.contains('templateName=f2') && r.contains('templateName=f3')
+        !r.contains('templateName=f4')
+    }
 }
