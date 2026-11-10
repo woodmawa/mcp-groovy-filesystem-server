@@ -2947,3 +2947,8 @@ Tidy-up after "claude uses what it has" -- brief 2026-11-09 item C. Released wit
 
 ## [0.10.0] (2026-11-10)
 New baseline -- the end of the CS re-architecture cycle (brief `cs-rearchitecture/BRIEF-2026-11-10-cycle-close-and-1.2.0-baseline.md`). Released with CS 1.2.0 and AW 1.31.0 (session 2026-11-10-11-09). No behaviour change from 0.9.129.
+
+## [0.10.1] (2026-11-10)
+Telemetry outcome of edits (CS chain 7c7690dd). Released with CS 1.2.2 (session 2026-11-10-12-46).
+- **`region_truncated:false` is not a truncation.** `McpController.extractOutcome` returned `truncated` for any answer containing the substring `_truncated`, so every replace / multi_replace / server_transform (whose answer carries `region.region_truncated:false`) was recorded `truncated`, not `success`. CS EditedFiles then missed those edits and the gradle flows added no related specs. Now: a key ending `_truncated` whose value is not `false` (`TRUNCATED_FLAG`).
+- Specs: TelemetryOutcomeSpec CT-16B-6 (false is success; red first on 0.10.0), CT-16B-7 (true still truncated); mutation-check 87c77e06 caught.

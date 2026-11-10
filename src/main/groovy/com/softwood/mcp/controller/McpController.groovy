@@ -605,10 +605,15 @@ class McpController {
             if (text.contains('"forced_repeat":true')) return 'forced'
             if (text.contains('"unchanged":true') || text.contains('"cached":true')) return 'unchanged'
             if (text.contains('"already_served"') || text.contains('"unchanged_paths"')) return 'partial'
-            if (text.contains('_truncated')) return 'truncated'
+            // FS 0.10.1 (CS chain 7c7690dd): a key ending _truncated whose value is not false. The bare substring
+            // read every edit answer's region_truncated:false as truncated, so CS EditedFiles missed those edits.
+            if (TRUNCATED_FLAG.matcher(text).find()) return 'truncated'
         } catch (Exception ignored) {}
         return 'success'
     }
+
+    private static final java.util.regex.Pattern TRUNCATED_FLAG =
+        java.util.regex.Pattern.compile('"\\w*_truncated"\\s*:\\s*(?!false)')
 
     private static final java.util.regex.Pattern CODE_LEAD = java.util.regex.Pattern.compile('^([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\\b')
     private static final java.util.regex.Pattern CODE_ANY  = java.util.regex.Pattern.compile('\\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\\b')

@@ -141,6 +141,20 @@ class TelemetryOutcomeSpec extends Specification {
         McpController.extractOutcome(resp) == 'truncated'
     }
 
+    // FS 0.10.1 (CS chain 7c7690dd): every replace / server_transform answer carries region.region_truncated:false,
+    // and the substring test read it as truncated -- so CS EditedFiles (outcome='success' only) never counted those
+    // edits and gradle-test-summary said "no main class edited" after four (session 2026-11-10-12-46).
+    def 'CT-16B-6: a _truncated key that is false is not a truncation'() {
+        expect:
+        McpController.extractOutcome(buildTextResponse([success: true, region: [content: 'x', region_truncated: false]])) == 'success'
+        McpController.extractOutcome(buildTextResponse([success: true, _truncated: false])) == 'success'
+    }
+
+    def 'CT-16B-7: a _truncated key that is true still reads truncated'() {
+        expect:
+        McpController.extractOutcome(buildTextResponse([success: true, region: [content: 'x', region_truncated: true]])) == 'truncated'
+    }
+
     // FS 0.9.40 K2 (decision 206): the two new served-ledger outcomes
     def 'CT-K2-1: extractOutcome returns forced for a re-send of held content'() {
         expect:
