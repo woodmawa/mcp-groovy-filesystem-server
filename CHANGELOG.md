@@ -2944,3 +2944,6 @@ Claude uses what it has -- brief 2026-11-07 items 2 (FS), 4 and 5 (telemetry). R
 Tidy-up after "claude uses what it has" -- brief 2026-11-09 item C. Released with CS 1.1.142 (session 2026-11-09-12-06).
 - **FLOW_COVERS names every covering flow.** `FlowCoversGuard` took the first match only, so `git push` named git-commit although git-release also covers it. `matchAll` now collects every covering flow in catalogue order (at most 3, `MAX_NAMED`), and the refusal names each one with its own `flow_management action=start` call (its directory param filled) and its catalogue line. One match keeps the 0.9.128 wording. `match` stays, returning the first.
 - Specs: FlowCoversGuardSpec FC-7 (git-commit and git-release both named, each with its start call) and FC-7b (cap of three) -- red first on 0.9.128; FC-1..6 green. FlowCovers + PlanGate related suite 55/0.
+
+## [0.10.0] (2026-11-10)
+New baseline -- the end of the CS re-architecture cycle (brief `cs-rearchitecture/BRIEF-2026-11-10-cycle-close-and-1.2.0-baseline.md`). Released with CS 1.2.0 and AW 1.31.0 (session 2026-11-10-11-09). No behaviour change from 0.9.129.
