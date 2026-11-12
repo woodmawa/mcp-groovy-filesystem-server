@@ -117,13 +117,7 @@ Do NOT pass options.knownHash to action=range -- it returns {unchanged:true} ins
 Key params: path (absolute), options.lines (head/tail), options.startLine+maxLines (range), options.pattern+contextLines (grep), options.method (get_method), options.knownHash (read|get_method|list ONLY -- NOT range), options.force (re-send content this chat already holds; override >200-line refusal), options.compact (minimal response), options.className (structure filter).
 action=list returns listing_hash. Pass as options.knownHash to get {unchanged:true} (~15 tokens) when directory is unmodified.
 action=multi_grep: grep one pattern across options.paths[] in one call - returns only files with matches. A directory in paths is expanded to its files (file_search's default code/text filter; build/.git/node_modules skipped; at most 200 files) and reported as expanded[{dir,files}]; a capped expansion says expansion_capped and files_not_searched.
-All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.
-
-LARGE FILE, NEED ORIENTATION? Do not read it whole. Ask the local model instead (AW, WP-G G5):
-  flow_management action=start mode=flow templateName=file-digest params={path:'<abs path>', question:'<what you need>'}
-then action=artifact runId=<id> stage=emit. You get one text block: OUTLINE (exact, pattern-matched), DIGEST (LOSSY)
-citing line ranges, and VERIFY BEFORE RELYING ON IT range calls. The digest is a map, not the file: confirm with range.
-For a long file, pass startLine=<next_startLine> to digest the next window.'''
+All read actions return file_content_hash. MANDATORY: pass as options.expectedHash on file_write replace|patch|multi_replace.'''
 
     /**
      * WP-1 (0.9.21): the tool description is not worth a single second of startup.
@@ -365,7 +359,7 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
                         String h2 = gh ?: structureCache?.getHash(pathService.normalizePath(path)) ?: extractFileHash(gr)
                         if (h2) contextServerClient.recordServedKeyAsync(path, gkey, h2)
                     }
-                    return withMembers(gr, requestId)
+                    return withMembers(gr, requestId, path)
                 }
                 case 'multi_grep'   : return withMembers(servedMultiGrep(options, requestId), requestId)
                 case 'multi'        : return servedMulti(options, requestId)
@@ -743,13 +737,15 @@ For a long file, pass startLine=<next_startLine> to digest the next window.'''
      * from FS's own structure, so the next call can be {@code range symbol=} rather than a guessed line window.
      * Never fails the read: any error returns the response as it was.
      */
-    private McpResponse withMembers(McpResponse r, Object requestId) {
+    private McpResponse withMembers(McpResponse r, Object requestId, String requestPath = null) {
         if (r == null || r.error != null || structureCache == null) return r
         try {
             Map<String, Object> p = parseResponsePayload(r)
             if (p == null) return r
             int n = 0
-            if (p.get('matches') instanceof List && p.get('path')) n += annotateMembers(p.get('path') as String, p.get('matches') as List)
+            // A compact grep drops the path echo; the member still comes from the path that was asked for.
+            String single = (p.get('path') ?: requestPath) as String
+            if (p.get('matches') instanceof List && single) n += annotateMembers(single, p.get('matches') as List)
             if (p.get('results') instanceof List) {
                 for (Object o : (List) p.get('results')) {
                     if (!(o instanceof Map)) continue

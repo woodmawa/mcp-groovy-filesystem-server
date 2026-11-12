@@ -2952,3 +2952,11 @@ New baseline -- the end of the CS re-architecture cycle (brief `cs-rearchitectur
 Telemetry outcome of edits (CS chain 7c7690dd). Released with CS 1.2.2 (session 2026-11-10-12-46).
 - **`region_truncated:false` is not a truncation.** `McpController.extractOutcome` returned `truncated` for any answer containing the substring `_truncated`, so every replace / multi_replace / server_transform (whose answer carries `region.region_truncated:false`) was recorded `truncated`, not `success`. CS EditedFiles then missed those edits and the gradle flows added no related specs. Now: a key ending `_truncated` whose value is not `false` (`TRUNCATED_FLAG`).
 - Specs: TelemetryOutcomeSpec CT-16B-6 (false is success; red first on 0.10.0), CT-16B-7 (true still truncated); mutation-check 87c77e06 caught.
+
+
+## [0.10.2] (2026-11-12)
+Brief 2026-11-12-04 WP4 and the assessment 2026-11-12 tidy-up. Sessions 2026-11-12-10-17 and 2026-11-12-12-15. Joint release with CS 1.2.9 and AW 1.31.4.
+- **WP4 (commit b6b815b):** FS caller_session = the call's argument, else the header.
+- **A compact grep hit names its member.** `withMembers` took the file from the response's `path` echo, which `options.compact=true` omits, so a compact grep (the form the description recommends) lost `in: Class.method` and the next read went back to a guessed line window. It now falls back to the path that was asked for.
+- **file_read no longer advertises file-digest** (Will 2026-11-12: park the local model for reading; started once in seven days). Removed from the built-in description and from the too-long read refusal, which still names structure, get_method, range and grep.
+- Specs: EnclosingMemberSpec EM-1c (red first on 0.10.1; mutation-check 2a166b15 caught, EM-1c alone), LocalModelParkedSpec LP-1, LP-2 (both red first; mutation-check aef47312 caught).

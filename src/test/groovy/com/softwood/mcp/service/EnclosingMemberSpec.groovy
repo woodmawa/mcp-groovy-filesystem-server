@@ -78,6 +78,21 @@ class CompilerQueue {
         byLine[5].in == null
     }
 
+    def 'EM-1c: a COMPACT grep hit names its member too -- compact drops the path echo, not the symbol'() {
+        given:
+        File f = src()
+
+        when:
+        Map b = body(fileReadService.handleToolCall('file_read', [action: 'grep', path: p(f), options: [pattern: 'disposed|int size', compact: true]], 'gc'))
+        Map byLine = (b.matches as List<Map>).collectEntries { [(it.line as int): it] }
+
+        then:
+        b.path == null
+        byLine[10].in == 'CompilerQueue.dispose'
+        byLine[15].in == 'CompilerQueue.drain'
+        byLine[5].in == null
+    }
+
     def 'EM-2: multi_grep and file_search content hits name their member too'() {
         given:
         File f = src()
