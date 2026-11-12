@@ -498,7 +498,11 @@ class McpController {
                 detail = detail ? new LinkedHashMap<String, Object>(detail) : new LinkedHashMap<String, Object>()
                 detail.put('session_source', (Object) source)
                 if (claim) detail.put('claim_session', (Object) claim)
-                if (arg) detail.put('caller_session', (Object) arg)
+                // Brief 2026-11-12-04 WP4 (decision 491 E2): the session the call declared, arg or header, as CS records
+                // it. session_source still says which. Before this a flow node's call filed caller_session NULL beside a
+                // correct session_id, so FS and CS disagreed on the same column. FsCallerSessionArgSpec FCA-8.
+                String declaredCaller = arg ?: declared
+                if (declaredCaller) detail.put('caller_session', (Object) declaredCaller)
                 // optimised-learning B3: the refusal code rides to CS as telemetry.error_code (outcome unchanged).
                 String errorCode = errorCodeOf(response)
                 if (errorCode) {

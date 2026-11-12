@@ -29,6 +29,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *   <li>FCA-5: tools/list advertises it on every tool</li>
  *   <li>FCA-6: readActiveSessionId answers the held session, then nothing again (X86 P3-3: never the claim)</li>
  *   <li>FCA-7: a declared header with no arg is recorded as header</li>
+ *   <li>FCA-8 (brief 2026-11-12-04 WP4, decision 491 E2): ... and its caller_session is the declared session, as CS
+ *       records it -- session_source still says it came from the header</li>
  * </ul>
  */
 @CompileDynamic
@@ -162,5 +164,18 @@ class FsCallerSessionArgSpec extends Specification {
         then:
         1 * t.recordToolCall('declared-by-flow', 'tools', _, _, _, _, _,
             { Map d -> d.session_source == 'header' && d.claim_session == 'own-claim' })
+    }
+
+    def 'FCA-8 (RED before WP4): a header-declared call records caller_session as the declared session'() {
+        given:
+        FilesystemTelemetryService t = Mock()
+        t.processClaim() >> 'own-claim'
+
+        when:
+        controller(t).handleRequest(call(), 'declared-by-flow')
+
+        then:
+        1 * t.recordToolCall('declared-by-flow', 'tools', _, _, _, _, _,
+            { Map d -> d.session_source == 'header' && d.caller_session == 'declared-by-flow' })
     }
 }
