@@ -2960,3 +2960,10 @@ Brief 2026-11-12-04 WP4 and the assessment 2026-11-12 tidy-up. Sessions 2026-11-
 - **A compact grep hit names its member.** `withMembers` took the file from the response's `path` echo, which `options.compact=true` omits, so a compact grep (the form the description recommends) lost `in: Class.method` and the next read went back to a guessed line window. It now falls back to the path that was asked for.
 - **file_read no longer advertises file-digest** (Will 2026-11-12: park the local model for reading; started once in seven days). Removed from the built-in description and from the too-long read refusal, which still names structure, get_method, range and grep.
 - Specs: EnclosingMemberSpec EM-1c (red first on 0.10.1; mutation-check 2a166b15 caught, EM-1c alone), LocalModelParkedSpec LP-1, LP-2 (both red first; mutation-check aef47312 caught).
+
+
+## [0.11.0] (2026-11-16)
+Groovy 6.0.0 and Spock 2.5-groovy-6.0. Session 2026-11-16-09-30. Joint release with CS 1.3.0 and AW 1.32.0. No behaviour change in FS.
+- build.gradle: `groovyVersion` 5.0.4 -> 6.0.0; spock-core and spock-spring 2.5-groovy-6.0; GroovyConcurrentUtils 1.1.1 -> 1.1.2 (the same library compiled on Groovy 6); mcp-toon-service 1.0-SNAPSHOT rebuilt on Groovy 6.
+- Main and test sources compile unchanged. Suite on Groovy 6: 909 tests, 0 failures (the in-process `execute action=groovy` sandbox specs included).
+- **Every Groovy module in the bundle is 6.0.0.** The first 0.11.0 bundle carried groovy 6.0.0 beside groovy-sql and groovy-xml 5.0.3: Spring Boot's dependency management pins transitive org.apache.groovy modules to its own `groovy.version`. `set('groovy.version', groovyVersion)` in build.gradle; checked by listing BOOT-INF/lib in the bundle jar. (The 0.10.x bundles had the same mix at 5.0.4 / 5.0.3.)

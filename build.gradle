@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.10.2'
+version = '0.11.0'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -27,7 +27,11 @@ repositories {
 
 ext {
     springAiVersion = '1.1.2'
-    groovyVersion = '5.0.4'
+    groovyVersion = '6.0.0'
+    // Spring Boot's dependency management pins org.apache.groovy modules to its own groovy.version (5.0.3 on Boot
+    // 4.0.2) wherever this build names no version -- transitive modules included. Without this line the bundle shipped
+    // groovy 6.0.0 beside groovy-sql and groovy-xml 5.0.3 (2026-11-16).
+    set('groovy.version', groovyVersion)
 }
 
 dependencies {
@@ -66,13 +70,13 @@ dependencies {
     implementation 'org.apache.poi:poi-ooxml:5.3.0'
 
     // GroovyConcurrentUtils - XlsxAdapter/DocxAdapter/PptxAdapter DSL bridge
-    implementation 'org.softwood:GroovyConcurrentUtils:1.1.1'
+    implementation 'org.softwood:GroovyConcurrentUtils:1.1.2'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation "org.apache.groovy:groovy-test:${groovyVersion}"
-    testImplementation 'org.spockframework:spock-core:2.4-groovy-5.0'
-    testImplementation 'org.spockframework:spock-spring:2.4-groovy-5.0'
+    testImplementation 'org.spockframework:spock-core:2.5-groovy-6.0'
+    testImplementation 'org.spockframework:spock-spring:2.5-groovy-6.0'
     // WS10-C: condition waits in specs -- await().atMost(..).pollInterval(..).until { } -- not sleeps (as CS and AW).
     testImplementation 'org.awaitility:awaitility:4.3.0'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
