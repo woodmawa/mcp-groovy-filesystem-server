@@ -2967,3 +2967,8 @@ Groovy 6.0.0 and Spock 2.5-groovy-6.0. Session 2026-11-16-09-30. Joint release w
 - build.gradle: `groovyVersion` 5.0.4 -> 6.0.0; spock-core and spock-spring 2.5-groovy-6.0; GroovyConcurrentUtils 1.1.1 -> 1.1.2 (the same library compiled on Groovy 6); mcp-toon-service 1.0-SNAPSHOT rebuilt on Groovy 6.
 - Main and test sources compile unchanged. Suite on Groovy 6: 909 tests, 0 failures (the in-process `execute action=groovy` sandbox specs included).
 - **Every Groovy module in the bundle is 6.0.0.** The first 0.11.0 bundle carried groovy 6.0.0 beside groovy-sql and groovy-xml 5.0.3: Spring Boot's dependency management pins transitive org.apache.groovy modules to its own `groovy.version`. `set('groovy.version', groovyVersion)` in build.gradle; checked by listing BOOT-INF/lib in the bundle jar. (The 0.10.x bundles had the same mix at 5.0.4 / 5.0.3.)
+
+## [0.11.1] (2026-11-19)
+GroovyConcurrentUtils 1.1.2 -> 1.2.0 (core hardening). Session 2026-11-19-08-51. Joint release with AW 1.32.1. No FS source change.
+- build.gradle: `org.softwood:GroovyConcurrentUtils` 1.1.2 -> 1.2.0. FS uses it for the Xlsx/Docx/Pptx adapter DSL bridge only.
+- Suite over GCU 1.2.0 from mavenLocal: 120 suites, 909 tests, 0 failures; `dependencyInsight` shows 1.2.0 on testRuntimeClasspath.
