@@ -2,6 +2,7 @@ package com.softwood.mcp.service.office
 
 import com.softwood.mcp.model.McpResponse
 import com.softwood.mcp.service.PathService
+import com.softwood.mcp.service.write.WriteUtils
 import groovy.json.JsonOutput
 import groovy.util.logging.Slf4j
 import org.apache.poi.ss.usermodel.Cell
@@ -24,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 
 import java.awt.Dimension
+import java.nio.file.Paths
 import org.softwood.dag.task.xlsx.XlsxAdapter
 import org.softwood.dag.task.xlsx.WorkbookPlan
 import org.softwood.dag.task.docx.DocxAdapter
@@ -260,8 +262,11 @@ class OfficeDocumentHandler {
             rowData = rows as List<List<Object>>
         }
 
+        // FS 0.11.3: load an existing workbook into memory from a stream. new XSSFWorkbook(File) keeps
+        // the file open as a lazily-read package, so saving back to the same path failed
+        // ("/docProps/app.xml failed to be saved"). OfficeXlsxRoundTripSpec.
         File existing = new File(path)
-        Workbook wb   = existing.exists() ? new XSSFWorkbook(existing) : new XSSFWorkbook()
+        Workbook wb   = existing.exists() ? existing.withInputStream { InputStream ins -> new XSSFWorkbook(ins) } : new XSSFWorkbook()
         try {
             int sheetIdx = wb.getSheetIndex(sheetName)
             if (sheetIdx >= 0) wb.removeSheetAt(sheetIdx)
@@ -286,7 +291,9 @@ class OfficeDocumentHandler {
                 }
             }
 
-            new File(path).withOutputStream { OutputStream out -> wb.write(out) }
+            ByteArrayOutputStream buf = new ByteArrayOutputStream()
+            wb.write(buf)
+            WriteUtils.atomicWrite(Paths.get(path), buf.toByteArray())
 
             return successJson(requestId, [
                 action     : 'write_office',

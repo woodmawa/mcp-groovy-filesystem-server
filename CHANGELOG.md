@@ -2972,3 +2972,15 @@ Groovy 6.0.0 and Spock 2.5-groovy-6.0. Session 2026-11-16-09-30. Joint release w
 GroovyConcurrentUtils 1.1.2 -> 1.2.0 (core hardening). Session 2026-11-19-08-51. Joint release with AW 1.32.1. No FS source change.
 - build.gradle: `org.softwood:GroovyConcurrentUtils` 1.1.2 -> 1.2.0. FS uses it for the Xlsx/Docx/Pptx adapter DSL bridge only.
 - Suite over GCU 1.2.0 from mavenLocal: 120 suites, 909 tests, 0 failures; `dependencyInsight` shows 1.2.0 on testRuntimeClasspath.
+
+## [0.11.2] (2026-11-23)
+GroovyConcurrentUtils 1.2.0 -> 2.0.0, now the `gcu-taskgraph` module (new baseline). Session 2026-11-23-11-14. Joint release with AW 1.32.2. No FS source change.
+- build.gradle: `org.softwood:GroovyConcurrentUtils:1.2.0` -> `org.softwood:gcu-taskgraph:2.0.0`. `gcu-taskgraph` brings `gcu-core` and `gcu-cluster` with it; `gcu-actors` and `gcu-reactive` are no longer on FS's classpath. FS uses GCU for the Xlsx/Docx/Pptx adapter DSL bridge and for `Promise` in `ExecuteJobRegistry`.
+- GCU versions passed over on the way, each regression-tested against FS's full suite on 2026-11-20 and 2026-11-23 (909 tests): 1.2.1, 1.2.2, 1.3.0, 1.4.0, 1.4.1, 1.4.2, 2.0.0 aggregate, 2.0.0 `gcu-taskgraph`. Two first runs failed and passed on re-run, neither on a GCU path: on 1.2.2 `ExecuteServiceBashQuotingSpec` / `ExecuteServiceGroovySandboxSpec` (WSL `Bash/Service/E_UNEXPECTED`), on 1.3.0 `WriteCommitterSpec` CT-PCOMMIT-2 (the Windows atomic-rename race).
+
+## [0.11.3] (2026-11-23)
+`write_office` to an xlsx that already exists works. Session 2026-11-23-11-14. Same GCU 2.0.0 (`gcu-taskgraph`) baseline as 0.11.2, which was installed but never published; AW 1.32.2 is unchanged.
+- **Defect:** writing to an existing `.xlsx` failed with "The part /docProps/app.xml failed to be saved in the stream". `OfficeDocumentHandler.writeXlsx` opened the workbook with `new XSSFWorkbook(File)`, which keeps the file open as a lazily-read package, and then saved to that same path while it was still open. Found live after the 0.11.2 install. Not a GCU 2.0.0 regression: POI and FS code only.
+- **Fix:** an existing workbook is loaded into memory from an input stream, and the result is saved through `WriteUtils.atomicWrite` (temp file, then move into place), so a failed save no longer truncates the original.
+- **Spec:** new `OfficeXlsxRoundTripSpec` (FS had no office spec), through `file_write write_office` / `file_read read_office`: new-file round trip, overwrite of an existing sheet with no temp file left, a second sheet keeps the first, a read leaves the file unchanged and not held open. Red first: 2 of 4 red on 0.11.2 with the live error. Mutation check (old open restored): the same 2 red, the others green.
+- **Not changed:** `readXlsx` still opens with `new XSSFWorkbook(File)`; the read spec shows it leaves the file unchanged and deletable, so it was left alone. `readDocx` opens an input stream it never closes (not touched). The `workbookPlan` / `queryPlan` / `documentPlan` / `presentationPlan` paths still pass raw JSON maps to the GCU adapters, which expect typed plan objects; nothing converts nested JSON to them, and no spec covers them.
