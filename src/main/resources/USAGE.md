@@ -275,15 +275,17 @@ paths under the worktree root (`WorktreeRoots`). Allowed directories, hashes, th
 the extension, or `options.format`. Every path -- the call's own, `templatePath`, and any `imagePath` in a plan --
 must be inside the allowed directories; URLs are refused. A refused call writes nothing.
 
+Order lives in lists: a JSON object's key order does not survive the tool call (keys arrive sorted), so anything ordered -- sections, slides, rows, columns (`headers`) -- is a list.
+
 Two ways to write: the simple flat options, or a **plan** (GCU's full office model, JSON). In a plan a field that
 is misspelt, unknown or cannot be applied is refused **by name**, with the known fields listed, and nothing is
-written. Plans are bound to GCU's typed plans (gcu-taskgraph 2.0.3).
+written. Plans are bound to GCU's typed plans (gcu-taskgraph 2.0.4).
 
 ### Simple options (no plan)
 - xlsx: `sheet` (default Sheet1), `headers` [..], `rows` [[..]] or [{..}]. An existing file keeps its other sheets;
   the named sheet is replaced.
-- docx: `content` {heading: text, or heading: [bullet, ..]}, `templatePath` optional.
-- pptx: `slides` [{title, content, layout, notes}], `templatePath` optional.
+- docx: `content` [{heading, body}, ..] or [[heading, body], ..] (body: text, or [bullet, ..]), `templatePath` optional. `content` may also be {heading: body}, but a JSON object's key order is not kept on the way to FS -- its sections come in key order; use the list form when order matters.
+- pptx: `slides` [{title, content, layout, notes}], `templatePath` optional. `layout` is a layout name in the template, case-insensitive, spaces or underscores (`Title Only` = `TITLE_ONLY`); default Title and Content; an unknown name is refused. A title, content or notes the layout has no placeholder for (content on Title Only, a title on Blank) is refused naming the slide -- nothing is written.
 
 ### xlsx: workbookPlan
 `options.workbookPlan`, `options.action` GENERATE (default, new file) | APPEND (add sheets) | TRANSFORM (replace
@@ -348,7 +350,7 @@ presentationPlan: { title: 'Deck', properties: {author, subject, ...},
                         x: 0, y: 0, width: 914400, height: 914400} ] } ] }      // EMU: 914400 per inch
 ```
 Refused by name: defaultLayout.theme and accentColor, named `styles`, CHART shapes, an unknown layout, a missing
-image. read_office on a pptx returns slides [{slideIndex, title, content, notes}].
+image. A titled slide with no `layout` is placed on the Title Only layout, so its title is a real title. read_office on a pptx returns slides [{slideIndex, title, content, notes}].
 
 
 ## server_lifecycle

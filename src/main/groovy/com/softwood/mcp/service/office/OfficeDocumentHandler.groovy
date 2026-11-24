@@ -410,14 +410,17 @@ class OfficeDocumentHandler {
         }
 
         // Legacy flat-map path
-        Map<String, Object> content     = options.content as Map<String, Object>
+        // FS 0.11.9: content may be an ordered list of sections (see orderedSections)
+        List<List<Object>> content      = orderedSections(options.content)
 
         XWPFDocument doc = templatePath ?
             new File(templatePath).withInputStream { InputStream ins -> new XWPFDocument(ins) } :
             new XWPFDocument()
 
         try {
-            content?.each { String heading, Object body ->
+            content.each { List<Object> section ->
+                String heading = section[0] as String
+                Object body    = section[1]
                 // Heading paragraph
                 XWPFParagraph hPara = doc.createParagraph()
                 hPara.style = 'Heading1'
@@ -448,7 +451,7 @@ class OfficeDocumentHandler {
                 action  : 'write_office',
                 format  : 'docx',
                 path    : path,
-                sections: content?.size() ?: 0
+                sections: content.size()
             ])
         } finally {
             doc.close()
@@ -534,11 +537,26 @@ class OfficeDocumentHandler {
         try {
             XSLFSlideMaster master = ppt.slideMasters[0]
 
-            slides?.each { Map<String, Object> spec ->
+            // FS 0.11.6: a layout the caller names must exist -- refused naming the layouts there are, before any
+            // slide is written. Before 0.11.6 an unknown name fell back to the first layout silently, and a name with
+            // spaces ('Title and Content') never matched, because only the master's side was normalised.
+            List<String> known = master.slideLayouts.collect { XSLFSlideLayout l -> l.name as String }
+            List<String> unknown = (slides ?: []).findAll { Map<String, Object> spec ->
+                spec.layout && !known.any { String k -> layoutKey(k) == layoutKey(spec.layout as String) }
+            }.collect { Map<String, Object> spec -> spec.layout as String }
+            if (unknown) {
+                throw new IllegalArgumentException("write_office: unknown slide layout(s) ${unknown} -- this presentation has ${known}".toString())
+            }
+
+            // FS 0.11.7: a title, content or notes the slide's layout has no place for is refused (every slide, then
+            // nothing written). Before, each was skipped silently -- content on Title Only, a title on Blank -- and a
+            // setText failure was swallowed.
+            List<String> placeProblems = []
+            slides?.eachWithIndex { Map<String, Object> spec, int si ->
                 String layoutName = (spec.layout ?: 'TITLE_AND_CONTENT') as String
                 XSLFSlideLayout layout = master.slideLayouts.find {
-                    it.name?.toUpperCase()?.replace(' ', '_') == layoutName.toUpperCase()
-                } ?: master.slideLayouts[0]
+                    layoutKey(it.name as String) == layoutKey(layoutName)
+                } ?: master.slideLayouts[0]   // only the default can miss (a template without Title and Content)
 
                 XSLFSlide slide = ppt.createSlide(layout)
 
@@ -557,33 +575,41 @@ class OfficeDocumentHandler {
                     def p = getType(sh)
                     p == Placeholder.TITLE || p == Placeholder.CENTERED_TITLE
                 }
-                if (titlePh && spec.title) {
-                    try { titlePh.setText(spec.title as String) } catch (Exception ignored) {}
+                if (spec.title) {
+                    if (titlePh) titlePh.setText(spec.title as String)
+                    else placeProblems << "slides[${si}]: layout '${layout.name}' has no title placeholder for the title".toString()
                 }
 
                 // Body: BODY placeholder, or first non-title text shape
                 XSLFTextShape bodyPh = phs.find { XSLFTextShape sh ->
                     getType(sh) == Placeholder.BODY
                 } ?: phs.find { it != titlePh }
-                if (bodyPh && spec.content) {
-                    try {
-                        def body = spec.content
-                        bodyPh.setText(body instanceof List ? (body as List).join('\n') : body.toString())
-                    } catch (Exception ignored) {}
+                if (spec.content) {
+                    def body = spec.content
+                    if (bodyPh) bodyPh.setText(body instanceof List ? (body as List).join('\n') : body.toString())
+                    else placeProblems << "slides[${si}]: layout '${layout.name}' has no body placeholder for the content -- use Title and Content, or a presentationPlan with a text shape".toString()
                 }
 
                 // Speaker notes
                 if (spec.notes) {
                     try {
-                        List<XSLFTextShape> notePhs = (slide.notes?.shapes ?: [])
+                        // FS 0.11.8: getNotesSlide creates the notes slide. slide.notes is null on a new slide, so before
+                        // 0.11.8 there was never a placeholder: notes were dropped silently (refused in 0.11.7).
+                        List<XSLFTextShape> notePhs = (ppt.getNotesSlide(slide)?.shapes ?: [])
                             .findAll { it instanceof XSLFTextShape }
                             .collect { it as XSLFTextShape }
                         XSLFTextShape notesPh = notePhs.find {
                             getType(it) == Placeholder.BODY
                         } ?: notePhs.find { true }
                         if (notesPh) notesPh.setText(spec.notes as String)
-                    } catch (Exception ignored) {}
+                        else placeProblems << "slides[${si}]: the notes slide has no text placeholder for the notes".toString()
+                    } catch (Exception e) {
+                        placeProblems << "slides[${si}]: notes not written: ${e.class.simpleName}: ${e.message}".toString()
+                    }
                 }
+            }
+            if (placeProblems) {
+                throw new IllegalArgumentException("write_office: nothing written -- ${placeProblems.join('; ')}".toString())
             }
 
             ByteArrayOutputStream buf = new ByteArrayOutputStream()
@@ -606,6 +632,37 @@ class OfficeDocumentHandler {
     // =========================================================================
 
     private static final List<String> PLAN_WRITE_ACTIONS = ['GENERATE', 'APPEND', 'TRANSFORM']
+
+    /**
+     * FS 0.11.9: docx content as [heading, body] pairs, in order. It may be {heading: body}, or -- when the order
+     * matters -- a list of {heading, body} objects or [heading, body] pairs. A JSON object's key order does not survive
+     * the trip to FS (found live 2026-11-24: {Zeta, Alpha, Mid} arrived as Alpha, Mid, Zeta), so an object gives the
+     * sections in key order.
+     */
+    private static List<List<Object>> orderedSections(Object content) {
+        if (content == null) return []
+        if (content instanceof Map) return (content as Map).collect { Object k, Object v -> [k, v] as List<Object> }
+        if (!(content instanceof List)) throw new IllegalArgumentException('write_office: content must be {heading: body} or a list of {heading, body}')
+        List<List<Object>> out = []
+        (content as List).eachWithIndex { Object e, int i ->
+            if (e instanceof Map && (e as Map).heading != null) {
+                Map m = e as Map
+                List<String> extra = (m.keySet() as List<String>) - ['heading', 'body']
+                if (extra) throw new IllegalArgumentException("write_office: content[${i}]: unknown field(s) ${extra} (known: heading, body)".toString())
+                out << ([m.heading, m.body] as List<Object>)
+            } else if (e instanceof List && (e as List).size() == 2) {
+                out << ([(e as List)[0], (e as List)[1]] as List<Object>)
+            } else {
+                throw new IllegalArgumentException("write_office: content[${i}]: each section is {heading, body} or [heading, body]".toString())
+            }
+        }
+        return out
+    }
+
+    /** A layout name compared without case or the space/underscore difference: 'Title and Content' == TITLE_AND_CONTENT. */
+    private static String layoutKey(String name) {
+        name == null ? '' : name.trim().toUpperCase().replace(' ', '_')
+    }
 
     private static String resolveFormat(String path, Map options) {
         if (options?.format) return (options.format as String).toLowerCase()

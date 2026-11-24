@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.11.5'
+version = '0.11.9'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -73,7 +73,7 @@ dependencies {
     implementation 'org.apache.poi:poi-ooxml-full:5.3.0'
 
     // GroovyConcurrentUtils - XlsxAdapter/DocxAdapter/PptxAdapter DSL bridge
-    implementation 'org.softwood:gcu-taskgraph:2.0.3'
+    implementation 'org.softwood:gcu-taskgraph:2.0.4'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

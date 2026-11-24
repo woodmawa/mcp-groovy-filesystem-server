@@ -348,6 +348,96 @@ class OfficePlanIntegrationSpec extends Specification {
         s?.close()
     }
 
+    def "0.11.6: a pptx plan slide with a title and no layout reads back with that title (found live on 0.11.4)"() {
+        given:
+        String path = p('titled.pptx')
+
+        when:
+        McpResponse w = write(path, [presentationPlan: [slides: [[title: 'One', shapes: [[type: 'RECTANGLE', text: 'box', width: 914400, height: 914400]]]]]])
+        Map r = body(read(path))
+
+        then:
+        !isError(w)
+        r.slides[0].title == 'One'
+        r.slides[0].content == 'box'
+    }
+
+    def "0.11.6: a simple-slides layout is matched by its display name, and an unknown one is refused with nothing written"() {
+        given:
+        String ok = p('named.pptx')
+        String bad = p('unknown-layout.pptx')
+
+        when:
+        McpResponse w = write(ok, [slides: [[title: 'A', layout: 'Title Only'], [title: 'B', layout: 'TITLE_ONLY'], [title: 'C', layout: 'title only']]])
+        XMLSlideShow s = openPptx(ok)
+        McpResponse refused = write(bad, [slides: [[title: 'A'], [title: 'B', layout: 'No Such Layout']]])
+
+        then:
+        !isError(w)
+        s.slides*.slideLayout*.name == ['Title Only', 'Title Only', 'Title Only']
+        isError(refused)
+        text(refused).contains('No Such Layout')
+        text(refused).contains('Title Only')
+        !Files.exists(tempDir.resolve('unknown-layout.pptx'))
+
+        cleanup:
+        s?.close()
+    }
+
+    def "0.11.7: simple-slides content or a title the layout has no place for is refused, nothing written (found live on 0.11.6)"() {
+        given:
+        String path = p('noplace.pptx')
+
+        when:
+        McpResponse w = write(path, [slides: [[title: 'A', content: 'first', layout: 'TITLE_ONLY'],
+                                              [title: 'B', layout: 'Blank'],
+                                              [title: 'C', content: 'fine']]])
+
+        then:
+        isError(w)
+        text(w).contains('nothing written')
+        text(w).contains('slides[0]')
+        text(w).contains('no body placeholder')
+        text(w).contains('slides[1]')
+        text(w).contains('no title placeholder')
+        !text(w).contains('slides[2]')
+        !Files.exists(tempDir.resolve('noplace.pptx'))
+    }
+
+    def "0.11.8: simple slides write their speaker notes, and read_office returns them (found live on 0.11.7)"() {
+        given:
+        String path = p('notes.pptx')
+
+        when:
+        McpResponse w = write(path, [slides: [[title: 'A', content: 'first', notes: 'n1'], [title: 'B', content: 'second']]])
+        Map r = body(read(path))
+
+        then:
+        !isError(w)
+        r.slides*.title == ['A', 'B']
+        r.slides*.content == ['first', 'second']
+        r.slides[0].notes == 'n1'
+    }
+
+    def "0.11.9: docx content as a list keeps its section order, both forms; a malformed entry is refused (found live on 0.11.8)"() {
+        given:
+        String path = p('ordered.docx')
+
+        when:
+        McpResponse w = write(path, [content: [[heading: 'Zeta', body: 'z'], ['Alpha', ['a1', 'a2']], [heading: 'Mid', body: 'm']]])
+        Map r = body(read(path))
+        McpResponse bad = write(p('bad.docx'), [content: [[heading: 'A', text: 'x']]])
+
+        then:
+        !isError(w)
+        r.sections*.heading == ['Zeta', 'Alpha', 'Mid']
+        r.sections[1].content == '• a1\n• a2'
+        isError(bad)
+        text(bad).contains('text')
+        text(bad).contains('heading, body')
+        !Files.exists(tempDir.resolve('bad.docx'))
+    }
+
     def "a pptx plan field GCU refuses comes back by name, and nothing is written"() {
         when:
         McpResponse w = write(p('theme.pptx'), [presentationPlan: [defaultLayout: [theme: 'Office Theme'], slides: [[title: 'x']]]])
