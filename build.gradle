@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.12.0'
+version = '0.12.1'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -39,7 +39,7 @@ ext {
 // "selected by rule", 2026-11-24). The version moves with the GCU line (bump-baseline, stamp-gcu-bom-fs).
 dependencyManagement {
     imports {
-        mavenBom 'org.softwood:gcu-bom:2.1.0'
+        mavenBom 'org.softwood:gcu-bom:3.0.0'
     }
 }
 
@@ -76,7 +76,7 @@ dependencies {
     // GroovyConcurrentUtils office (FS 0.12.0, decision 499): the one office implementation AW and FS share --
     // read_office / write_office call its OfficeTools. It brings gcu-taskgraph and Apache POI (the full OOXML
     // schemas, never poi-ooxml-lite), so FS has no POI line of its own.
-    implementation 'org.softwood:gcu-office:2.1.0'
+    implementation 'org.softwood:gcu-office:3.0.0'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

@@ -3039,3 +3039,8 @@ read_office / write_office run on GCU gcu-office's OfficeTools -- the one office
 - **What a caller sees:** an option the action does not read is refused by name and nothing is written (it used to be ignored). Plain docx sections get real heading styles and list numbering (they were Heading1 in a document that defined no such style, and bullets were "• " text; READ still returns "• item"). A documentPlan / presentationPlan write's `result` is `{path, sections}` / `{path, slidesWritten}`. Atomic writes keep FS 0.9.25's bounded retry, now in GCU OfficeFiles.
 - **Survey (installed 0.11.9, before the change):** docx ordered content + list body, documentPlan unknown field refused, pptx Title Only + notes, Title Only with content refused, xlsx write + read -- all green; the acceptance list is claude/SURVEY-2026-11-24-office-acceptance-and-hazelcast.md.
 - Suite: 941 tests, 0 failures (gcu-consumer-regression on GCU 2.1.0, run 7a4ace38). `OfficePlanIntegrationSpec` and `OfficeXlsxRoundTripSpec` green through the real tool entry point.
+
+## [0.12.1] (2026-11-24)
+GCU 3.0.0 is the new shared baseline. Session 2026-11-24-13-31. Joint release with AW 1.33.1.
+- **Why:** GCU 2.1.0 moved the office adapters out of gcu-taskgraph -- a breaking change -- so Will re-versioned it 3.0.0 and made it the baseline. FS's code is unchanged from 0.12.0 (GCU 3.0.0 is 2.1.0's code).
+- **build.gradle:** `org.softwood:gcu-office:3.0.0` and `mavenBom 'org.softwood:gcu-bom:3.0.0'` (bump-baseline serverName=gcu; stamp contracts stamp-gcu-dep-fs, stamp-gcu-bom-fs).
