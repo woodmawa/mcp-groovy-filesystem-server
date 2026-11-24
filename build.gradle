@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.11.9'
+version = '0.12.0'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -32,6 +32,15 @@ ext {
     // 4.0.2) wherever this build names no version -- transitive modules included. Without this line the bundle shipped
     // groovy 6.0.0 beside groovy-sql and groovy-xml 5.0.3 (2026-11-16).
     set('groovy.version', groovyVersion)
+}
+
+// FS 0.12.0 (decision 499): GCU's BOM, imported AFTER Spring Boot's so it wins for what it names -- the gcu-* modules,
+// Hazelcast and POI. Without it Spring Boot's BOM downgraded the hazelcast gcu-cluster asks for (5.6.0 -> 5.5.0,
+// "selected by rule", 2026-11-24). The version moves with the GCU line (bump-baseline, stamp-gcu-bom-fs).
+dependencyManagement {
+    imports {
+        mavenBom 'org.softwood:gcu-bom:2.1.0'
+    }
 }
 
 dependencies {
@@ -64,16 +73,10 @@ dependencies {
     // Toon token-optimised notation encoding
     implementation 'com.woodmawa.mcp.toon:mcp-toon-service:1.0-SNAPSHOT'
 
-    // Apache POI - Office document read/write (.xlsx, .docx, .pptx)
-    // Used by OfficeDocumentHandler for read_office / write_office tool actions
-    implementation 'org.apache.poi:poi:5.3.0'
-    // FS 0.11.4: the full OOXML schemas, not poi-ooxml-lite. Lite carries only the classes POI's own tests touch,
-    // so GCU's docx page setup (and other less-used parts) threw NoClassDefFoundError at run time.
-    implementation('org.apache.poi:poi-ooxml:5.3.0') { exclude group: 'org.apache.poi', module: 'poi-ooxml-lite' }
-    implementation 'org.apache.poi:poi-ooxml-full:5.3.0'
-
-    // GroovyConcurrentUtils - XlsxAdapter/DocxAdapter/PptxAdapter DSL bridge
-    implementation 'org.softwood:gcu-taskgraph:2.0.4'
+    // GroovyConcurrentUtils office (FS 0.12.0, decision 499): the one office implementation AW and FS share --
+    // read_office / write_office call its OfficeTools. It brings gcu-taskgraph and Apache POI (the full OOXML
+    // schemas, never poi-ooxml-lite), so FS has no POI line of its own.
+    implementation 'org.softwood:gcu-office:2.1.0'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
