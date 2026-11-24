@@ -349,7 +349,7 @@ CRITICAL: replace failure returns JSON-RPC error with nearest_match hint -- read
                 case 'abort_write'   : return chunkWriter.doAbortWrite(options, requestId)
                 case 'chunk_status'  : return chunkWriter.doChunkStatus(options, requestId)
                 case 'server_transform': response = fileTransformService.applyTransform(path, options, requestId); break
-                case 'write_office'    : response = officeHandler.writeOffice(path, options, requestId); break
+                case 'write_office'    : response = officeHandler.writeOffice(path, options, requestId, { String p -> isPathAllowed(p) } as java.util.function.Predicate<String>); break
                 default:
                     // FS 0.9.46: enumerate. file_read has named its valid actions in this error
                     // since it was written; file_write named none, so the only way to discover a

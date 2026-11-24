@@ -269,6 +269,88 @@ Claude does not normally call this tool. Every path is relative to the worktree 
 The ontology re-index after a write and PLAN-GATE on writes and executes stand down for
 paths under the worktree root (`WorktreeRoots`). Allowed directories, hashes, the structural guard and telemetry do not.
 
+## office (FS 0.11.4)
+
+`file_write action=write_office` and `file_read action=read_office` for .xlsx, .docx and .pptx. Format comes from
+the extension, or `options.format`. Every path -- the call's own, `templatePath`, and any `imagePath` in a plan --
+must be inside the allowed directories; URLs are refused. A refused call writes nothing.
+
+Two ways to write: the simple flat options, or a **plan** (GCU's full office model, JSON). In a plan a field that
+is misspelt, unknown or cannot be applied is refused **by name**, with the known fields listed, and nothing is
+written. Plans are bound to GCU's typed plans (gcu-taskgraph 2.0.3).
+
+### Simple options (no plan)
+- xlsx: `sheet` (default Sheet1), `headers` [..], `rows` [[..]] or [{..}]. An existing file keeps its other sheets;
+  the named sheet is replaced.
+- docx: `content` {heading: text, or heading: [bullet, ..]}, `templatePath` optional.
+- pptx: `slides` [{title, content, layout, notes}], `templatePath` optional.
+
+### xlsx: workbookPlan
+`options.workbookPlan`, `options.action` GENERATE (default, new file) | APPEND (add sheets) | TRANSFORM (replace
+the named sheets, keep the rest), `options.data` {dataKey: [[row], ..]} for deferredRows.
+```
+workbookPlan: {
+  styles:  { hdr: { font: {bold: true, size: 12, color: '#FFFFFF', name: 'Calibri'},
+                    fill: {foreground: '#1F4E78'}, border: {all: 'thin'},
+                    alignment: {horizontal: 'center', wrapText: true}, dataFormat: '0.00' } },
+  options: { evaluateFormulas: true },
+  templatePath: '<allowed path>.xlsx',
+  sheets: [ {
+    name: 'People', defaultStyle: 'body', freezeRef: 'A2', autoFilterRef: 'A1:C1', tabColor: '#00FF00',
+    columns: [ {ref: 'A', width: 20, styleRef: 'x', outlineLevel: 1, hidden: false, autoSize: false} ],
+    rows: [ {rowIndex: 1, styleRef: 'hdr', height: 18,
+             cells: [ {value: 'name'}, {ref: 'B1', value: 'age'},
+                      {formula: 'SUM(B2:B9)'}, {value: 'x', comment: {text: 'note', author: 'me'}},
+                      {value: 'site', link: {target: 'https://...'}}, {imagePath: '<allowed path>.png', imageType: 'PNG'} ] } ],
+    deferredRows: [ {dataKey: 'people', startAt: 2, styleRef: 'body'} ],
+    ranges: [ {ref: 'B2:B50', styleRef: 's', zebraStripe: true, comment: 'text',
+               dataValidation: {type: 'list|number|integer|decimal|textLength|date|formula', list: ['a','b'],
+                                operator: 'between', formula1: '0', formula2: '150', errorStyle: 'stop|warning|information'},
+               conditionalFormat: {type: 'cellValue|formula|colorScale|dataBar|iconSet',
+                                   operator: 'greaterThan', value1: 40, styleRef: 'hot', formula: '...'} } ],
+    merges: [ {ref: 'A1:C1'} ], rowGroups: [ {range: '2:5', collapsed: true} ], columnGroups: [ {range: 'B:C'} ]
+  } ]
+}
+```
+Operators: between, notBetween, equal, notEqual, greaterThan, lessThan, greaterThanOrEqual, lessThanOrEqual.
+`deferredRows.startAt` defaults to 1 (row 1): set it to the first data row.
+
+### xlsx: queryPlan (read_office)
+`options.queryPlan`: `sheet`, `range` ('A1:F500'), `columns` [header or letter], `format` list_of_maps (default) |
+list_of_lists | map_by_key (needs `keyColumn`), `coercions` {column: Double|Integer|Boolean|LocalDate|String},
+`where` {column: value, or column: [values]} -- every column must match; numbers compare as numbers.
+A column that does not exist is refused by name. `rowPredicate` (code) is not accepted.
+
+### docx: documentPlan
+`options.documentPlan`, `options.templatePath` optional.
+```
+documentPlan: { title: 'Report',
+  properties: {author, subject, description, category, keywords, company},
+  page: {size: 'A4|A3|LETTER|LEGAL', orientation: 'portrait|landscape', marginTop: 1440, ...},   // twips
+  styles: { name: {font: {...}} },
+  sections: [ {heading: 'Intro', headingLevel: 1, text: '...', style: {font: {...}}},
+              {bulletList: ['a','b']}, {numberedList: ['one','two']},
+              {table: {headers: ['k','v'], rows: [['a','1']], headerStyle: {font: {bold: true}, fill: {foreground: '#DDDDDD'}},
+                       bodyStyle: {...}, columnWidths: [2000, 4000]}} ] }
+```
+read_office on a docx returns sections [{heading, content}] and paragraphCount.
+
+### pptx: presentationPlan
+`options.presentationPlan` (templatePath is not supported with a plan).
+```
+presentationPlan: { title: 'Deck', properties: {author, subject, ...},
+  defaultLayout: {background: '#FFFFFF', fontFamily: 'Calibri', titleFontSize: 28, bodyFontSize: 18},
+  slides: [ {title: 'One', layout: '<layout name in the master>', notes: 'speaker notes',
+             transition: {type: 'FADE', durationMs: 500},
+             shapes: [ {type: 'TEXT_BOX|RECTANGLE|OVAL|LINE|IMAGE|TABLE', text: '...',
+                        style: {font: {bold: true, color: '#..'}, fill: {foreground: '#..'}},
+                        imagePath: '<allowed path>.png', table: {headers: [..], rows: [[..]]},
+                        x: 0, y: 0, width: 914400, height: 914400} ] } ] }      // EMU: 914400 per inch
+```
+Refused by name: defaultLayout.theme and accentColor, named `styles`, CHART shapes, an unknown layout, a missing
+image. read_office on a pptx returns slides [{slideIndex, title, content, notes}].
+
+
 ## server_lifecycle
 
 **v0.8.29 fix:** The filesystem stdio process no longer self-spawns as an HTTP companion.

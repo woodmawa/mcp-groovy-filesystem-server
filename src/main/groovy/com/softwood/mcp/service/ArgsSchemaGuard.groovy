@@ -39,10 +39,11 @@ final class ArgsSchemaGuard {
 
     /** Option keys the tool's code reads that its schema does not declare (same derivation as {@link #EXTRA_TOP}). */
     static final Map<String, Set<String>> EXTRA_OPTIONS = [
-        file_read : ['action', 'content', 'contentPattern', 'documentPlan', 'expectedHash', 'format',
+        // FS 0.11.4: 'data' -- write_office's rows for a workbookPlan's deferredRows (OfficeDocumentHandler).
+        file_read : ['action', 'content', 'contentPattern', 'data', 'documentPlan', 'expectedHash', 'format',
                      'headers', 'keyColumn', 'knownFileHash', 'outputFormat', 'presentationPlan', 'queryPlan', 'range',
                      'rows', 'sheet', 'slides', 'templatePath', 'workbookPlan'] as Set<String>,
-        file_write: ['action', 'content', 'documentPlan', 'force', 'forceBinary', 'format', 'fromLine', 'fuzzy',
+        file_write: ['action', 'content', 'data', 'documentPlan', 'force', 'forceBinary', 'format', 'fromLine', 'fuzzy',
                      'headers', 'headingDepth', 'headingStyle', 'keyColumn', 'matchIsRegex', 'matchLast',
                      'maxWriteSizeMb', 'new_str', 'old_str', 'outputFormat', 'presentationPlan', 'queryPlan', 'range',
                      'rows', 'sheet', 'slides', 'templatePath', 'workbookPlan'] as Set<String>,

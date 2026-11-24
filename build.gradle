@@ -9,7 +9,7 @@ plugins {
  * compact response mode, compact and verbose options, compress large payloads
  */
 group = 'com.softwood'
-version = '0.11.3'
+version = '0.11.5'
 // See CHANGELOG.md in project root for full version history.
 
 java {
@@ -67,10 +67,13 @@ dependencies {
     // Apache POI - Office document read/write (.xlsx, .docx, .pptx)
     // Used by OfficeDocumentHandler for read_office / write_office tool actions
     implementation 'org.apache.poi:poi:5.3.0'
-    implementation 'org.apache.poi:poi-ooxml:5.3.0'
+    // FS 0.11.4: the full OOXML schemas, not poi-ooxml-lite. Lite carries only the classes POI's own tests touch,
+    // so GCU's docx page setup (and other less-used parts) threw NoClassDefFoundError at run time.
+    implementation('org.apache.poi:poi-ooxml:5.3.0') { exclude group: 'org.apache.poi', module: 'poi-ooxml-lite' }
+    implementation 'org.apache.poi:poi-ooxml-full:5.3.0'
 
     // GroovyConcurrentUtils - XlsxAdapter/DocxAdapter/PptxAdapter DSL bridge
-    implementation 'org.softwood:gcu-taskgraph:2.0.0'
+    implementation 'org.softwood:gcu-taskgraph:2.0.3'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
@@ -80,6 +83,12 @@ dependencies {
     // WS10-C: condition waits in specs -- await().atMost(..).pollInterval(..).until { } -- not sleeps (as CS and AW).
     testImplementation 'org.awaitility:awaitility:4.3.0'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// FS 0.11.4: poi-ooxml-full (~16 MB of schema classes) on the classpath ran the default Groovy compiler heap out
+// (compileTestGroovy: Java heap space). GCU and AW set the same 4g.
+tasks.withType(GroovyCompile).configureEach {
+    groovyOptions.forkOptions.memoryMaximumSize = '4g'
 }
 
 tasks.named('test') {

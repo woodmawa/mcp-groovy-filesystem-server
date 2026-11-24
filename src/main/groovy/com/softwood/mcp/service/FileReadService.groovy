@@ -438,7 +438,7 @@ All read actions return file_content_hash. MANDATORY: pass as options.expectedHa
                 case 'chunk_read'   : return responseHelper.doChunkRead(options, requestId)
                 case 'finalise_read': return responseHelper.doFinaliseRead(options, requestId)
                 case 'help'         : return metaReader.doHelp(options, requestId)
-                case 'read_office'  : return officeHandler.readOffice(path, options, requestId)
+                case 'read_office'  : return officeHandler.readOffice(path, options, requestId, { String p -> isPathAllowed(p) } as java.util.function.Predicate<String>)
                 default:
                     return McpResponse.toolError(requestId, "Unknown file_read action: '${action}'. Valid actions: ${VALID_READ_ACTIONS.join('|')}. For script execution use the 'execute' tool.")
             }

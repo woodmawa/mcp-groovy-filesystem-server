@@ -26,6 +26,8 @@ import org.springframework.stereotype.Component
 
 import java.awt.Dimension
 import java.nio.file.Paths
+import java.util.function.Predicate
+import org.softwood.dag.task.xlsx.QueryPlan
 import org.softwood.dag.task.xlsx.XlsxAdapter
 import org.softwood.dag.task.xlsx.WorkbookPlan
 import org.softwood.dag.task.docx.DocxAdapter
@@ -57,6 +59,17 @@ import org.softwood.dag.task.pptx.PresentationPlan
  *   content      : Map<String,Object>  (docx: heading -> text or List<String> for bullets)
  *   templatePath : path to .pptx/.docx template (optional)
  *   slides       : List<Map>           (pptx: [{title, content, layout, notes}])
+ *
+ * Plans (FS 0.11.4) -- the full GCU office model, bound to GCU's typed plans by {@link OfficePlanBinder}:
+ *   workbookPlan     (xlsx write; options.action GENERATE | APPEND | TRANSFORM, options.data for deferredRows)
+ *   documentPlan     (docx write; options.templatePath optional)
+ *   presentationPlan (pptx write)
+ *   queryPlan        (xlsx read: sheet, range, columns, format, keyColumn, coercions, where)
+ * The reference is file_read action=help topic=office. A field that is unknown, or that GCU cannot apply, is refused
+ * by name and nothing is written.
+ *
+ * FS 0.11.4: every path -- the call's own, a template and any image a plan names -- must be inside the allowed
+ * directories. Before 0.11.4 read_office and write_office skipped that check, unlike every other FS action.
  */
 @Component
 @Slf4j
@@ -69,21 +82,30 @@ class OfficeDocumentHandler {
     // READ dispatch
     // =========================================================================
 
-    McpResponse readOffice(String path, Map<String, Object> options, Object requestId) {
+    /** @param allowed the calling service's allowed-directories check (AbstractFileService.isPathAllowed) */
+    McpResponse readOffice(String path, Map<String, Object> options, Object requestId, Predicate<String> allowed) {
         String format = resolveFormat(path, options)
         try {
             String validated = pathService.normalizePath(path)
+            if (!allowed.test(validated)) {
+                return McpResponse.toolError(requestId, sanitize("read_office: path not allowed: ${validated}"))
+            }
             File file = new File(validated)
             if (!file.exists()) {
                 return McpResponse.toolError(requestId, "read_office: file not found: ${validated}")
             }
+            OfficePlanBinder binder = binderFor(allowed)
             switch (format) {
-                case 'xlsx': return readXlsx(file, options, requestId)
+                case 'xlsx': return readXlsx(file, options, requestId, binder)
                 case 'docx': return readDocx(file, options, requestId)
                 case 'pptx': return readPptx(file, options, requestId)
                 default:
                     return McpResponse.toolError(requestId, "read_office: unsupported format '${format}'. Use xlsx|docx|pptx or set options.format.")
             }
+        } catch (IllegalArgumentException e) {
+            // a plan FS or GCU refused by name: the caller's to fix, not a server fault
+            log.warn("read_office refused on ${path}: ${e.message}")
+            return McpResponse.toolError(requestId, sanitize("read_office refused: ${e.message}"))
         } catch (Exception e) {
             log.error("read_office error on ${path}: ${e.message}", e)
             return McpResponse.toolError(requestId, sanitize("read_office failed: ${e.message}"))
@@ -94,36 +116,52 @@ class OfficeDocumentHandler {
     // WRITE dispatch
     // =========================================================================
 
-    McpResponse writeOffice(String path, Map<String, Object> options, Object requestId) {
+    /** @param allowed the calling service's allowed-directories check (AbstractFileService.isPathAllowed) */
+    McpResponse writeOffice(String path, Map<String, Object> options, Object requestId, Predicate<String> allowed) {
         String format = resolveFormat(path, options)
         try {
             String validated = pathService.normalizePath(path)
+            // checked before anything is created: a refused path must not even leave a directory behind
+            if (!allowed.test(validated)) {
+                return McpResponse.toolError(requestId, sanitize("write_office: path not allowed: ${validated}"))
+            }
+            OfficePlanBinder binder = binderFor(allowed)
             new File(validated).parentFile?.mkdirs()
             switch (format) {
-                case 'xlsx': return writeXlsx(validated, options, requestId)
-                case 'docx': return writeDocx(validated, options, requestId)
-                case 'pptx': return writePptx(validated, options, requestId)
+                case 'xlsx': return writeXlsx(validated, options, requestId, binder)
+                case 'docx': return writeDocx(validated, options, requestId, binder)
+                case 'pptx': return writePptx(validated, options, requestId, binder)
                 default:
                     return McpResponse.toolError(requestId, "write_office: unsupported format '${format}'. Use xlsx|docx|pptx or set options.format.")
             }
+        } catch (IllegalArgumentException e) {
+            // a plan FS or GCU refused by name: the caller's to fix, not a server fault
+            log.warn("write_office refused on ${path}: ${e.message}")
+            return McpResponse.toolError(requestId, sanitize("write_office refused: ${e.message}"))
         } catch (Exception e) {
             log.error("write_office error on ${path}: ${e.message}", e)
             return McpResponse.toolError(requestId, sanitize("write_office failed: ${e.message}"))
         }
     }
 
+    private OfficePlanBinder binderFor(Predicate<String> allowed) {
+        new OfficePlanBinder(allowed, { String p -> pathService.normalizePath(p) })
+    }
+
     // =========================================================================
     // XLSX read
     // =========================================================================
 
-    private McpResponse readXlsx(File file, Map options, Object requestId) {
-        // DSL query path — delegate to XlsxAdapter when options.queryPlan is present
+    private McpResponse readXlsx(File file, Map options, Object requestId, OfficePlanBinder binder) {
+        // Query path — GCU's QueryExecutor, the JSON plan bound to a QueryPlan (FS 0.11.4: it was passed raw)
         if (options.queryPlan != null) {
-            Object qResult = XlsxAdapter.asFn().call('QUERY', [filePath: file.absolutePath, query: options.queryPlan])
+            QueryPlan q = binder.queryPlan(options.queryPlan)
+            Object qResult = XlsxAdapter.asFn().call('QUERY', [filePath: file.absolutePath, query: q])
             return successJson(requestId, [format: 'xlsx', path: file.absolutePath, data: qResult])
         }
 
-        Workbook wb = new XSSFWorkbook(file)
+        // FS 0.11.4: loaded from a stream, so the file is not held open while the result is built
+        Workbook wb = file.withInputStream { InputStream ins -> new XSSFWorkbook(ins) }
         try {
             String sheetName   = options.sheet as String
             Sheet sheet        = sheetName ? wb.getSheet(sheetName) : wb.getSheetAt(0)
@@ -239,11 +277,18 @@ class OfficeDocumentHandler {
     // XLSX write
     // =========================================================================
 
-    private McpResponse writeXlsx(String path, Map options, Object requestId) {
-        // DSL generate path — delegate to XlsxAdapter when options.workbookPlan is present
+    private McpResponse writeXlsx(String path, Map options, Object requestId, OfficePlanBinder binder) {
+        // Plan path — GCU's XlsxAdapter, the JSON plan bound to a WorkbookPlan (FS 0.11.4: it was passed raw)
         if (options.workbookPlan != null) {
-            String xlAction = (options.action ?: 'GENERATE') as String
-            Object wResult = XlsxAdapter.asFn().call(xlAction.toUpperCase(), [filePath: path, plan: options.workbookPlan])
+            String xlAction = ((options.action ?: 'GENERATE') as String).toUpperCase()
+            if (!(xlAction in PLAN_WRITE_ACTIONS)) {
+                return McpResponse.toolError(requestId, "write_office: options.action '${xlAction}' with a workbookPlan must be one of ${PLAN_WRITE_ACTIONS}")
+            }
+            if (options.data != null && !(options.data instanceof Map)) {
+                return McpResponse.toolError(requestId, 'write_office: options.data must map each deferredRows dataKey to its rows')
+            }
+            WorkbookPlan plan = binder.workbookPlan(options.workbookPlan)
+            Object wResult = XlsxAdapter.asFn().call(xlAction, [filePath: path, plan: plan, data: (options.data ?: [:]) as Map])
             return successJson(requestId, [action: 'write_office', format: 'xlsx', path: path, result: wResult])
         }
 
@@ -312,7 +357,8 @@ class OfficeDocumentHandler {
     // =========================================================================
 
     private McpResponse readDocx(File file, Map options, Object requestId) {
-        XWPFDocument doc = new XWPFDocument(file.newInputStream())
+        // FS 0.11.4: the stream is closed once read (it was left open, holding the file on Windows)
+        XWPFDocument doc = file.withInputStream { InputStream ins -> new XWPFDocument(ins) }
         try {
             List<Map<String, Object>> sections = []
             String currentHeading   = null
@@ -351,19 +397,23 @@ class OfficeDocumentHandler {
     // DOCX write
     // =========================================================================
 
-    private McpResponse writeDocx(String path, Map options, Object requestId) {
-        // DSL generate path — delegate to DocxAdapter when options.documentPlan is present
+    private McpResponse writeDocx(String path, Map options, Object requestId, OfficePlanBinder binder) {
+        String templatePath = binder.templatePath(options.templatePath, 'options.templatePath')
+
+        // Plan path — GCU's DocxAdapter, the JSON plan bound to a DocumentPlan (FS 0.11.4: it was passed raw)
         if (options.documentPlan != null) {
-            Object dResult = DocxAdapter.asFn().call('GENERATE', [filePath: path, plan: options.documentPlan])
+            DocumentPlan plan = binder.documentPlan(options.documentPlan)
+            Map config = [filePath: path, documentPlan: plan]
+            if (templatePath) config.templatePath = templatePath
+            Object dResult = DocxAdapter.asFn().call('GENERATE', config)
             return successJson(requestId, [action: 'write_office', format: 'docx', path: path, result: dResult])
         }
 
         // Legacy flat-map path
-        String templatePath             = options.templatePath as String
         Map<String, Object> content     = options.content as Map<String, Object>
 
         XWPFDocument doc = templatePath ?
-            new XWPFDocument(new File(templatePath).newInputStream()) :
+            new File(templatePath).withInputStream { InputStream ins -> new XWPFDocument(ins) } :
             new XWPFDocument()
 
         try {
@@ -390,7 +440,9 @@ class OfficeDocumentHandler {
                 }
             }
 
-            new File(path).withOutputStream { OutputStream out -> doc.write(out) }
+            ByteArrayOutputStream buf = new ByteArrayOutputStream()
+            doc.write(buf)
+            WriteUtils.atomicWrite(Paths.get(path), buf.toByteArray())
 
             return successJson(requestId, [
                 action  : 'write_office',
@@ -408,7 +460,8 @@ class OfficeDocumentHandler {
     // =========================================================================
 
     private McpResponse readPptx(File file, Map options, Object requestId) {
-        XMLSlideShow ppt = new XMLSlideShow(file.newInputStream())
+        // FS 0.11.4: the stream is closed once read (it was left open, holding the file on Windows)
+        XMLSlideShow ppt = file.withInputStream { InputStream ins -> new XMLSlideShow(ins) }
         try {
             List<Map<String, Object>> slides = []
             ppt.slides.eachWithIndex { XSLFSlide slide, int idx ->
@@ -458,19 +511,24 @@ class OfficeDocumentHandler {
     // PPTX write
     // =========================================================================
 
-    private McpResponse writePptx(String path, Map options, Object requestId) {
-        // DSL generate path — delegate to PptxAdapter when options.presentationPlan is present
+    private McpResponse writePptx(String path, Map options, Object requestId, OfficePlanBinder binder) {
+        String templatePath = binder.templatePath(options.templatePath, 'options.templatePath')
+
+        // Plan path — GCU's PptxAdapter, the JSON plan bound to a PresentationPlan (FS 0.11.4: it was passed raw)
         if (options.presentationPlan != null) {
-            Object pResult = PptxAdapter.asFn().call('GENERATE', [filePath: path, plan: options.presentationPlan])
+            if (templatePath) {
+                return McpResponse.toolError(requestId, 'write_office: templatePath is not supported with a presentationPlan (GCU PptxAdapter builds a new presentation)')
+            }
+            PresentationPlan plan = binder.presentationPlan(options.presentationPlan)
+            Object pResult = PptxAdapter.asFn().call('GENERATE', [filePath: path, presentationPlan: plan])
             return successJson(requestId, [action: 'write_office', format: 'pptx', path: path, result: pResult])
         }
 
         // Legacy flat-map path
-        String templatePath                     = options.templatePath as String
         List<Map<String, Object>> slides        = options.slides as List<Map<String, Object>>
 
         XMLSlideShow ppt = templatePath ?
-            new XMLSlideShow(new File(templatePath).newInputStream()) :
+            new File(templatePath).withInputStream { InputStream ins -> new XMLSlideShow(ins) } :
             new XMLSlideShow()
 
         try {
@@ -528,7 +586,9 @@ class OfficeDocumentHandler {
                 }
             }
 
-            new File(path).withOutputStream { OutputStream out -> ppt.write(out) }
+            ByteArrayOutputStream buf = new ByteArrayOutputStream()
+            ppt.write(buf)
+            WriteUtils.atomicWrite(Paths.get(path), buf.toByteArray())
 
             return successJson(requestId, [
                 action       : 'write_office',
@@ -544,6 +604,8 @@ class OfficeDocumentHandler {
     // =========================================================================
     // Shared helpers
     // =========================================================================
+
+    private static final List<String> PLAN_WRITE_ACTIONS = ['GENERATE', 'APPEND', 'TRANSFORM']
 
     private static String resolveFormat(String path, Map options) {
         if (options?.format) return (options.format as String).toLowerCase()
